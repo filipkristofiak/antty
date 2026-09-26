@@ -4,13 +4,13 @@ use anyhow::{Context, Result, bail};
 use clap::Parser;
 
 #[derive(Parser, Debug)]
-#[command(name = "omp-gantt", about = "Session Gantt TUI for omp projects")]
+#[command(name = "antty", about = "Gantt timeline TUI for coding-agent sessions")]
 pub struct RawArgs {
     /// Project root to show sessions for. Defaults to the current directory.
     #[arg(long)]
     pub project: Option<PathBuf>,
 
-    /// Root directory holding omp's session jsonl files.
+    /// Root directory holding the agent session jsonl files (default: omp's ~/.omp/agent/sessions).
     #[arg(long)]
     pub sessions_dir: Option<PathBuf>,
 
@@ -68,7 +68,7 @@ impl Args {
         let state_dir = raw
             .state_dir
             .map(|p| expand_tilde(&p))
-            .unwrap_or_else(|| PathBuf::from(&home).join(".local/state/omp-gantt"));
+            .unwrap_or_else(|| PathBuf::from(&home).join(".local/state/antty"));
 
         Ok(Args {
             project,

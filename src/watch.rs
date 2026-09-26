@@ -219,9 +219,9 @@ mod tests {
 
     #[test]
     fn nested_gitignore_is_honored_even_without_a_root_one() {
-        // Matches the real omp-extensions layout: no root .gitignore, but a nested crate's own
+        // Monorepo layout: no root .gitignore, but a nested crate's own
         // .gitignore lists a build dir that must still be filtered by the root-level watcher.
-        let root = std::env::temp_dir().join(format!("omp-gantt-watch-test-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("antty-watch-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let sub = root.join("crate");
         fs::create_dir_all(sub.join("target/debug/deps")).unwrap();

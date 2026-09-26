@@ -316,7 +316,7 @@ mod tests {
 
     #[test]
     fn load_initial_then_tailer_reconstructs_a_line_that_was_mid_write_at_startup() {
-        let base = std::env::temp_dir().join(format!("omp-gantt-sessions-test-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("antty-sessions-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         let project_root = base.join("proj");
         fs::create_dir_all(&project_root).unwrap();

@@ -411,12 +411,13 @@ fn ingest_tool_result(model: &mut Model, who: ParticipantId, v: &Value, msg: &Va
             let Some(rel) = normalize(path_str, &file_cwd, &root, &aliases) else {
                 return;
             };
-            let bytes = pending
+            let content = pending
                 .args
                 .get("content")
                 .and_then(|x| x.as_str())
-                .map(|s| s.len())
-                .unwrap_or(0);
+                .unwrap_or("")
+                .to_string();
+            model.record_snapshot(&rel, end_ts, content.clone());
             model.events.push(FileEvent {
                 who,
                 rel,
@@ -425,7 +426,7 @@ fn ingest_tool_result(model: &mut Model, who: ParticipantId, v: &Value, msg: &Va
                 start: pending.start,
                 end: end_ts,
                 tool_call_id: Some(tool_call_id),
-                detail: EventDetail::Written { bytes },
+                detail: EventDetail::Written { content },
             });
         }
         "edit" => {
@@ -520,6 +521,13 @@ fn ingest_edit_result(
             let Some(rel) = normalize(path_str, file_cwd, root, aliases) else {
                 continue;
             };
+            if let (Some(old), Some(new)) = (
+                entry.get("oldText").and_then(|x| x.as_str()),
+                entry.get("newText").and_then(|x| x.as_str()),
+            ) {
+                model.record_snapshot(&rel, start, old.to_string());
+                model.record_snapshot(&rel, end, new.to_string());
+            }
             let diff = entry.get("diff").and_then(|x| x.as_str()).unwrap_or("").to_string();
             model.events.push(FileEvent {
                 who,
@@ -536,6 +544,13 @@ fn ingest_edit_result(
     }
     if let Some(path_str) = details.get("path").and_then(|x| x.as_str()) {
         if let Some(rel) = normalize(path_str, file_cwd, root, aliases) {
+            if let (Some(old), Some(new)) = (
+                details.get("oldText").and_then(|x| x.as_str()),
+                details.get("newText").and_then(|x| x.as_str()),
+            ) {
+                model.record_snapshot(&rel, start, old.to_string());
+                model.record_snapshot(&rel, end, new.to_string());
+            }
             let diff = details.get("diff").and_then(|x| x.as_str()).unwrap_or("").to_string();
             model.events.push(FileEvent {
                 who,
@@ -698,6 +713,76 @@ mod tests {
         assert_eq!(model.events.len(), 1);
         assert_eq!(model.events[0].rel, Path::new("a.js"));
         assert!(matches!(model.events[0].detail, EventDetail::Diff(_)));
+    }
+
+    #[test]
+    fn write_events_record_content_snapshots() {
+        let (mut model, who) = model_with_main(root());
+        let start1: Value = serde_json::json!({
+            "type":"custom","customType":"tool_execution_start",
+            "data":{"toolCallId":"w1","toolName":"write","startedAt":"2026-01-01T00:00:00.000Z","args":{"path":"a.js","content":"a\n"}}
+        });
+        ingest(&mut model, who, &start1, 30);
+        let result1: Value = serde_json::json!({
+            "type":"message",
+            "message":{
+                "role":"toolResult","toolCallId":"w1","toolName":"write",
+                "details":{},"isError":false,"timestamp":1767225601000i64
+            }
+        });
+        ingest(&mut model, who, &result1, 30);
+
+        let start2: Value = serde_json::json!({
+            "type":"custom","customType":"tool_execution_start",
+            "data":{"toolCallId":"w2","toolName":"write","startedAt":"2026-01-01T00:00:02.000Z","args":{"path":"a.js","content":"b\n"}}
+        });
+        ingest(&mut model, who, &start2, 30);
+        let result2: Value = serde_json::json!({
+            "type":"message",
+            "message":{
+                "role":"toolResult","toolCallId":"w2","toolName":"write",
+                "details":{},"isError":false,"timestamp":1767225603000i64
+            }
+        });
+        ingest(&mut model, who, &result2, 30);
+
+        assert_eq!(model.events.len(), 2);
+        let rel = Path::new("a.js");
+        let second_start = model.events[1].start;
+        assert_eq!(model.snapshot_before(rel, second_start), Some("a\n"));
+        let d = crate::snapshot::unified("a\n", "b\n");
+        assert!(d.contains("-a"));
+        assert!(d.contains("+b"));
+    }
+
+    #[test]
+    fn edit_old_new_text_records_both_snapshots() {
+        let (mut model, who) = model_with_main(root());
+        let start_v: Value = serde_json::json!({
+            "type":"custom","customType":"tool_execution_start",
+            "data":{"toolCallId":"t5","toolName":"edit","startedAt":"2026-01-01T00:00:00.000Z","args":{"input":"[a.js#0000]\nPUT 1.=1:\n+x"}}
+        });
+        ingest(&mut model, who, &start_v, 30);
+        let result_v: Value = serde_json::json!({
+            "type":"message",
+            "message":{
+                "role":"toolResult","toolCallId":"t5","toolName":"edit",
+                "details":{
+                    "path":"/Users/x/projects/tools/hlit/a.js",
+                    "diff":" 1|x\n",
+                    "oldText":"old\n",
+                    "newText":"new\n"
+                },
+                "isError":false,"timestamp":1767225601000i64
+            }
+        });
+        ingest(&mut model, who, &result_v, 30);
+        assert_eq!(model.events.len(), 1);
+        let rel = Path::new("a.js");
+        let e = &model.events[0];
+        let snaps = model.snapshots.get(rel).unwrap();
+        assert_eq!(snaps.iter().find(|(t, _)| *t == e.start).map(|(_, c)| c.as_str()), Some("old\n"));
+        assert_eq!(snaps.iter().find(|(t, _)| *t == e.end).map(|(_, c)| c.as_str()), Some("new\n"));
     }
 
     #[test]

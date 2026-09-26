@@ -1,4 +1,5 @@
 pub mod detail;
+pub mod diff_view;
 pub mod gantt_pane;
 pub mod help;
 pub mod picker;
@@ -10,6 +11,7 @@ use std::collections::HashSet;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Color;
+use ratatui::widgets::Clear;
 
 use crate::model::{Model, ParticipantId, ParticipantKind};
 use crate::timeline::View;
@@ -42,6 +44,7 @@ pub fn color_for(model: &Model, who: ParticipantId) -> Color {
 pub enum Mode {
     Normal,
     Detail,
+    Diff,
     Picker,
     Help,
 }
@@ -66,6 +69,9 @@ pub struct UiState {
     pub detail_selected: usize,
     pub detail_scroll: u16,
 
+    // Diff mode (full-screen)
+    pub diff_scroll: u16,
+
     // Picker mode: working selection, applied to model.session_filter on Enter.
     pub picker_selected: HashSet<usize>,
     pub picker_cursor: usize,
@@ -82,6 +88,7 @@ impl UiState {
             status_extra: None,
             detail_selected: 0,
             detail_scroll: 0,
+            diff_scroll: 0,
             picker_selected: HashSet::new(),
             picker_cursor: 0,
         }
@@ -184,6 +191,11 @@ pub fn draw(f: &mut Frame, app: &AppRef) {
     match app.ui.mode {
         Mode::Picker => picker::render(f, centered_rect(60, 60, root), app),
         Mode::Help => help::render(f, centered_rect(50, 60, root)),
+        Mode::Diff => {
+            let area = Rect { height: root.height.saturating_sub(1), ..root };
+            f.render_widget(Clear, area);
+            diff_view::render(f, area, app);
+        }
         _ => {}
     }
 }

@@ -119,6 +119,27 @@ impl Attributor {
             return false;
         };
 
+        // Diff against the last known content, from session-log-derived snapshots or an
+        // earlier watcher read. Recorded regardless of whether this event is later dropped as
+        // a tool-write echo below, so the content baseline stays current either way.
+        let current = if raw.kind == FsKind::Removed {
+            Some(String::new())
+        } else {
+            crate::snapshot::read_text(&raw.path)
+        };
+        let prev = model.snapshot_before(&rel, raw.at).map(str::to_string);
+        let diff = if let (Some(p), Some(c)) = (&prev, &current) {
+            Some(crate::snapshot::unified(p, c))
+        } else if raw.kind == FsKind::Created && prev.is_none() {
+            current.as_deref().map(|c| crate::snapshot::unified("", c))
+        } else {
+            None
+        }
+        .filter(|d| !d.is_empty());
+        if let Some(c) = current {
+            model.record_snapshot(&rel, raw.at, c);
+        }
+
         // FSEvents only reports *late*, never early: a tool's own write can finish up to
         // ~10s before the watcher notices, but never notably after. The window is asymmetric
         // for the same reason.
@@ -155,12 +176,13 @@ impl Attributor {
             start: raw.at,
             end: raw.at,
             tool_call_id: tool_call_id.clone(),
-            detail: EventDetail::Fs(fs_kind_to_change(raw.kind)),
+            detail: EventDetail::Fs { change: fs_kind_to_change(raw.kind), diff: diff.clone() },
         });
-        self.persist(model, &rel, raw.kind, who, tool_call_id, raw.at);
+        self.persist(model, &rel, raw.kind, who, tool_call_id, raw.at, diff.as_deref());
         true
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn persist(
         &mut self,
         model: &Model,
@@ -169,6 +191,7 @@ impl Attributor {
         who: ParticipantId,
         tool_call_id: Option<String>,
         at: Ts,
+        diff: Option<&str>,
     ) {
         let Some(file) = self.persist_file.as_mut() else { return };
         let change = match kind {
@@ -182,12 +205,15 @@ impl Attributor {
             let file_path = model.participants[who.0].file.clone().unwrap_or_default();
             json!({"file": file_path.to_string_lossy(), "toolCallId": tool_call_id.unwrap_or_default()})
         };
-        let line = json!({
+        let mut line = json!({
             "t": at.to_rfc3339(),
             "path": rel.to_string_lossy(),
             "change": change,
             "who": who_json,
         });
+        if let Some(d) = diff {
+            line["diff"] = json!(d);
+        }
         let _ = writeln!(file, "{line}");
     }
 }
@@ -239,6 +265,7 @@ pub fn replay(model: &mut Model, state_dir: &Path, root: &Path) -> Option<String
             "removed" => FsChange::Removed,
             _ => continue,
         };
+        let diff = v.get("diff").and_then(|x| x.as_str()).map(str::to_string);
         model.events.push(FileEvent {
             who,
             rel: PathBuf::from(path_str),
@@ -247,7 +274,7 @@ pub fn replay(model: &mut Model, state_dir: &Path, root: &Path) -> Option<String
             start: t,
             end: t,
             tool_call_id,
-            detail: EventDetail::Fs(fs_change),
+            detail: EventDetail::Fs { change: fs_change, diff },
         });
     }
     None
@@ -425,5 +452,54 @@ mod tests {
         assert_eq!(attributor.classify_and_apply(&mut model, now), 1);
         // nothing pending now, so a second call pushes nothing further.
         assert_eq!(attributor.classify_and_apply(&mut model, now), 0);
+    }
+
+    #[test]
+    fn diff_computed_against_known_snapshot() {
+        let root = temp_root("diff-known");
+        let file = root.join("a.txt");
+        fs::write(&file, "b\n").unwrap();
+        let mut model = Model::new(root.clone());
+        let rel = PathBuf::from("a.txt");
+        let t0 = chrono::Utc::now() - Duration::seconds(30);
+        model.record_snapshot(&rel, t0, "a\n".to_string());
+        let mut attributor = Attributor::disabled();
+        attributor.push(RawFs { path: file, kind: FsKind::Modified, at: t0 + Duration::seconds(2) });
+        let now = t0 + Duration::seconds(60);
+        attributor.classify_and_apply(&mut model, now);
+        assert_eq!(model.events.len(), 1);
+        match &model.events[0].detail {
+            EventDetail::Fs { diff: Some(d), .. } => {
+                assert!(d.contains("-a"));
+                assert!(d.contains("+b"));
+            }
+            other => panic!("expected Fs {{ diff: Some(_), .. }}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn persisted_diff_field_survives_replay() {
+        let state_dir = temp_root("diff-persist-state");
+        let root = temp_root("diff-persist-root");
+        let file = root.join("a.txt");
+        fs::write(&file, "b\n").unwrap();
+        let mut model = Model::new(root.clone());
+        let rel = PathBuf::from("a.txt");
+        let t0 = chrono::Utc::now() - Duration::seconds(30);
+        model.record_snapshot(&rel, t0, "a\n".to_string());
+        let mut attributor = Attributor::new(&state_dir, &root);
+        attributor.push(RawFs { path: file, kind: FsKind::Modified, at: t0 + Duration::seconds(2) });
+        let now = t0 + Duration::seconds(60);
+        attributor.classify_and_apply(&mut model, now);
+        drop(attributor);
+
+        let persisted = fs::read_to_string(persist_path_for(&state_dir, &root)).unwrap();
+        let line: Value = serde_json::from_str(persisted.lines().next().unwrap()).unwrap();
+        assert!(line.get("diff").and_then(|v| v.as_str()).is_some(), "persisted line must include a diff field");
+
+        let mut fresh_model = Model::new(root.clone());
+        replay(&mut fresh_model, &state_dir, &root);
+        assert_eq!(fresh_model.events.len(), 1);
+        assert!(matches!(&fresh_model.events[0].detail, EventDetail::Fs { diff: Some(_), .. }));
     }
 }

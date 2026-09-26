@@ -3,6 +3,7 @@ mod cli;
 mod model;
 mod parse;
 mod sessions;
+mod snapshot;
 mod timeline;
 mod tree;
 mod ui;
@@ -252,6 +253,7 @@ impl App {
         match self.ui.mode {
             Mode::Normal => self.handle_key_normal(key),
             Mode::Detail => self.handle_key_detail(key),
+            Mode::Diff => self.handle_key_diff(key),
             Mode::Picker => self.handle_key_picker(key),
             Mode::Help => {
                 if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('?')) {
@@ -308,6 +310,12 @@ impl App {
         let n = ui::detail::resolve_items(&app_ref).len();
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.ui.mode = Mode::Normal,
+            KeyCode::Enter => {
+                if n > 0 {
+                    self.ui.mode = Mode::Diff;
+                    self.ui.diff_scroll = 0;
+                }
+            }
             KeyCode::Char('j') | KeyCode::Down => {
                 if n > 0 {
                     self.ui.detail_selected = (self.ui.detail_selected + 1).min(n - 1);
@@ -326,6 +334,32 @@ impl App {
             }
             _ => {}
         }
+        false
+    }
+
+    /// Full-screen diff view (`Mode::Diff`), opened from Detail with `Enter`.
+    fn handle_key_diff(&mut self, key: KeyEvent) -> bool {
+        let app_ref = self.as_ref();
+        let total = ui::detail::selected_item(&app_ref)
+            .map(|it| ui::detail::detail_lines(&app_ref, &it).len())
+            .unwrap_or(0);
+        let page = self.layout.body_height.max(2) / 2;
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => self.ui.mode = Mode::Detail,
+            KeyCode::Char('j') | KeyCode::Down => self.ui.diff_scroll = self.ui.diff_scroll.saturating_add(1),
+            KeyCode::Char('k') | KeyCode::Up => self.ui.diff_scroll = self.ui.diff_scroll.saturating_sub(1),
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.ui.diff_scroll = self.ui.diff_scroll.saturating_add(page);
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.ui.diff_scroll = self.ui.diff_scroll.saturating_sub(page);
+            }
+            KeyCode::Char('g') => self.ui.diff_scroll = 0,
+            KeyCode::Char('G') => self.ui.diff_scroll = total.saturating_sub(1).min(u16::MAX as usize) as u16,
+            _ => {}
+        }
+        let max_scroll = total.saturating_sub(1).min(u16::MAX as usize) as u16;
+        self.ui.diff_scroll = self.ui.diff_scroll.min(max_scroll);
         false
     }
 
@@ -373,6 +407,9 @@ fn main() -> anyhow::Result<()> {
     }
     if let Some(e) = attrib::replay(&mut model, &args.state_dir, &args.project) {
         status_extra = Some(e);
+    }
+    if !args.no_watch {
+        snapshot::seed_from_disk(&mut model, chrono::Utc::now());
     }
 
     let (tx, rx) = mpsc::channel::<Msg>();

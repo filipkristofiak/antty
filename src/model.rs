@@ -72,10 +72,10 @@ pub enum FsChange {
 pub enum EventDetail {
     None,
     Diff(String),
-    Written { bytes: usize },
+    Written { content: String },
     Moved { to: PathBuf },
     Removed,
-    Fs(FsChange),
+    Fs { change: FsChange, diff: Option<String> },
 }
 
 #[derive(Debug, Clone)]
@@ -148,6 +148,11 @@ pub struct Model {
     pub raw_intervals: HashMap<usize, Vec<(Ts, Ts)>>,
     /// glue: participant indices whose spans need recomputing before the next render.
     pub dirty_spans: HashSet<usize>,
+
+    /// Known full contents of project files over time, from session logs (write content,
+    /// edit oldText/newText) and live watcher reads. Keyed by project-relative path; each Vec
+    /// sorted by timestamp.
+    pub snapshots: HashMap<PathBuf, Vec<(Ts, String)>>,
 }
 
 impl Model {
@@ -176,6 +181,7 @@ impl Model {
             pending_tools: HashMap::new(),
             raw_intervals: HashMap::new(),
             dirty_spans: HashSet::new(),
+            snapshots: HashMap::new(),
         }
     }
 
@@ -257,6 +263,30 @@ impl Model {
         }
         self.pending_tools.retain(|(idx, _), _| *idx != who.0);
     }
+
+    /// Record `content` as the known state of `rel` at `at`. Entries are kept sorted by
+    /// timestamp; inserting content identical to the immediately preceding entry is a no-op
+    /// (dedupes Reset re-ingest and tool-write echoes).
+    pub fn record_snapshot(&mut self, rel: &Path, at: Ts, content: String) {
+        let v = self.snapshots.entry(rel.to_path_buf()).or_default();
+        let idx = v.partition_point(|(t, _)| *t <= at);
+        if idx > 0 && v[idx - 1].1 == content {
+            return;
+        }
+        v.insert(idx, (at, content));
+    }
+
+    /// The latest known snapshot strictly earlier than `at`, with its timestamp.
+    pub fn snapshot_before_with_ts(&self, rel: &Path, at: Ts) -> Option<(Ts, &str)> {
+        let v = self.snapshots.get(rel)?;
+        let idx = v.partition_point(|(t, _)| *t < at);
+        if idx == 0 { None } else { let (t, s) = &v[idx - 1]; Some((*t, s.as_str())) }
+    }
+
+    /// The latest known snapshot strictly earlier than `at`.
+    pub fn snapshot_before(&self, rel: &Path, at: Ts) -> Option<&str> {
+        self.snapshot_before_with_ts(rel, at).map(|(_, s)| s)
+    }
 }
 
 #[cfg(test)]
@@ -306,5 +336,34 @@ mod tests {
 
         assert_eq!(model.events.len(), 2, "watcher- and bash-attributed events must survive a Reset");
         assert!(model.events.iter().all(|e| !matches!(e.source, TouchSource::Tool(_))));
+    }
+
+    #[test]
+    fn record_snapshot_keeps_order_and_snapshot_before_returns_latest_strictly_earlier() {
+        let root = PathBuf::from("/tmp/x");
+        let mut model = Model::new(root);
+        let rel = PathBuf::from("a.txt");
+        let t0 = chrono::Utc::now();
+        let t1 = t0 + chrono::Duration::seconds(10);
+        let t2 = t0 + chrono::Duration::seconds(20);
+        model.record_snapshot(&rel, t1, "a\n".to_string());
+        model.record_snapshot(&rel, t0, "before\n".to_string());
+        model.record_snapshot(&rel, t2, "b\n".to_string());
+        assert_eq!(model.snapshots.get(&rel).unwrap().iter().map(|(t, _)| *t).collect::<Vec<_>>(), vec![t0, t1, t2]);
+        assert_eq!(model.snapshot_before(&rel, t1), Some("before\n"));
+        assert_eq!(model.snapshot_before(&rel, t2), Some("a\n"));
+        assert_eq!(model.snapshot_before(&rel, t0), None);
+    }
+
+    #[test]
+    fn record_snapshot_identical_content_immediately_after_is_a_no_op() {
+        let root = PathBuf::from("/tmp/x");
+        let mut model = Model::new(root);
+        let rel = PathBuf::from("a.txt");
+        let t0 = chrono::Utc::now();
+        let t1 = t0 + chrono::Duration::seconds(10);
+        model.record_snapshot(&rel, t0, "same\n".to_string());
+        model.record_snapshot(&rel, t1, "same\n".to_string());
+        assert_eq!(model.snapshots.get(&rel).unwrap().len(), 1, "identical content right after itself is a no-op");
     }
 }

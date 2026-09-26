@@ -15,6 +15,7 @@ const KEYS: &[(&str, &str)] = &[
     ("n/N", "next/prev bucket with activity on the selected row"),
     ("Space/za", "toggle expand dir/session"),
     ("Enter", "open Detail for the selected row"),
+    ("Enter (Detail)", "full-screen diff of selected event"),
     ("T", "touched-only"),
     ("s", "session picker"),
     ("?", "this help"),

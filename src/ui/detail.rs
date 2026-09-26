@@ -9,7 +9,7 @@ use crate::tree::Row;
 
 use super::{AppRef, DetailItem};
 
-fn event_kind_label(e: &FileEvent) -> &'static str {
+pub fn event_kind_label(e: &FileEvent) -> &'static str {
     match &e.source {
         TouchSource::Tool(t) if t == "read" => "read",
         TouchSource::Tool(_) => "write",
@@ -55,6 +55,16 @@ pub fn resolve_items(app: &AppRef) -> Vec<DetailItem> {
     items.into_iter().map(|(_, it)| it).collect()
 }
 
+/// The item at `app.ui.detail_selected`, clamped to the last index; None if the list is empty.
+pub fn selected_item(app: &AppRef) -> Option<DetailItem> {
+    let items = resolve_items(app);
+    if items.is_empty() {
+        return None;
+    }
+    let idx = app.ui.detail_selected.min(items.len() - 1);
+    Some(items[idx].clone())
+}
+
 pub fn item_time(item: &DetailItem, app: &AppRef) -> Ts {
     match item {
         DetailItem::Event(idx) => app.model.events[*idx].end,
@@ -96,7 +106,25 @@ fn item_line(app: &AppRef, item: &DetailItem) -> String {
     }
 }
 
-fn detail_lines(app: &AppRef, item: &DetailItem) -> Vec<Line<'static>> {
+/// Color a unified-diff-shaped block of text: `+` green, `-` red, `@@` hunk headers cyan.
+fn diff_lines(text: &str) -> Vec<Line<'static>> {
+    text.lines()
+        .map(|line| {
+            let style = if line.starts_with('+') {
+                Style::default().fg(Color::Green)
+            } else if line.starts_with('-') {
+                Style::default().fg(Color::Red)
+            } else if line.starts_with("@@") {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default()
+            };
+            Line::from(vec![TSpan::styled(line.to_string(), style)])
+        })
+        .collect()
+}
+
+pub fn detail_lines(app: &AppRef, item: &DetailItem) -> Vec<Line<'static>> {
     match item {
         DetailItem::Event(idx) => {
             let e = &app.model.events[*idx];
@@ -108,20 +136,32 @@ fn detail_lines(app: &AppRef, item: &DetailItem) -> Vec<Line<'static>> {
                 e.rel.display()
             ))];
             match &e.detail {
-                EventDetail::Diff(d) => {
-                    for line in d.lines() {
-                        let style = if line.starts_with('+') {
-                            Style::default().fg(Color::Green)
-                        } else if line.starts_with('-') {
-                            Style::default().fg(Color::Red)
-                        } else {
-                            Style::default()
-                        };
-                        lines.push(Line::from(vec![TSpan::styled(line.to_string(), style)]));
+                EventDetail::Diff(d) => lines.extend(diff_lines(d)),
+                EventDetail::Written { content } => {
+                    lines.push(Line::from(format!("wrote {} bytes", content.len())));
+                    match app.model.snapshot_before_with_ts(&e.rel, e.start) {
+                        Some((t, prev)) => {
+                            lines.push(Line::from(format!(
+                                "diff vs earlier content from {}",
+                                local(t).format("%H:%M:%S")
+                            )));
+                            lines.extend(diff_lines(&crate::snapshot::unified(prev, content)));
+                        }
+                        None => {
+                            lines.push(Line::from("no earlier content known — full written content"));
+                            lines.extend(diff_lines(&crate::snapshot::unified("", content)));
+                        }
                     }
                 }
-                EventDetail::Written { bytes } => lines.push(Line::from(format!("wrote {bytes} bytes"))),
-                EventDetail::Fs(change) => lines.push(Line::from(format!("fs {change:?}").to_lowercase())),
+                EventDetail::Fs { change, diff } => {
+                    lines.push(Line::from(format!("fs {change:?}").to_lowercase()));
+                    match diff {
+                        Some(d) => lines.extend(diff_lines(d)),
+                        None => lines.push(Line::from(
+                            "no diff (no earlier snapshot, binary, or larger than 1 MiB)",
+                        )),
+                    }
+                }
                 EventDetail::Moved { to } => lines.push(Line::from(format!("moved to {}", to.display()))),
                 EventDetail::Removed => lines.push(Line::from("removed".to_string())),
                 EventDetail::None => lines.push(Line::from("(no additional detail)")),
@@ -164,7 +204,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
     let list = List::new(list_items).highlight_style(Style::default().bg(Color::Rgb(50, 70, 130)).fg(Color::White));
     f.render_stateful_widget(list, cols[0], &mut state);
 
-    let text = detail_lines(app, &items[selected]);
-    let para = Paragraph::new(text).scroll((app.ui.detail_scroll, 0));
-    f.render_widget(para, cols[1]);
+    if let Some(item) = selected_item(app) {
+        let text = detail_lines(app, &item);
+        let para = Paragraph::new(text).scroll((app.ui.detail_scroll, 0));
+        f.render_widget(para, cols[1]);
+    }
 }

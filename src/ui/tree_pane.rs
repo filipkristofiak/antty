@@ -44,7 +44,7 @@ fn row_text_and_style(app: &AppRef, row: Row) -> (String, Style) {
             let node = &app.tree.nodes[idx];
             let indent = "  ".repeat(node.depth);
             let arrow = if node.is_dir {
-                if app.ui.expand.is_dir_expanded(node) { "▾ " } else { "▸ " }
+                if app.ui.expand.is_dir_expanded(app.tree, idx) { "▾ " } else { "▸ " }
             } else {
                 "  "
             };

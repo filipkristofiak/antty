@@ -30,9 +30,6 @@ pub struct Participant {
 
 #[derive(Debug, Clone)]
 pub struct Session {
-    /// redundant with `Participant.file` for the session's Main participant; kept for parity
-    /// with the documented model shape and for future direct session->file lookups.
-    #[allow(dead_code)]
     pub file: PathBuf,
     pub id: String,
     pub title: String,
@@ -76,12 +73,32 @@ pub enum EventDetail {
     Moved { to: PathBuf },
     Removed,
     Fs { change: FsChange, diff: Option<String> },
+    Search { sources: Vec<(String, String)> },
+}
+
+/// Which tree section a touched target belongs to, and how `FileEvent.rel` is to be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Scope {
+    /// `rel` is project-root-relative (FILES).
+    Project,
+    /// `rel` is an absolute local path outside the project and not a session's own file (MOUNTS).
+    External,
+    /// `rel` is `ssh://<host>/<path>` verbatim (MOUNTS).
+    Remote,
+    /// `rel` is absolute: inside session `.0`'s own dir, or a temp-dir file that session touched
+    /// (nested under the session row).
+    Session(usize),
+    /// `rel` is the search query (WEB).
+    WebSearch,
+    /// `rel` is the fetched URL (WEB).
+    WebFetch,
 }
 
 #[derive(Debug, Clone)]
 pub struct FileEvent {
     pub who: ParticipantId,
     pub rel: PathBuf,
+    pub scope: Scope,
     pub kind: TouchKind,
     pub source: TouchSource,
     pub start: Ts,
@@ -153,6 +170,9 @@ pub struct Model {
     /// edit oldText/newText) and live watcher reads. Keyed by project-relative path; each Vec
     /// sorted by timestamp.
     pub snapshots: HashMap<PathBuf, Vec<(Ts, String)>>,
+    /// omp's sessions dir (`--sessions-dir`); empty until `main` sets it, which disables
+    /// session-dir detection.
+    pub sessions_root: PathBuf,
 }
 
 impl Model {
@@ -182,7 +202,24 @@ impl Model {
             raw_intervals: HashMap::new(),
             dirty_spans: HashSet::new(),
             snapshots: HashMap::new(),
+            sessions_root: PathBuf::new(),
         }
+    }
+
+    /// For `abs` = `<sessions_root>/<any project dir>/<session stem>/<rest>`, the session whose
+    /// jsonl file stem is `<session stem>`, and `<rest>`. Matching the stem (not the whole dir)
+    /// keeps this correct for sessions `/move`d between project dirs. None if `sessions_root` is
+    /// empty, `abs` is outside it, or no known session has that stem.
+    pub fn session_dir_split(&self, abs: &Path) -> Option<(usize, PathBuf)> {
+        if self.sessions_root.as_os_str().is_empty() {
+            return None;
+        }
+        let rest = abs.strip_prefix(&self.sessions_root).ok()?;
+        let mut comps = rest.components();
+        comps.next()?; // project dir component
+        let stem = comps.next()?.as_os_str();
+        let idx = self.sessions.iter().position(|s| s.file.file_stem() == Some(stem))?;
+        Some((idx, comps.as_path().to_path_buf()))
     }
 
     /// Record `cwd` as an alias of `root` if it isn't already `root` but resolves to it, so
@@ -304,6 +341,7 @@ mod tests {
         model.events.push(FileEvent {
             who,
             rel: rel.clone(),
+            scope: Scope::Project,
             kind: TouchKind::Write,
             source: TouchSource::Tool("edit".into()),
             start: now,
@@ -314,6 +352,7 @@ mod tests {
         model.events.push(FileEvent {
             who,
             rel: rel.clone(),
+            scope: Scope::Project,
             kind: TouchKind::Write,
             source: TouchSource::Bash,
             start: now,
@@ -324,6 +363,7 @@ mod tests {
         model.events.push(FileEvent {
             who,
             rel,
+            scope: Scope::Project,
             kind: TouchKind::Write,
             source: TouchSource::Watcher,
             start: now,

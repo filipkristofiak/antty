@@ -15,7 +15,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
             let e = &app.model.events[*idx];
             format!(
                 " {} · {} · {} · {}  (j/k scroll · Ctrl-d/u page · g/G top/bottom · Esc back) ",
-                e.rel.display(),
+                detail::display_target(app.model, e),
                 app.model.participants[e.who.0].label,
                 detail::event_kind_label(e),
                 e.start.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S")

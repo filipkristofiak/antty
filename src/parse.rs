@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::model::{
-    EventDetail, FileEvent, Model, ParticipantId, ParticipantKind, Pending, Prompt, ToolWindow, Ts, TouchKind,
+    EventDetail, FileEvent, Model, ParticipantId, ParticipantKind, Pending, Prompt, Scope, ToolWindow, Ts, TouchKind,
     TouchSource,
 };
 
@@ -54,9 +54,10 @@ fn lexical_clean(p: &Path) -> PathBuf {
     out.iter().collect()
 }
 
-/// Resolve a tool-arg path string to a project-root-relative path, or None if it
-/// falls outside the project (or is a URL / tool device target).
-pub fn normalize(raw: &str, file_cwd: &Path, root: &Path, aliases: &[PathBuf]) -> Option<PathBuf> {
+/// Turn a raw tool-arg path string into an absolute, lexically-cleaned path: strip any
+/// selector/query suffix, expand a leading `~`, and join a relative path against `file_cwd`.
+/// None for a URL/tool-device target (anything containing `://`).
+fn absolutize(raw: &str, file_cwd: &Path) -> Option<PathBuf> {
     if raw.contains("://") {
         return None;
     }
@@ -75,7 +76,13 @@ pub fn normalize(raw: &str, file_cwd: &Path, root: &Path, aliases: &[PathBuf]) -
     } else {
         file_cwd.join(expanded)
     };
-    let cleaned = lexical_clean(&joined);
+    Some(lexical_clean(&joined))
+}
+
+/// Resolve a tool-arg path string to a project-root-relative path, or None if it
+/// falls outside the project (or is a URL / tool device target).
+pub fn normalize(raw: &str, file_cwd: &Path, root: &Path, aliases: &[PathBuf]) -> Option<PathBuf> {
+    let cleaned = absolutize(raw, file_cwd)?;
     if let Ok(rel) = cleaned.strip_prefix(root) {
         return Some(rel.to_path_buf());
     }
@@ -85,6 +92,62 @@ pub fn normalize(raw: &str, file_cwd: &Path, root: &Path, aliases: &[PathBuf]) -
         }
     }
     None
+}
+
+/// Absolute roots under which a file is considered "temporary": `/tmp`, `/private/tmp`, the
+/// process's own temp dir, and (on macOS, where `TMPDIR` typically resolves under `/var/folders`
+/// which is itself a symlink to `/private/var/folders`) that dir's `/private`-prefixed twin.
+fn temp_roots() -> &'static [PathBuf] {
+    static ROOTS: std::sync::LazyLock<Vec<PathBuf>> = std::sync::LazyLock::new(|| {
+        let mut roots = vec![PathBuf::from("/tmp"), PathBuf::from("/private/tmp")];
+        let env_tmp = lexical_clean(&std::env::temp_dir());
+        if let Some(s) = env_tmp.to_str()
+            && let Some(rest) = s.strip_prefix("/var/")
+        {
+            roots.push(PathBuf::from(format!("/private/var/{rest}")));
+        }
+        roots.push(env_tmp);
+        roots
+    });
+    &ROOTS
+}
+
+/// Classify a tool path (argument or result path) for participant `who`: which section it
+/// belongs to and the `FileEvent.rel` to store. None for other internal schemes (omp://,
+/// xd://, agent://, artifact://, skill://, …), http(s) (handled by the `read` arm), and
+/// unresolvable paths.
+fn locate(model: &Model, who: ParticipantId, raw: &str, file_cwd: &Path) -> Option<(Scope, PathBuf)> {
+    if let Some(rest) = raw.strip_prefix("ssh://") {
+        let without_query = rest.split('?').next().unwrap_or(rest);
+        let clean = strip_selector(without_query);
+        let (host, path) = clean.split_once('/')?;
+        if host.is_empty() || path.trim_matches('/').is_empty() {
+            return None;
+        }
+        return Some((Scope::Remote, PathBuf::from(format!("ssh://{host}/{path}"))));
+    }
+    if let Some(rest) = raw.strip_prefix("local://") {
+        let s = model.participants[who.0].session?;
+        let without_query = rest.split('?').next().unwrap_or(rest);
+        let name = strip_selector(without_query);
+        if name.is_empty() {
+            return None;
+        }
+        return Some((Scope::Session(s), model.sessions[s].file.with_extension("").join("local").join(name)));
+    }
+    if let Some(rel) = normalize(raw, file_cwd, &model.root, &model.root_aliases) {
+        return Some((Scope::Project, rel));
+    }
+    let abs = absolutize(raw, file_cwd)?;
+    if let Some((s, _)) = model.session_dir_split(&abs) {
+        return Some((Scope::Session(s), abs));
+    }
+    if let Some(s) = model.participants[who.0].session
+        && temp_roots().iter().any(|t| abs.starts_with(t))
+    {
+        return Some((Scope::Session(s), abs));
+    }
+    Some((Scope::External, abs))
 }
 
 // ---------------------------------------------------------------------------
@@ -343,6 +406,38 @@ fn ingest_user(model: &mut Model, who: ParticipantId, msg: &Value) {
     model.prompts.push(Prompt { at, session: session_idx });
 }
 
+/// Paths a `read` result reports having actually read, in preference order:
+/// `details.meta.source.value` when `details.meta.source.type == "path"`, else
+/// `details.resolvedPath`, else every non-null string in `details.displayReadTargetLinks`
+/// (multi-target reads). These are absolute, so they don't depend on the session header's
+/// `cwd`, which omp rewrites for the whole file when a session is `/move`d. Empty when the
+/// result carries none of them.
+fn read_result_paths(details: &Value) -> Vec<String> {
+    if let Some("path") = details
+        .get("meta")
+        .and_then(|m| m.get("source"))
+        .and_then(|s| s.get("type"))
+        .and_then(|t| t.as_str())
+        && let Some(value) = details
+            .get("meta")
+            .and_then(|m| m.get("source"))
+            .and_then(|s| s.get("value"))
+            .and_then(|v| v.as_str())
+    {
+        return vec![value.to_string()];
+    }
+    if let Some(resolved) = details.get("resolvedPath").and_then(|x| x.as_str()) {
+        return vec![resolved.to_string()];
+    }
+    if let Some(links) = details.get("displayReadTargetLinks").and_then(|x| x.as_array()) {
+        let paths: Vec<String> = links.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect();
+        if !paths.is_empty() {
+            return paths;
+        }
+    }
+    Vec::new()
+}
+
 fn ingest_tool_result(model: &mut Model, who: ParticipantId, v: &Value, msg: &Value, _idle_gap: i64) {
     let Some(tool_call_id) = msg.get("toolCallId").and_then(|x| x.as_str()).map(|s| s.to_string()) else {
         return;
@@ -376,8 +471,6 @@ fn ingest_tool_result(model: &mut Model, who: ParticipantId, v: &Value, msg: &Va
     let file_cwd = session_idx
         .map(|i| model.sessions[i].cwd.clone())
         .unwrap_or_else(|| model.root.clone());
-    let root = model.root.clone();
-    let aliases = model.root_aliases.clone();
     let details = msg.get("details").cloned().unwrap_or(Value::Null);
 
     match pending.tool.as_str() {
@@ -385,22 +478,45 @@ fn ingest_tool_result(model: &mut Model, who: ParticipantId, v: &Value, msg: &Va
             if details.get("isDirectory").and_then(|x| x.as_bool()).unwrap_or(false) {
                 return;
             }
-            let Some(path_arg) = pending.args.get("path").and_then(|x| x.as_str()) else {
+            let path_arg = pending.args.get("path").and_then(|x| x.as_str());
+            if path_arg.is_some_and(|p| p.starts_with("http://") || p.starts_with("https://")) {
+                let url = details.get("url").and_then(|x| x.as_str()).or(path_arg).unwrap_or_default();
+                model.events.push(FileEvent {
+                    who,
+                    rel: PathBuf::from(url),
+                    scope: Scope::WebFetch,
+                    kind: TouchKind::Read,
+                    source: TouchSource::Tool("read".to_string()),
+                    start: pending.start,
+                    end: end_ts,
+                    tool_call_id: Some(tool_call_id.clone()),
+                    detail: EventDetail::None,
+                });
                 return;
-            };
-            let Some(rel) = normalize(path_arg, &file_cwd, &root, &aliases) else {
-                return;
-            };
-            model.events.push(FileEvent {
-                who,
-                rel,
-                kind: TouchKind::Read,
-                source: TouchSource::Tool("read".to_string()),
-                start: pending.start,
-                end: end_ts,
-                tool_call_id: Some(tool_call_id),
-                detail: EventDetail::None,
-            });
+            }
+            let mut paths = read_result_paths(&details);
+            if paths.is_empty() {
+                let Some(path_arg) = path_arg else {
+                    return;
+                };
+                paths.push(path_arg.to_string());
+            }
+            for p in &paths {
+                let Some((scope, rel)) = locate(model, who, p, &file_cwd) else {
+                    continue;
+                };
+                model.events.push(FileEvent {
+                    who,
+                    rel,
+                    scope,
+                    kind: TouchKind::Read,
+                    source: TouchSource::Tool("read".to_string()),
+                    start: pending.start,
+                    end: end_ts,
+                    tool_call_id: Some(tool_call_id.clone()),
+                    detail: EventDetail::None,
+                });
+            }
         }
         "write" => {
             let path_str = details
@@ -408,7 +524,7 @@ fn ingest_tool_result(model: &mut Model, who: ParticipantId, v: &Value, msg: &Va
                 .and_then(|x| x.as_str())
                 .or_else(|| pending.args.get("path").and_then(|x| x.as_str()));
             let Some(path_str) = path_str else { return };
-            let Some(rel) = normalize(path_str, &file_cwd, &root, &aliases) else {
+            let Some((scope, rel)) = locate(model, who, path_str, &file_cwd) else {
                 return;
             };
             let content = pending
@@ -421,6 +537,7 @@ fn ingest_tool_result(model: &mut Model, who: ParticipantId, v: &Value, msg: &Va
             model.events.push(FileEvent {
                 who,
                 rel,
+                scope,
                 kind: TouchKind::Write,
                 source: TouchSource::Tool("write".to_string()),
                 start: pending.start,
@@ -429,19 +546,37 @@ fn ingest_tool_result(model: &mut Model, who: ParticipantId, v: &Value, msg: &Va
                 detail: EventDetail::Written { content },
             });
         }
-        "edit" => {
-            ingest_edit_result(
-                model,
+        "web_search" => {
+            let Some(query) = pending.args.get("query").and_then(|x| x.as_str()) else {
+                return;
+            };
+            let query = query.replace(['\n', '\r'], " ");
+            let sources: Vec<(String, String)> = details
+                .get("response")
+                .and_then(|r| r.get("sources"))
+                .and_then(|s| s.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|s| {
+                    let url = s.get("url").and_then(|u| u.as_str())?;
+                    let title = s.get("title").and_then(|t| t.as_str()).unwrap_or("");
+                    Some((title.to_string(), url.to_string()))
+                })
+                .collect();
+            model.events.push(FileEvent {
                 who,
-                &pending,
-                &tool_call_id,
-                pending.start,
-                end_ts,
-                &details,
-                &file_cwd,
-                &root,
-                &aliases,
-            );
+                rel: PathBuf::from(query),
+                scope: Scope::WebSearch,
+                kind: TouchKind::Read,
+                source: TouchSource::Tool("web_search".to_string()),
+                start: pending.start,
+                end: end_ts,
+                tool_call_id: Some(tool_call_id),
+                detail: EventDetail::Search { sources },
+            });
+        }
+        "edit" => {
+            ingest_edit_result(model, who, &pending, &tool_call_id, end_ts, &details, &file_cwd);
         }
         _ => {}
     }
@@ -500,25 +635,22 @@ fn parse_edit_input_headers(input: &str) -> Vec<EditBlock> {
     blocks
 }
 
-#[allow(clippy::too_many_arguments)]
 fn ingest_edit_result(
     model: &mut Model,
     who: ParticipantId,
     pending: &Pending,
     tool_call_id: &str,
-    start: Ts,
     end: Ts,
     details: &Value,
     file_cwd: &Path,
-    root: &Path,
-    aliases: &[PathBuf],
 ) {
+    let start = pending.start;
     if let Some(per_file) = details.get("perFileResults").and_then(|x| x.as_array()) {
         for entry in per_file {
             let Some(path_str) = entry.get("path").and_then(|x| x.as_str()) else {
                 continue;
             };
-            let Some(rel) = normalize(path_str, file_cwd, root, aliases) else {
+            let Some((scope, rel)) = locate(model, who, path_str, file_cwd) else {
                 continue;
             };
             if let (Some(old), Some(new)) = (
@@ -532,6 +664,7 @@ fn ingest_edit_result(
             model.events.push(FileEvent {
                 who,
                 rel,
+                scope,
                 kind: TouchKind::Write,
                 source: TouchSource::Tool("edit".to_string()),
                 start,
@@ -543,7 +676,7 @@ fn ingest_edit_result(
         return;
     }
     if let Some(path_str) = details.get("path").and_then(|x| x.as_str()) {
-        if let Some(rel) = normalize(path_str, file_cwd, root, aliases) {
+        if let Some((scope, rel)) = locate(model, who, path_str, file_cwd) {
             if let (Some(old), Some(new)) = (
                 details.get("oldText").and_then(|x| x.as_str()),
                 details.get("newText").and_then(|x| x.as_str()),
@@ -555,6 +688,7 @@ fn ingest_edit_result(
             model.events.push(FileEvent {
                 who,
                 rel,
+                scope,
                 kind: TouchKind::Write,
                 source: TouchSource::Tool("edit".to_string()),
                 start,
@@ -569,7 +703,7 @@ fn ingest_edit_result(
         return;
     };
     for block in parse_edit_input_headers(input) {
-        let Some(rel) = normalize(&block.path, file_cwd, root, aliases) else {
+        let Some((scope, rel)) = locate(model, who, &block.path, file_cwd) else {
             continue;
         };
         let detail = if block.rem {
@@ -580,6 +714,7 @@ fn ingest_edit_result(
         model.events.push(FileEvent {
             who,
             rel: rel.clone(),
+            scope,
             kind: TouchKind::Write,
             source: TouchSource::Tool("edit".to_string()),
             start,
@@ -588,10 +723,11 @@ fn ingest_edit_result(
             detail,
         });
         if let Some(dest) = &block.mv
-            && let Some(to_rel) = normalize(dest, file_cwd, root, aliases) {
+            && let Some((_, to_rel)) = locate(model, who, dest, file_cwd) {
                 model.events.push(FileEvent {
                     who,
                     rel,
+                    scope,
                     kind: TouchKind::Write,
                     source: TouchSource::Tool("edit".to_string()),
                     start,
@@ -966,5 +1102,206 @@ mod tests {
         flush_dirty_spans(&mut model, 30);
         assert_eq!(model.spans.len(), 1);
         assert!(model.dirty_spans.is_empty());
+    }
+
+    #[test]
+    fn read_prefers_result_source_path_over_relative_argument() {
+        let (mut model, who) = model_with_main(root());
+        let start_v: Value = serde_json::json!({
+            "type":"custom","customType":"tool_execution_start",
+            "data":{"toolCallId":"t1","toolName":"read","startedAt":"2026-01-01T00:00:00.000Z","args":{"path":"sub/a.js"}}
+        });
+        ingest(&mut model, who, &start_v, 30);
+        let result_v: Value = serde_json::json!({
+            "type":"message",
+            "message":{
+                "role":"toolResult","toolCallId":"t1","toolName":"read",
+                "details":{"meta":{"source":{"type":"path","value":"/Users/x/projects/tools/hlit/a.js"}}},
+                "isError":false,"timestamp":1735689605000i64
+            }
+        });
+        ingest(&mut model, who, &result_v, 30);
+        assert_eq!(model.events.len(), 1);
+        assert_eq!(model.events[0].rel, Path::new("a.js"));
+    }
+
+    #[test]
+    fn multi_target_read_uses_display_read_target_links() {
+        let (mut model, who) = model_with_main(root());
+        let start_v: Value = serde_json::json!({
+            "type":"custom","customType":"tool_execution_start",
+            "data":{"toolCallId":"t1","toolName":"read","startedAt":"2026-01-01T00:00:00.000Z","args":{"path":"a.js:295:raw,300-360,420-520"}}
+        });
+        ingest(&mut model, who, &start_v, 30);
+        let result_v: Value = serde_json::json!({
+            "type":"message",
+            "message":{
+                "role":"toolResult","toolCallId":"t1","toolName":"read",
+                "details":{
+                    "displayReadTargets":["a.js:295:raw","300-360","420-520"],
+                    "displayReadTargetLinks":["/Users/x/projects/tools/hlit/a.js",null,null]
+                },
+                "isError":false,"timestamp":1735689605000i64
+            }
+        });
+        ingest(&mut model, who, &result_v, 30);
+        assert_eq!(model.events.len(), 1);
+        assert_eq!(model.events[0].rel, Path::new("a.js"));
+    }
+
+    #[test]
+    fn read_without_result_paths_falls_back_to_argument() {
+        let (mut model, who) = model_with_main(root());
+        let start_v: Value = serde_json::json!({
+            "type":"custom","customType":"tool_execution_start",
+            "data":{"toolCallId":"t1","toolName":"read","startedAt":"2026-01-01T00:00:00.000Z","args":{"path":"a.txt"}}
+        });
+        ingest(&mut model, who, &start_v, 30);
+        let result_v: Value = serde_json::json!({
+            "type":"message",
+            "message":{
+                "role":"toolResult","toolCallId":"t1","toolName":"read",
+                "details":{},"isError":false,"timestamp":1735689605000i64
+            }
+        });
+        ingest(&mut model, who, &result_v, 30);
+        assert_eq!(model.events.len(), 1);
+        assert_eq!(model.events[0].rel, Path::new("a.txt"));
+    }
+
+    #[test]
+    fn ssh_read_produces_remote_scope() {
+        let (mut model, who) = model_with_main(root());
+        let start_v: Value = serde_json::json!({
+            "type":"custom","customType":"tool_execution_start",
+            "data":{"toolCallId":"t1","toolName":"read","startedAt":"2026-01-01T00:00:00.000Z","args":{"path":"ssh://h/etc/x.conf:5-9"}}
+        });
+        ingest(&mut model, who, &start_v, 30);
+        let result_v: Value = serde_json::json!({
+            "type":"message",
+            "message":{
+                "role":"toolResult","toolCallId":"t1","toolName":"read",
+                "details":{},"isError":false,"timestamp":1735689605000i64
+            }
+        });
+        ingest(&mut model, who, &result_v, 30);
+        assert_eq!(model.events.len(), 1);
+        assert_eq!(model.events[0].scope, Scope::Remote);
+        assert_eq!(model.events[0].rel, Path::new("ssh://h/etc/x.conf"));
+    }
+
+    #[test]
+    fn write_under_sessions_root_matches_session_by_stem_regardless_of_project_dir() {
+        let (mut model, who) = model_with_main(root());
+        // model_with_main's session file stem is "session"; the resolved path here sits under a
+        // *different* project dir ("-other-proj") than the session's current `cwd`, simulating a
+        // session that has been `/move`d since this write happened.
+        model.sessions_root = PathBuf::from("/sr");
+        let start_v: Value = serde_json::json!({
+            "type":"custom","customType":"tool_execution_start",
+            "data":{"toolCallId":"w1","toolName":"write","startedAt":"2026-01-01T00:00:00.000Z","args":{"path":"local://plan.md","content":"x"}}
+        });
+        ingest(&mut model, who, &start_v, 30);
+        let result_v: Value = serde_json::json!({
+            "type":"message",
+            "message":{
+                "role":"toolResult","toolCallId":"w1","toolName":"write",
+                "details":{"resolvedPath":"/sr/-other-proj/session/local/plan.md"},
+                "isError":false,"timestamp":1735689605000i64
+            }
+        });
+        ingest(&mut model, who, &result_v, 30);
+        assert_eq!(model.events.len(), 1);
+        assert_eq!(model.events[0].scope, Scope::Session(0));
+        assert_eq!(model.events[0].rel, Path::new("/sr/-other-proj/session/local/plan.md"));
+    }
+
+    #[test]
+    fn write_under_tmp_is_session_scope_write_elsewhere_absolute_is_external() {
+        let (mut model, who) = model_with_main(root());
+        let start1: Value = serde_json::json!({
+            "type":"custom","customType":"tool_execution_start",
+            "data":{"toolCallId":"w1","toolName":"write","startedAt":"2026-01-01T00:00:00.000Z","args":{"path":"/tmp/probe.py","content":"x"}}
+        });
+        ingest(&mut model, who, &start1, 30);
+        let result1: Value = serde_json::json!({
+            "type":"message",
+            "message":{
+                "role":"toolResult","toolCallId":"w1","toolName":"write",
+                "details":{},"isError":false,"timestamp":1735689605000i64
+            }
+        });
+        ingest(&mut model, who, &result1, 30);
+
+        let start2: Value = serde_json::json!({
+            "type":"custom","customType":"tool_execution_start",
+            "data":{"toolCallId":"w2","toolName":"write","startedAt":"2026-01-01T00:00:02.000Z","args":{"path":"/opt/elsewhere/a.txt","content":"x"}}
+        });
+        ingest(&mut model, who, &start2, 30);
+        let result2: Value = serde_json::json!({
+            "type":"message",
+            "message":{
+                "role":"toolResult","toolCallId":"w2","toolName":"write",
+                "details":{},"isError":false,"timestamp":1735689607000i64
+            }
+        });
+        ingest(&mut model, who, &result2, 30);
+
+        assert_eq!(model.events.len(), 2);
+        assert_eq!(model.events[0].scope, Scope::Session(0));
+        assert_eq!(model.events[0].rel, Path::new("/tmp/probe.py"));
+        assert_eq!(model.events[1].scope, Scope::External);
+        assert_eq!(model.events[1].rel, Path::new("/opt/elsewhere/a.txt"));
+    }
+
+    #[test]
+    fn read_of_https_url_produces_web_fetch_scope() {
+        let (mut model, who) = model_with_main(root());
+        let start_v: Value = serde_json::json!({
+            "type":"custom","customType":"tool_execution_start",
+            "data":{"toolCallId":"t1","toolName":"read","startedAt":"2026-01-01T00:00:00.000Z","args":{"path":"https://example.com/a?b=1"}}
+        });
+        ingest(&mut model, who, &start_v, 30);
+        let result_v: Value = serde_json::json!({
+            "type":"message",
+            "message":{
+                "role":"toolResult","toolCallId":"t1","toolName":"read",
+                "details":{"url":"https://example.com/a?b=1","meta":{"source":{"type":"url"}}},
+                "isError":false,"timestamp":1735689605000i64
+            }
+        });
+        ingest(&mut model, who, &result_v, 30);
+        assert_eq!(model.events.len(), 1);
+        assert_eq!(model.events[0].scope, Scope::WebFetch);
+        assert_eq!(model.events[0].rel, Path::new("https://example.com/a?b=1"));
+    }
+
+    #[test]
+    fn web_search_produces_web_search_scope_with_sources() {
+        let (mut model, who) = model_with_main(root());
+        let start_v: Value = serde_json::json!({
+            "type":"custom","customType":"tool_execution_start",
+            "data":{"toolCallId":"t1","toolName":"web_search","startedAt":"2026-01-01T00:00:00.000Z","args":{"query":"rust lazylock"}}
+        });
+        ingest(&mut model, who, &start_v, 30);
+        let result_v: Value = serde_json::json!({
+            "type":"message",
+            "message":{
+                "role":"toolResult","toolCallId":"t1","toolName":"web_search",
+                "details":{"response":{"sources":[
+                    {"title":"A","url":"http://a.example"},
+                    {"title":"B","url":"http://b.example"}
+                ]}},
+                "isError":false,"timestamp":1735689605000i64
+            }
+        });
+        ingest(&mut model, who, &result_v, 30);
+        assert_eq!(model.events.len(), 1);
+        assert_eq!(model.events[0].scope, Scope::WebSearch);
+        assert_eq!(model.events[0].rel, Path::new("rust lazylock"));
+        match &model.events[0].detail {
+            EventDetail::Search { sources } => assert_eq!(sources.len(), 2),
+            other => panic!("expected Search, got {other:?}"),
+        }
     }
 }

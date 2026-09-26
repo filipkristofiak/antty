@@ -64,6 +64,12 @@ pub struct UiState {
     pub expand: ExpandState,
     pub watch_on: bool,
     pub status_extra: Option<String>,
+    /// Some while the `:` command line is open (Normal mode only); the text typed after `:`.
+    pub command: Option<String>,
+    /// One-shot status message (e.g. unknown command); cleared on the next key press.
+    pub flash: Option<String>,
+    /// `z` pressed in Normal mode; the next key completes a fold command (`za`/`zM`/`zR`).
+    pub pending_z: bool,
 
     // Detail mode
     pub detail_selected: usize,
@@ -86,6 +92,9 @@ impl UiState {
             expand: ExpandState::default(),
             watch_on,
             status_extra: None,
+            command: None,
+            flash: None,
+            pending_z: false,
             detail_selected: 0,
             detail_scroll: 0,
             diff_scroll: 0,

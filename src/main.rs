@@ -81,8 +81,58 @@ struct App {
 
 impl App {
     fn rebuild(&mut self) {
+        let row = self.selected_row();
+        // A `Row::Node` index is only stable within the current tree; capture its `key` (stable
+        // across a rebuild, unlike the index `Tree::build` reassigns) so the selection can be
+        // relocated by identity afterward. Participant/Section rows need no such translation.
+        let node_key = match row {
+            Some(Row::Node(idx)) => Some(self.tree.nodes[idx].key.clone()),
+            _ => None,
+        };
         self.tree = Tree::build(&self.model);
+        // A background data refresh, not a cursor movement: recompute `auto_open` from the
+        // *existing* `auto_focus` (see `refresh_rows`) rather than re-deriving it from `row` —
+        // otherwise every incoming tail line while parked on a session row would undo a `zM`
+        // that had just cleared it.
+        self.ui.expand.refresh_auto_open(&self.model, &self.tree);
+        let relocated_row = match row {
+            Some(Row::Node(_)) => node_key.as_deref().and_then(|k| self.tree.find_by_key(k)).map(Row::Node),
+            other => other,
+        };
+        self.finish_row_update(relocated_row);
+    }
+
+    /// Rebuild the row list in place (no disk walk, tree node indices unchanged) from the
+    /// *current* `auto_focus` — a pure display toggle (expand/collapse, `touched_only`,
+    /// `auto_follow`) that must not re-derive focus from wherever the cursor merely happens to
+    /// be sitting (that would undo e.g. `zM` while still parked on a session row). Keeps the
+    /// same logical row selected even if the toggle shifted its position.
+    fn refresh_rows(&mut self) {
+        let row = self.selected_row();
+        self.ui.expand.refresh_auto_open(&self.model, &self.tree);
+        self.finish_row_update(row);
+    }
+
+    /// The cursor landed on `row` (a movement, not a toggle): refresh `auto_focus` from it if
+    /// it's a `Participant` row (`ExpandState::refocus` leaves it sticky otherwise), then rebuild
+    /// rows and keep `row` selected even if that shifted its position.
+    fn land_on(&mut self, row: Option<Row>) {
+        self.ui.expand.refocus(&self.model, &self.tree, row);
+        self.finish_row_update(row);
+    }
+
+    /// Shared tail of `rebuild`/`refresh_rows`/`land_on`: rebuild `self.rows` from the current
+    /// tree/expand state, then relocate the selection to wherever `row` ended up (if it's still
+    /// present), falling back to a plain clamp. A `Row::Node` that came from *before* a
+    /// `Tree::build` (indices reassigned) must be translated via `Tree::find_by_key` first —
+    /// see `rebuild`.
+    fn finish_row_update(&mut self, row: Option<Row>) {
         self.rows = tree::build_rows(&self.model, &self.tree, &self.ui.expand);
+        if let Some(r) = row
+            && let Some(pos) = self.rows.iter().position(|x| *x == r)
+        {
+            self.ui.selected = pos;
+        }
         if self.rows.is_empty() {
             self.ui.selected = 0;
         } else if self.ui.selected >= self.rows.len() {
@@ -112,7 +162,8 @@ impl App {
         let cur = self.ui.selected as i64;
         let next = (cur + delta).clamp(0, len as i64 - 1);
         self.ui.selected = next as usize;
-        self.clamp_scroll();
+        let row = self.selected_row();
+        self.land_on(row);
     }
 
     fn as_ref(&self) -> AppRef<'_> {
@@ -138,7 +189,17 @@ impl App {
     fn toggle_expand(&mut self) {
         match self.selected_row() {
             Some(Row::Node(idx)) if self.tree.nodes[idx].is_dir => {
-                self.ui.expand.toggle_dir(&self.tree.nodes[idx]);
+                self.ui.expand.toggle_dir(&self.tree, idx);
+            }
+            Some(Row::Node(idx)) => {
+                // Neotree-style close-node on a file: collapse its parent dir and reselect it,
+                // since the parent sits above the file and so survives the collapse.
+                if let Some(p) = self.tree.nodes[idx].parent {
+                    self.ui.expand.dir_overrides.insert(self.tree.nodes[p].key.clone(), false);
+                    if let Some(pos) = self.rows.iter().position(|r| *r == Row::Node(p)) {
+                        self.ui.selected = pos;
+                    }
+                }
             }
             Some(Row::Participant(pid, _)) => {
                 if let Some(sidx) = self.model.participants[pid.0].session
@@ -148,7 +209,7 @@ impl App {
             }
             _ => {}
         }
-        self.rebuild();
+        self.refresh_rows();
     }
 
     fn enter_detail(&mut self) {
@@ -160,6 +221,20 @@ impl App {
         let items = ui::detail::resolve_items(&app_ref);
         self.ui.detail_selected = ui::detail::closest_to(&app_ref, &items, self.view.cursor);
         self.ui.detail_scroll = 0;
+        self.sync_cursor_to_detail();
+    }
+
+    /// Put the gantt time cursor on the selected Detail item (scrolling the gantt if needed), so
+    /// the main timeline follows navigation in the Detail list. No-op when the list is empty.
+    fn sync_cursor_to_detail(&mut self) {
+        let Some(t) = ({
+            let app_ref = self.as_ref();
+            ui::detail::selected_item(&app_ref).map(|it| ui::detail::item_time(&it, &app_ref))
+        }) else {
+            return;
+        };
+        self.view.cursor = t;
+        self.view.clamp_to_view(self.layout.gantt_width.max(1) as usize);
     }
 
     fn open_picker(&mut self) {
@@ -250,6 +325,10 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> bool {
+        self.ui.flash = None;
+        if self.ui.command.is_some() {
+            return self.handle_key_command(key);
+        }
         match self.ui.mode {
             Mode::Normal => self.handle_key_normal(key),
             Mode::Detail => self.handle_key_detail(key),
@@ -264,11 +343,62 @@ impl App {
         }
     }
 
+    /// Vim-style `:` command line, Normal mode only. `:q`/`:q!`/`:qa`/`:qa!`/`:quit` quit;
+    /// anything else unrecognized flashes an error, matching vim's own message.
+    fn handle_key_command(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Esc => self.ui.command = None,
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => self.ui.command = None,
+            KeyCode::Backspace => {
+                if let Some(cmd) = self.ui.command.as_mut() {
+                    if cmd.is_empty() {
+                        self.ui.command = None;
+                    } else {
+                        cmd.pop();
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                let cmd = self.ui.command.take().unwrap_or_default();
+                match cmd.trim() {
+                    "q" | "q!" | "qa" | "qa!" | "quit" => return true,
+                    "" => {}
+                    other => self.ui.flash = Some(format!("not an editor command: {other}")),
+                }
+            }
+            // Plain char only: a held Ctrl (Ctrl-U/Ctrl-W/…) is not a line-editing binding here,
+            // so it's ignored rather than typed literally.
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(cmd) = self.ui.command.as_mut() {
+                    cmd.push(c);
+                }
+            }
+            _ => {}
+        }
+        false
+    }
+
     fn handle_key_normal(&mut self, key: KeyEvent) -> bool {
         let width = self.layout.gantt_width.max(1) as usize;
         let half_page = (self.layout.body_height.max(1) / 2).max(1) as i64;
+        if self.ui.pending_z {
+            self.ui.pending_z = false;
+            match key.code {
+                KeyCode::Char('a') => self.toggle_expand(),
+                KeyCode::Char('M') => {
+                    self.ui.expand.collapse_all();
+                    self.refresh_rows();
+                }
+                KeyCode::Char('R') => {
+                    self.ui.expand.expand_all();
+                    self.refresh_rows();
+                }
+                _ => {}
+            }
+            return false;
+        }
         match key.code {
-            KeyCode::Char('q') => return true,
+            KeyCode::Char(':') => self.ui.command = Some(String::new()),
             KeyCode::Char('j') | KeyCode::Down => self.move_selected(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_selected(-1),
             KeyCode::Char('g') => self.move_selected(-(self.rows.len() as i64)),
@@ -293,10 +423,15 @@ impl App {
             KeyCode::Char('n') => self.jump_to_activity(true),
             KeyCode::Char('N') => self.jump_to_activity(false),
             KeyCode::Char(' ') => self.toggle_expand(),
+            KeyCode::Char('z') => self.ui.pending_z = true,
+            KeyCode::Char('a') => {
+                self.ui.expand.auto_follow = !self.ui.expand.auto_follow;
+                self.refresh_rows();
+            }
             KeyCode::Enter => self.enter_detail(),
             KeyCode::Char('T') => {
                 self.ui.expand.touched_only = !self.ui.expand.touched_only;
-                self.rebuild();
+                self.refresh_rows();
             }
             KeyCode::Char('s') => self.open_picker(),
             KeyCode::Char('?') => self.ui.mode = Mode::Help,
@@ -321,10 +456,12 @@ impl App {
                     self.ui.detail_selected = (self.ui.detail_selected + 1).min(n - 1);
                 }
                 self.ui.detail_scroll = 0;
+                self.sync_cursor_to_detail();
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.ui.detail_selected = self.ui.detail_selected.saturating_sub(1);
                 self.ui.detail_scroll = 0;
+                self.sync_cursor_to_detail();
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.ui.detail_scroll = self.ui.detail_scroll.saturating_add(10);
@@ -394,6 +531,7 @@ fn main() -> anyhow::Result<()> {
     let args = Args::parse()?;
 
     let mut model = Model::new(args.project.clone());
+    model.sessions_root = args.sessions_dir.clone();
     let (project_dir, offsets) = sessions::load_initial(&mut model, &args.sessions_dir, &args.project, args.idle_gap);
 
     let mut status_extra = None;

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::model::{EventDetail, FileEvent, FsChange, Model, ParticipantId, Ts, TouchKind, TouchSource};
+use crate::model::{EventDetail, FileEvent, FsChange, Model, ParticipantId, Scope, Ts, TouchKind, TouchSource};
 use crate::watch::{FsKind, RawFs};
 
 const CLASSIFY_DELAY_SECS: i64 = 5;
@@ -171,6 +171,7 @@ impl Attributor {
         model.events.push(FileEvent {
             who,
             rel: rel.clone(),
+            scope: Scope::Project,
             kind: TouchKind::Write,
             source,
             start: raw.at,
@@ -269,6 +270,7 @@ pub fn replay(model: &mut Model, state_dir: &Path, root: &Path) -> Option<String
         model.events.push(FileEvent {
             who,
             rel: PathBuf::from(path_str),
+            scope: Scope::Project,
             kind: TouchKind::Write,
             source: if tool_call_id.is_some() { TouchSource::Bash } else { TouchSource::Watcher },
             start: t,
@@ -331,6 +333,7 @@ mod tests {
         model.events.push(FileEvent {
             who,
             rel: rel.clone(),
+            scope: Scope::Project,
             kind: TouchKind::Write,
             source: TouchSource::Tool("edit".into()),
             start: edit_end - Duration::seconds(1),
@@ -361,6 +364,7 @@ mod tests {
         model.events.push(FileEvent {
             who,
             rel: rel.clone(),
+            scope: Scope::Project,
             kind: TouchKind::Write,
             source: TouchSource::Tool("edit".into()),
             start: edit_end - Duration::seconds(1),

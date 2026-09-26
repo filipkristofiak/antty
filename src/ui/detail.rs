@@ -1,20 +1,50 @@
+use std::path::{Path, PathBuf};
+
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span as TSpan};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
-use crate::model::{EventDetail, FileEvent, ParticipantKind, Ts, TouchSource};
+use crate::model::{EventDetail, FileEvent, Model, ParticipantKind, Scope, Ts, TouchSource};
 use crate::tree::Row;
 
 use super::{AppRef, DetailItem};
 
 pub fn event_kind_label(e: &FileEvent) -> &'static str {
     match &e.source {
+        TouchSource::Tool(t) if t == "web_search" => "search",
         TouchSource::Tool(t) if t == "read" => "read",
         TouchSource::Tool(_) => "write",
         TouchSource::Bash => "bash",
         TouchSource::Watcher => "fs",
+    }
+}
+
+fn tilde_display(p: &Path) -> String {
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from)
+        && let Ok(rest) = p.strip_prefix(&home)
+    {
+        return if rest.as_os_str().is_empty() { "~".to_string() } else { format!("~/{}", rest.display()) };
+    }
+    p.display().to_string()
+}
+
+/// Human-readable rendering of a `FileEvent`'s target, honoring its `scope`: a project-relative
+/// path as-is, an external/session-temp absolute path `~`-abbreviated under `$HOME`, a session's
+/// own file shown as `local://…`, a search query prefixed with `search:`, and a mount/fetched
+/// URL verbatim.
+pub fn display_target(model: &Model, e: &FileEvent) -> String {
+    match e.scope {
+        Scope::Project | Scope::Remote | Scope::WebFetch => e.rel.display().to_string(),
+        Scope::External => tilde_display(&e.rel),
+        Scope::WebSearch => format!("search: {}", e.rel.display()),
+        Scope::Session(_) => match model.session_dir_split(&e.rel) {
+            Some((_, rest)) if rest.starts_with("local") => {
+                format!("local://{}", rest.strip_prefix("local").unwrap().display())
+            }
+            _ => tilde_display(&e.rel),
+        },
     }
 }
 
@@ -96,7 +126,7 @@ fn item_line(app: &AppRef, item: &DetailItem) -> String {
                 local(e.start).format("%H:%M:%S"),
                 app.model.participants[e.who.0].label,
                 event_kind_label(e),
-                e.rel.display()
+                display_target(app.model, e)
             )
         }
         DetailItem::Span { who, start, .. } => {
@@ -133,7 +163,7 @@ pub fn detail_lines(app: &AppRef, item: &DetailItem) -> Vec<Line<'static>> {
                 local(e.start).format("%Y-%m-%d %H:%M:%S"),
                 app.model.participants[e.who.0].label,
                 e.kind,
-                e.rel.display()
+                display_target(app.model, e)
             ))];
             match &e.detail {
                 EventDetail::Diff(d) => lines.extend(diff_lines(d)),
@@ -164,6 +194,16 @@ pub fn detail_lines(app: &AppRef, item: &DetailItem) -> Vec<Line<'static>> {
                 }
                 EventDetail::Moved { to } => lines.push(Line::from(format!("moved to {}", to.display()))),
                 EventDetail::Removed => lines.push(Line::from("removed".to_string())),
+                EventDetail::Search { sources } => {
+                    lines.push(Line::from(format!("{} sources", sources.len())));
+                    for (title, url) in sources {
+                        if title.is_empty() {
+                            lines.push(Line::from(url.clone()));
+                        } else {
+                            lines.push(Line::from(format!("{title} — {url}")));
+                        }
+                    }
+                }
                 EventDetail::None => lines.push(Line::from("(no additional detail)")),
             }
             lines

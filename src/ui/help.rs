@@ -13,13 +13,16 @@ const KEYS: &[(&str, &str)] = &[
     ("t", "cursor to now"),
     ("f", "fit"),
     ("n/N", "next/prev bucket with activity on the selected row"),
-    ("Space/za", "toggle expand dir/session"),
+    ("Space/za", "toggle dir/session; on a file: collapse its dir"),
+    ("zM/zR", "collapse/expand all dirs"),
+    ("a", "auto-expand the focused session's files on/off"),
     ("Enter", "open Detail for the selected row"),
     ("Enter (Detail)", "full-screen diff of selected event"),
     ("T", "touched-only"),
     ("s", "session picker"),
     ("?", "this help"),
-    ("q", "quit / close overlay"),
+    (":q⏎", "quit"),
+    ("q/Esc", "close overlay"),
 ];
 
 pub fn render(f: &mut Frame, area: Rect) {

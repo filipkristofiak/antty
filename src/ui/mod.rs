@@ -10,7 +10,7 @@ use std::collections::HashSet;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::Color;
+use ratatui::style::{Color, Modifier};
 use ratatui::widgets::Clear;
 
 use crate::cmdline::CmdLine;
@@ -18,9 +18,15 @@ use crate::model::{Model, ParticipantId, ParticipantKind};
 use crate::timeline::View;
 use crate::tree::{ExpandState, Row, Tree};
 
+pub const SELECTED_BG: Color = Color::Rgb(50, 70, 130);
+pub const CURSOR_BG: Color = Color::Rgb(40, 40, 60);
+/// Text drawn on SELECTED_BG/CURSOR_BG. Explicit RGB so it stays light when the terminal's
+/// default foreground is dark (light themes).
+pub const HIGHLIGHT_FG: Color = Color::Rgb(235, 235, 235);
+
 const PALETTE: [Color; 8] = [
     Color::Cyan,
-    Color::White,
+    Color::Red,
     Color::Magenta,
     Color::Yellow,
     Color::Green,
@@ -65,6 +71,7 @@ pub struct UiState {
     pub expand: ExpandState,
     pub watch_on: bool,
     pub status_extra: Option<String>,
+    pub no_color: bool,
     /// The open `:` or `/` line; histories and last successful search live for this session.
     pub cmdline: Option<CmdLine>,
     pub command_history: Vec<String>,
@@ -98,6 +105,7 @@ impl UiState {
             expand: ExpandState::default(),
             watch_on,
             status_extra: None,
+            no_color: false,
             cmdline: None,
             command_history: Vec::new(),
             search_history: Vec::new(),
@@ -218,5 +226,44 @@ pub fn draw(f: &mut Frame, app: &AppRef) {
             diff_view::render(f, area, app);
         }
         _ => {}
+    }
+    if app.ui.no_color {
+        strip_colors(f.buffer_mut());
+    }
+}
+
+/// NO_COLOR: drop every fg/bg colour. Background highlights become reverse video,
+/// and DarkGray text (deleted files, advisors, collapsed-session bars) becomes dim.
+fn strip_colors(buf: &mut ratatui::buffer::Buffer) {
+    for cell in &mut buf.content {
+        if cell.bg != Color::Reset {
+            cell.modifier.insert(Modifier::REVERSED);
+        }
+        if cell.fg == Color::DarkGray {
+            cell.modifier.insert(Modifier::DIM);
+        }
+        cell.fg = Color::Reset;
+        cell.bg = Color::Reset;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::buffer::Buffer;
+
+    #[test]
+    fn strip_colors_turns_highlights_into_modifiers() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 3, 1));
+        buf[(0, 0)].set_bg(SELECTED_BG).set_fg(Color::Cyan);
+        buf[(1, 0)].set_fg(Color::DarkGray);
+        strip_colors(&mut buf);
+        for cell in &buf.content {
+            assert_eq!(cell.fg, Color::Reset);
+            assert_eq!(cell.bg, Color::Reset);
+        }
+        assert!(buf[(0, 0)].modifier.contains(Modifier::REVERSED));
+        assert!(buf[(1, 0)].modifier.contains(Modifier::DIM));
+        assert!(buf[(2, 0)].modifier.is_empty());
     }
 }

@@ -62,6 +62,7 @@ Bottom: a status bar with key hints and current zoom/session/watch state.
 | `a` | auto-expand the focused session's files on/off |
 | `Enter` | open Detail for the selected row |
 | `Enter (Detail)` | full-screen diff of selected event |
+| `e` | open file in `$EDITOR`, or the parent Neovim when `$NVIM` is set (file rows, Detail, Diff) |
 | `T` | touched-only |
 | `s` | session picker |
 | `?` | this help |
@@ -71,6 +72,8 @@ Bottom: a status bar with key hints and current zoom/session/watch state.
 | `q/Esc` | close overlay; Esc also cancels a count/prefix and clears the search |
 
 In Normal mode, letter keys act only when typed without Ctrl/Alt; unlisted Ctrl chords do nothing.
+
+`$EDITOR` is split on whitespace; antty adds `+<line>` when known and suspends the TUI until it exits. When `$NVIM` is non-empty, antty asks that Neovim instance to open the file instead. Unset `$EDITOR` without `$NVIM` shows an error. `NO_COLOR` (non-empty) disables foreground/background colours, retaining selection as reverse video.
 
 ## Differences from vim
 

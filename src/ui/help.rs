@@ -1,6 +1,5 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 const KEYS: &[(&str, &str)] = &[
@@ -27,6 +26,7 @@ const KEYS: &[(&str, &str)] = &[
     ("a", "auto-expand the focused session's files on/off"),
     ("Enter", "open Detail for the selected row"),
     ("Enter (Detail)", "full-screen diff of selected event"),
+    ("e", "open file in $EDITOR, or the parent Neovim when $NVIM is set (file rows, Detail, Diff)"),
     ("T", "touched-only"),
     ("s", "session picker"),
     ("?", "this help"),
@@ -38,9 +38,9 @@ const KEYS: &[(&str, &str)] = &[
 
 pub fn render(f: &mut Frame, area: Rect) {
     f.render_widget(Clear, area);
-    let block = Block::default().borders(Borders::ALL).title("Help").style(Style::default().bg(Color::Black));
+    let block = Block::default().borders(Borders::ALL).title("Help");
     let inner = block.inner(area);
     f.render_widget(block, area);
     let lines: Vec<String> = KEYS.iter().map(|(k, d)| format!("{k:<16} {d}")).collect();
-    f.render_widget(Paragraph::new(lines.join("\n")).style(Style::default().fg(Color::White)), inner);
+    f.render_widget(Paragraph::new(lines.join("\n")), inner);
 }

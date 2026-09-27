@@ -9,7 +9,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use crate::model::{EventDetail, FileEvent, Model, ParticipantKind, Scope, Ts, TouchSource};
 use crate::tree::Row;
 
-use super::{AppRef, DetailItem};
+use super::{AppRef, DetailItem, HIGHLIGHT_FG, SELECTED_BG};
 
 pub fn event_kind_label(e: &FileEvent) -> &'static str {
     match &e.source {
@@ -241,7 +241,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
     let list_items: Vec<ListItem> = items.iter().map(|it| ListItem::new(item_line(app, it))).collect();
     let mut state = ListState::default();
     state.select(Some(selected));
-    let list = List::new(list_items).highlight_style(Style::default().bg(Color::Rgb(50, 70, 130)).fg(Color::White));
+    let list = List::new(list_items).highlight_style(Style::default().bg(SELECTED_BG).fg(HIGHLIGHT_FG));
     f.render_stateful_widget(list, cols[0], &mut state);
 
     if let Some(item) = selected_item(app) {

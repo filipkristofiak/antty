@@ -8,7 +8,7 @@ use super::{AppRef, truncate};
 pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
     if let Some(line) = &app.ui.cmdline {
         let text = format!("{}{}", line.kind.prompt(), line.text);
-        f.render_widget(Paragraph::new(text).style(Style::default().bg(Color::Black).fg(Color::Gray)), area);
+        f.render_widget(Paragraph::new(text), area);
         f.set_cursor_position((area.x + 1 + line.text.chars().count() as u16, area.y));
         return;
     }
@@ -17,7 +17,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
         // A flash (e.g. an unknown `:` command) replaces the whole bar, like vim's error line,
         // so it's never at risk of being truncated away by the hints/right-side text.
         let text = truncate(msg, width);
-        f.render_widget(Paragraph::new(text).style(Style::default().bg(Color::Black).fg(Color::Red)), area);
+        f.render_widget(Paragraph::new(text).style(Style::default().fg(Color::Red)), area);
         return;
     }
     let hints = "Nav (j/k/h/l) | Zoom (+/-) | Now (t) | Fit (f) | Detail (⏎) | Sessions (s) | Help (?) | Quit (:q)";
@@ -50,5 +50,5 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
     } else {
         truncate(&format!("{left}  {right}"), width)
     };
-    f.render_widget(Paragraph::new(text).style(Style::default().bg(Color::Black).fg(Color::Gray)), area);
+    f.render_widget(Paragraph::new(text), area);
 }

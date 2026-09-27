@@ -68,8 +68,10 @@ pub struct UiState {
     pub command: Option<String>,
     /// One-shot status message (e.g. unknown command); cleared on the next key press.
     pub flash: Option<String>,
-    /// `z` pressed in Normal mode; the next key completes a fold command (`za`/`zM`/`zR`).
-    pub pending_z: bool,
+    /// Normal-mode prefix key awaiting its second key (`z` for folds/scroll, `g` for `gg`).
+    pub pending: Option<char>,
+    /// Count typed before a Normal-mode command (`5j`); `None` until a digit is typed.
+    pub count: Option<usize>,
 
     // Detail mode
     pub detail_selected: usize,
@@ -94,7 +96,8 @@ impl UiState {
             status_extra: None,
             command: None,
             flash: None,
-            pending_z: false,
+            pending: None,
+            count: None,
             detail_selected: 0,
             detail_scroll: 0,
             diff_scroll: 0,

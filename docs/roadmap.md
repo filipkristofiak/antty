@@ -36,13 +36,12 @@ every other Ctrl chord runs the bare letter's action.
 
 ## 3. Vim grammar
 
-- [ ] Counts: `5j`, `10l`, `3n`, etc.
-- [ ] Folds: `zo`/`zc`/`zO`/`zC` alongside `za`/`zM`/`zR`.
-- [ ] Time-axis line motions: `0` to view start, `$` to now.
-- [ ] Section motions: `{`/`}` between `PARTICIPANTS`/`FILES`/`MOUNTS`/`WEB`.
-- [ ] `zz`/`zt`/`zb`: scroll the selected row to middle/top/bottom.
-- [ ] `gg` as first row; frees a single `g` as a prefix (today `g` alone
-  jumps, so `gg` works only incidentally).
+- [x] Counts: `5j`, `10l`, `3n`, etc.
+- [x] Folds: `zo`/`zc`/`zO`/`zC` alongside `za`/`zM`/`zR`.
+- [x] Time-axis line motions: `0` to view start, `$` to now.
+- [x] Section motions: `{`/`}` between `PARTICIPANTS`/`FILES`/`MOUNTS`/`WEB`.
+- [x] `zz`/`zt`/`zb`: scroll the selected row to middle/top/bottom.
+- [x] `gg` as first row; frees a single `g` as a prefix.
 
 ## 4. Search
 

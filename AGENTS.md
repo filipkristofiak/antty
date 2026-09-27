@@ -47,6 +47,9 @@ Plain `cargo` works wherever it's already on `PATH`.
   (CLI flags, on-disk state format, output format) and a patch bump
   (`0.x.y` → `0.x.(y+1)`) covers fixes and backward-compatible changes.
   Doc-only, `AGENTS.md`-only, or CI-only changes are exempt.
+- Branching (soft policy): don't start new work directly on `main`; create
+  a `<type>/<topic>` branch (`feat/`, `fix/`, `chore/`, `docs/`) unless the
+  user explicitly asks to work on `main`.
 - Test temp dirs go under `std::env::temp_dir()` with the prefix
   `antty-<module>-test-`.
 - Keep `docs/usage.md` in sync when changing `help.rs`'s `KEYS` or `cli.rs`'s

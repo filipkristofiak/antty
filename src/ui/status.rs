@@ -6,10 +6,10 @@ use ratatui::widgets::Paragraph;
 use super::{AppRef, truncate};
 
 pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
-    if let Some(cmd) = &app.ui.command {
-        let text = format!(":{cmd}");
-        f.render_widget(Paragraph::new(text.clone()).style(Style::default().bg(Color::Black).fg(Color::Gray)), area);
-        f.set_cursor_position((area.x + 1 + cmd.chars().count() as u16, area.y));
+    if let Some(line) = &app.ui.cmdline {
+        let text = format!("{}{}", line.kind.prompt(), line.text);
+        f.render_widget(Paragraph::new(text).style(Style::default().bg(Color::Black).fg(Color::Gray)), area);
+        f.set_cursor_position((area.x + 1 + line.text.chars().count() as u16, area.y));
         return;
     }
     let width = area.width as usize;
@@ -30,6 +30,16 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
     );
     if let Some(err) = &app.ui.status_extra {
         right = format!("{right} · {err}");
+    }
+    if let Some(query) = &app.ui.search {
+        right = format!("/{query} · {right}");
+    }
+    let mut showcmd = app.ui.count.map_or_else(String::new, |n| n.to_string());
+    if let Some(prefix) = app.ui.pending {
+        showcmd.push(prefix);
+    }
+    if !showcmd.is_empty() {
+        right = format!("{showcmd} · {right}");
     }
     let left = truncate(hints, width);
     let left_len = left.chars().count();

@@ -64,6 +64,8 @@ Bottom: a status bar with key hints and current zoom/session/watch state.
 | `s` | session picker |
 | `?` | this help |
 | `:q⏎` | quit |
+| `Ctrl-C` | hint: quit with :q⏎ |
+| `:/ line` | Ctrl-U clear · Ctrl-W delete word · ↑/↓ history |
 | `q/Esc` | close overlay; Esc also cancels a count/prefix |
 
 In Normal mode, letter keys act only when typed without Ctrl/Alt; unlisted Ctrl chords do nothing.

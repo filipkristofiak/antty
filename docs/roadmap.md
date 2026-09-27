@@ -51,11 +51,11 @@ every other Ctrl chord runs the bare letter's action.
 
 ## 5. Feedback
 
-- [ ] Show a pending prefix (`z`, `g`, counts) in the status bar, like
+- [x] Show a pending prefix (`z`, `g`, counts) in the status bar, like
   `showcmd`.
-- [ ] `Ctrl-C` in Normal mode flashes `Type :q and press <Enter> to exit`,
+- [x] `Ctrl-C` in Normal mode flashes `Type :q and press <Enter> to exit`,
   mirroring Neovim. `q` stays a no-op at top level.
-- [ ] `:` line: `Ctrl-U` clears, `Ctrl-W` deletes a word; `↑`/`↓` history.
+- [x] `:` line: `Ctrl-U` clears, `Ctrl-W` deletes a word; `↑`/`↓` history.
 
 ## 6. Minor mapping clashes
 

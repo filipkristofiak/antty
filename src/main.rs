@@ -1,5 +1,6 @@
 mod attrib;
 mod cli;
+mod cmdline;
 mod model;
 mod parse;
 mod sessions;
@@ -18,6 +19,7 @@ use ratatui::layout::Rect;
 
 use attrib::Attributor;
 use cli::Args;
+use cmdline::{CmdKind, CmdLine};
 use model::{Model, Ts};
 use sessions::Msg;
 use timeline::View;
@@ -426,7 +428,7 @@ impl App {
 
     fn handle_key(&mut self, key: KeyEvent) -> bool {
         self.ui.flash = None;
-        if self.ui.command.is_some() {
+        if self.ui.cmdline.is_some() {
             return self.handle_key_command(key);
         }
         match self.ui.mode {
@@ -443,35 +445,49 @@ impl App {
         }
     }
 
-    /// Vim-style `:` command line, Normal mode only. `:q`/`:q!`/`:qa`/`:qa!`/`:quit` quit;
-    /// anything else unrecognized flashes an error, matching vim's own message.
+    /// Handle the `:` command line and `/` search line.
     fn handle_key_command(&mut self, key: KeyEvent) -> bool {
         match key.code {
-            KeyCode::Esc => self.ui.command = None,
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => self.ui.command = None,
+            KeyCode::Esc => self.ui.cmdline = None,
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => self.ui.cmdline = None,
             KeyCode::Backspace => {
-                if let Some(cmd) = self.ui.command.as_mut() {
-                    if cmd.is_empty() {
-                        self.ui.command = None;
-                    } else {
-                        cmd.pop();
-                    }
+                if !self.ui.cmdline.as_mut().unwrap().backspace() {
+                    self.ui.cmdline = None;
                 }
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.ui.cmdline.as_mut().unwrap().clear();
+            }
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.ui.cmdline.as_mut().unwrap().delete_word();
+            }
+            KeyCode::Up | KeyCode::Down => {
+                let line = self.ui.cmdline.as_mut().unwrap();
+                let history = match line.kind {
+                    CmdKind::Command => &self.ui.command_history,
+                    CmdKind::Search => &self.ui.search_history,
+                };
+                if key.code == KeyCode::Up { line.older(history) } else { line.newer(history) }
             }
             KeyCode::Enter => {
-                let cmd = self.ui.command.take().unwrap_or_default();
-                match cmd.trim() {
-                    "q" | "q!" | "qa" | "qa!" | "quit" => return true,
-                    "" => {}
-                    other => self.ui.flash = Some(format!("not an editor command: {other}")),
+                let line = self.ui.cmdline.take().unwrap();
+                match line.kind {
+                    CmdKind::Command => {
+                        let cmd = line.text.trim();
+                        if !cmd.is_empty() {
+                            cmdline::record(&mut self.ui.command_history, &line.text);
+                        }
+                        match cmd {
+                            "q" | "q!" | "qa" | "qa!" | "quit" => return true,
+                            "" => {}
+                            other => self.ui.flash = Some(format!("not an editor command: {other}")),
+                        }
+                    }
+                    CmdKind::Search => {}
                 }
             }
-            // Plain char only: a held Ctrl (Ctrl-U/Ctrl-W/…) is not a line-editing binding here,
-            // so it's ignored rather than typed literally.
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if let Some(cmd) = self.ui.command.as_mut() {
-                    cmd.push(c);
-                }
+                self.ui.cmdline.as_mut().unwrap().push(c);
             }
             _ => {}
         }
@@ -523,6 +539,7 @@ impl App {
                     KeyCode::Char('b') => self.scroll_viewport(-n * (body - 2).max(1), true),
                     KeyCode::Char('e') => self.scroll_viewport(n, false),
                     KeyCode::Char('y') => self.scroll_viewport(-n, false),
+                    KeyCode::Char('c') => self.ui.flash = Some("Type :q and press <Enter> to exit".into()),
                     _ => {}
                 }
             }
@@ -544,7 +561,7 @@ impl App {
         let n = count.unwrap_or(1);
         let ni = n as i64;
         match key.code {
-            KeyCode::Char(':') => self.ui.command = Some(String::new()),
+            KeyCode::Char(':') => self.ui.cmdline = Some(CmdLine::new(CmdKind::Command)),
             KeyCode::Char('j') | KeyCode::Down => self.move_selected(ni),
             KeyCode::Char('k') | KeyCode::Up => self.move_selected(-ni),
             KeyCode::Char('G') => self.goto_row(count.map_or(self.rows.len().saturating_sub(1), |c| c - 1)),

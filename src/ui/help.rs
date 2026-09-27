@@ -30,6 +30,8 @@ const KEYS: &[(&str, &str)] = &[
     ("s", "session picker"),
     ("?", "this help"),
     (":q⏎", "quit"),
+    ("Ctrl-C", "hint: quit with :q⏎"),
+    (":/ line", "Ctrl-U clear · Ctrl-W delete word · ↑/↓ history"),
     ("q/Esc", "close overlay; Esc also cancels a count/prefix"),
 ];
 

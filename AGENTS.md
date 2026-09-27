@@ -17,6 +17,7 @@ Plain `cargo` works wherever it's already on `PATH`.
 
 - `src/main.rs` — event loop, key handling, `App` state, startup wiring.
 - `src/cli.rs` — `RawArgs`/`Args`: flag parsing, tilde expansion, defaults.
+- `src/cmdline.rs` — `:`/`/` line editing and in-memory history.
 - `src/model.rs` — core data model: participants, sessions, file events, spans, snapshots.
 - `src/sessions.rs` — `discover_project_dir` (header-`cwd` matching), initial load + live tailer.
 - `src/parse.rs` — ingests jsonl lines into model events; path normalization and scoping.

@@ -13,6 +13,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Color;
 use ratatui::widgets::Clear;
 
+use crate::cmdline::CmdLine;
 use crate::model::{Model, ParticipantId, ParticipantKind};
 use crate::timeline::View;
 use crate::tree::{ExpandState, Row, Tree};
@@ -64,8 +65,11 @@ pub struct UiState {
     pub expand: ExpandState,
     pub watch_on: bool,
     pub status_extra: Option<String>,
-    /// Some while the `:` command line is open (Normal mode only); the text typed after `:`.
-    pub command: Option<String>,
+    /// The open `:` or `/` line; histories and last successful search live for this session.
+    pub cmdline: Option<CmdLine>,
+    pub command_history: Vec<String>,
+    pub search_history: Vec<String>,
+    pub search: Option<String>,
     /// One-shot status message (e.g. unknown command); cleared on the next key press.
     pub flash: Option<String>,
     /// Normal-mode prefix key awaiting its second key (`z` for folds/scroll, `g` for `gg`).
@@ -94,7 +98,10 @@ impl UiState {
             expand: ExpandState::default(),
             watch_on,
             status_extra: None,
-            command: None,
+            cmdline: None,
+            command_history: Vec::new(),
+            search_history: Vec::new(),
+            search: None,
             flash: None,
             pending: None,
             count: None,
@@ -204,7 +211,7 @@ pub fn draw(f: &mut Frame, app: &AppRef) {
 
     match app.ui.mode {
         Mode::Picker => picker::render(f, layout.picker_area, app),
-        Mode::Help => help::render(f, centered_rect(50, 60, root)),
+        Mode::Help => help::render(f, centered_rect(60, 80, root)),
         Mode::Diff => {
             let area = Rect { height: root.height.saturating_sub(1), ..root };
             f.render_widget(Clear, area);

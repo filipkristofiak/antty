@@ -58,6 +58,31 @@ aider, avante.nvim or codecompanion.nvim, so antty shows them nothing.
 - [ ] Shell completions (`clap_complete`) and a man page.
 - [ ] AUR package and Nix flake.
 
+## 7. Git branches and file moves (major)
+
+FILES already lists more than the files on disk: it is a disk walk plus
+every project file an event touched, and files no longer on disk show as
+deleted. What's missing:
+
+- **Moves aren't linked.** A renamed or moved file shows as two unrelated
+  rows (old path, deleted; new path), each holding part of its history.
+- **No branch awareness.** Events from another git branch mix into the
+  current tree and show as deleted files. Content snapshots are keyed only by
+  path, so diffs can compare contents from different branches.
+- **No "as of time T" view.** The tree always has today's shape; you can't
+  see the tree as it was at the cursor time.
+
+How to show past files is not decided yet. Whatever we choose must be opt-in
+and leave the default view unchanged.
+
+- [ ] Choose a strategy. Open options:
+  - follow renames (`EventDetail::Moved`, watcher rename pairs, git rename
+    detection) so a file keeps one row on its current path;
+  - record the active branch/HEAD per session and event, then filter, group
+    or key snapshots by branch;
+  - rebuild the tree as of the cursor time from events, snapshots or git;
+  - handle a checkout that changes the tree under a live session.
+
 ## Done
 
 - Modifier guard: plain-letter bindings ignore Ctrl chords; `Ctrl-f`/`Ctrl-b`/

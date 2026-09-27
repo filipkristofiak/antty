@@ -52,7 +52,8 @@ Bottom: a status bar with key hints and current zoom/session/watch state.
 | `+/-` | zoom in/out |
 | `t` | cursor to now, pinned near the right edge |
 | `f` | fit all activity, latest near the right edge |
-| `n/N` | next/prev bucket with activity on the selected row |
+| `/` | search row names (smartcase); Enter jumps to the next match |
+| `n/N` | next/prev search match; no search: next/prev activity on the row |
 | `Space/za` | toggle dir/session; on a file: collapse its dir |
 | `zo/zc` | open/close; zc on a file or closed dir: its parent |
 | `zO/zC` | open/close recursively |
@@ -66,6 +67,6 @@ Bottom: a status bar with key hints and current zoom/session/watch state.
 | `:q⏎` | quit |
 | `Ctrl-C` | hint: quit with :q⏎ |
 | `:/ line` | Ctrl-U clear · Ctrl-W delete word · ↑/↓ history |
-| `q/Esc` | close overlay; Esc also cancels a count/prefix |
+| `q/Esc` | close overlay; Esc also cancels a count/prefix and clears the search |
 
 In Normal mode, letter keys act only when typed without Ctrl/Alt; unlisted Ctrl chords do nothing.

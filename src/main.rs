@@ -3,6 +3,7 @@ mod cli;
 mod cmdline;
 mod model;
 mod parse;
+mod search;
 mod sessions;
 mod snapshot;
 mod timeline;
@@ -267,6 +268,53 @@ impl App {
         self.rows.get(self.ui.selected).copied()
     }
 
+    /// Open the ancestors needed to show a match in its current forest.
+    fn reveal(&mut self, row: Row) {
+        match row {
+            Row::Node(idx) => {
+                let mut top = idx;
+                while let Some(parent) = self.tree.nodes[top].parent {
+                    top = parent;
+                    self.ui.expand.dir_overrides.insert(self.tree.nodes[parent].key.clone(), true);
+                }
+                for (&session, roots) in &self.tree.session_files {
+                    if roots.contains(&top) {
+                        self.ui.expand.expanded_sessions.insert(session);
+                    }
+                }
+            }
+            Row::Participant(pid, _) if self.model.participants[pid.0].kind != model::ParticipantKind::Main => {
+                if let Some(session) = self.model.participants[pid.0].session {
+                    self.ui.expand.expanded_sessions.insert(session);
+                }
+            }
+            _ => {}
+        }
+        self.land_on(Some(row));
+    }
+
+    fn search_step(&mut self, query: &str, forward: bool, n: usize) -> bool {
+        let full = search::full_rows(&self.model, &self.tree, self.ui.expand.touched_only);
+        let matches: Vec<usize> = full.iter().enumerate()
+            .filter(|&(_, &row)| search::is_match(&tree::row_label(&self.model, &self.tree, row), query))
+            .map(|(idx, _)| idx)
+            .collect();
+        let cur = self.selected_row().and_then(|row| full.iter().position(|&candidate| candidate == row));
+        let Some((idx, wrapped)) = search::step(&matches, cur, forward, n) else {
+            self.ui.flash = Some(format!("Pattern not found: {query}"));
+            return false;
+        };
+        if wrapped {
+            self.ui.flash = Some(if forward {
+                "search hit BOTTOM, continuing at TOP"
+            } else {
+                "search hit TOP, continuing at BOTTOM"
+            }.into());
+        }
+        self.reveal(full[idx]);
+        true
+    }
+
     fn toggle_expand(&mut self) {
         match self.selected_row() {
             Some(Row::Node(idx)) if self.tree.nodes[idx].is_dir => {
@@ -483,7 +531,18 @@ impl App {
                             other => self.ui.flash = Some(format!("not an editor command: {other}")),
                         }
                     }
-                    CmdKind::Search => {}
+                    CmdKind::Search => {
+                        let query = if line.text.is_empty() {
+                            self.ui.search_history.last().cloned()
+                        } else {
+                            cmdline::record(&mut self.ui.search_history, &line.text);
+                            Some(line.text)
+                        };
+                        if let Some(query) = query
+                            && self.search_step(&query, true, 1) {
+                                self.ui.search = Some(query);
+                            }
+                    }
                 }
             }
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -562,6 +621,7 @@ impl App {
         let ni = n as i64;
         match key.code {
             KeyCode::Char(':') => self.ui.cmdline = Some(CmdLine::new(CmdKind::Command)),
+            KeyCode::Char('/') => self.ui.cmdline = Some(CmdLine::new(CmdKind::Search)),
             KeyCode::Char('j') | KeyCode::Down => self.move_selected(ni),
             KeyCode::Char('k') | KeyCode::Up => self.move_selected(-ni),
             KeyCode::Char('G') => self.goto_row(count.map_or(self.rows.len().saturating_sub(1), |c| c - 1)),
@@ -579,8 +639,14 @@ impl App {
                     self.view.zoom_out();
                 }
             }
-            KeyCode::Char('n') => self.jump_to_activity(true, n),
-            KeyCode::Char('N') => self.jump_to_activity(false, n),
+            KeyCode::Char('n') | KeyCode::Char('N') => {
+                let forward = key.code == KeyCode::Char('n');
+                if let Some(query) = self.ui.search.clone() {
+                    self.search_step(&query, forward, n);
+                } else {
+                    self.jump_to_activity(forward, n);
+                }
+            }
             KeyCode::Char('}') => self.goto_row(section_target(&self.rows, self.ui.selected, true, n)),
             KeyCode::Char('{') => self.goto_row(section_target(&self.rows, self.ui.selected, false, n)),
             KeyCode::Char('0') => self.view.cursor = self.view.origin,
@@ -602,6 +668,7 @@ impl App {
             }
             KeyCode::Char('s') => self.open_picker(),
             KeyCode::Char('?') => self.ui.mode = Mode::Help,
+            KeyCode::Esc => self.ui.search = None,
             _ => {}
         }
         false
@@ -935,6 +1002,67 @@ mod tests {
         app.handle_key_normal(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         keys(&mut app, "j");
         assert_eq!(app.ui.selected, 3);
+        drop(app);
+        std::fs::remove_dir_all(&root).unwrap();
+        std::fs::remove_dir_all(&state_dir).unwrap();
+    }
+
+    #[test]
+    fn search_reveals_collapsed_matches_wraps_and_preserves_last_success() {
+        let root = std::env::temp_dir().join(format!("antty-main-test-search-{}", std::process::id()));
+        let state_dir = root.with_extension("state");
+        let _ = std::fs::remove_dir_all(&root);
+        for dir in ["alpha", "beta"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join("needle.txt"), "").unwrap();
+        }
+        std::fs::write(root.join("top.txt"), "").unwrap();
+        let model = Model::new(root.clone());
+        let tree = Tree::build(&model);
+        let ui = UiState::new(false);
+        let rows = tree::build_rows(&model, &tree, &ui.expand);
+        let layout = ui::compute_layout(Rect::new(0, 0, 200, 50), Mode::Normal);
+        let now = chrono::Utc::now();
+        let mut app = App {
+            model,
+            tree,
+            rows,
+            view: View::fit(now - chrono::Duration::hours(1), now, layout.gantt_width as usize),
+            ui,
+            attributor: Attributor::new(&state_dir, &root),
+            sessions_root: root.clone(),
+            idle_gap: 30,
+            layout,
+        };
+        let key = |app: &mut App, code| { app.handle_key(KeyEvent::new(code, KeyModifiers::NONE)); };
+        key(&mut app, KeyCode::Char('/'));
+        for c in "needle".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        assert_eq!(app.selected_row(), Some(Row::Section("participants")), "typing does not jump");
+        key(&mut app, KeyCode::Enter);
+        let assert_parent = |app: &App, expected: &str| {
+            let Row::Node(idx) = app.selected_row().unwrap() else { panic!("expected file row") };
+            assert_eq!(app.tree.nodes[idx].name, "needle.txt");
+            let parent = app.tree.nodes[idx].parent.unwrap();
+            assert!(app.ui.expand.is_dir_expanded(&app.tree, parent));
+            assert_eq!(app.tree.nodes[parent].name, expected);
+        };
+        assert_parent(&app, "alpha");
+        key(&mut app, KeyCode::Char('n'));
+        assert_parent(&app, "beta");
+        key(&mut app, KeyCode::Char('n'));
+        assert_parent(&app, "alpha");
+        assert_eq!(app.ui.flash.as_deref(), Some("search hit BOTTOM, continuing at TOP"));
+        key(&mut app, KeyCode::Char('/'));
+        for c in "Needle".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.ui.flash.as_deref(), Some("Pattern not found: Needle"));
+        assert_eq!(app.ui.search.as_deref(), Some("needle"));
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.ui.search, None);
         drop(app);
         std::fs::remove_dir_all(&root).unwrap();
         std::fs::remove_dir_all(&state_dir).unwrap();

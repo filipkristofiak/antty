@@ -45,9 +45,9 @@ every other Ctrl chord runs the bare letter's action.
 
 ## 4. Search
 
-- [ ] `/` searches tree rows by name; `n`/`N` cycle matches while a search is
-  active (today `n`/`N` jump activity — decide precedence, e.g. search matches
-  until `Esc` clears the search).
+- [x] `/` searches every tree row by name and reveals collapsed matches; `n`/`N`
+  cycle matches while a search is active. `Esc` clears it; otherwise `n`/`N`
+  jump to activity on the selected row.
 
 ## 5. Feedback
 

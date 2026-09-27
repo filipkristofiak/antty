@@ -26,6 +26,7 @@ Plain `cargo` works wherever it's already on `PATH`.
 - `src/snapshot.rs` — file content snapshots and unified diffs.
 - `src/timeline.rs` — zoom levels, time↔column mapping, idle-gap span merging.
 - `src/tree.rs` — builds the `PARTICIPANTS`/`FILES`/`MOUNTS`/`WEB` row forests.
+- `src/search.rs` — smartcase full-tree search and wrapped match stepping.
 - `src/ui/mod.rs` — `Mode`, layout math, top-level `draw`.
 - `src/ui/tree_pane.rs` — left pane: sections, participants, file tree rows.
 - `src/ui/gantt_pane.rs` — right pane: the Gantt timeline.

@@ -66,7 +66,7 @@ Keep, but document in `docs/usage.md`:
 
 ## 7. Bugs
 
-- [ ] 15-minute zoom tick row reads `5050…`: `render_header`
+- [x] 15-minute zoom tick row reads `5050…`: `render_header`
   (`src/ui/gantt_pane.rs`) prints the minute's last digit, which only alternates
   0/5 at 15m columns. Same class as the already-handled 10m case.
 

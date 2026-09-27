@@ -33,6 +33,20 @@ fn is_boundary(start: Ts, end: Ts, col_secs: i64) -> bool {
     if col_secs < 3600 { a.hour() != b.hour() } else { a.date_naive() != b.date_naive() }
 }
 
+fn tick_char(local: chrono::DateTime<chrono::Local>, secs: i64, day_boundary: bool) -> char {
+    if secs >= 86400 || day_boundary {
+        local.format("%a").to_string().chars().next().unwrap_or(' ')
+    } else if secs > 3600 {
+        ' '
+    } else if secs >= 1800 {
+        local.format("%H").to_string().chars().last().unwrap_or(' ')
+    } else if matches!(secs, 300 | 600 | 900) {
+        local.format("%M").to_string().chars().next().unwrap_or(' ')
+    } else {
+        local.format("%M").to_string().chars().last().unwrap_or(' ')
+    }
+}
+
 fn render_header(f: &mut Frame, area: Rect, app: &AppRef) {
     let width = area.width as i64;
     let secs = app.view.col_secs();
@@ -79,27 +93,11 @@ fn render_header(f: &mut Frame, area: Rect, app: &AppRef) {
     for col in 0..width {
         let (start, end) = app.view.bucket(col);
         let local = label_instant(start, end);
-        // At day zoom, every column is a day: show its weekday letter. At minute zoom, show the
-        // last digit of the minute; at 30m/1h zoom, the last digit of the hour. In between (e.g.
-        // 2h/3h/6h/12h columns), a per-column hour digit cycles through unrelated values and
-        // reads as noise, so only columns where a local day actually begins get a mark; the rest
-        // stay blank except for the cursor. At 10m columns the minute always ends in 0, so show
-        // the minute's tens digit (0-5) instead.
-        let ch = if secs >= 86400 {
-            local.format("%a").to_string().chars().next().unwrap_or(' ')
-        } else if secs > 3600 {
-            if is_boundary(start, end, secs) {
-                local.format("%a").to_string().chars().next().unwrap_or(' ')
-            } else {
-                ' '
-            }
-        } else if secs >= 1800 {
-            local.format("%H").to_string().chars().last().unwrap_or(' ')
-        } else if secs == 600 {
-            local.format("%M").to_string().chars().next().unwrap_or(' ')
-        } else {
-            local.format("%M").to_string().chars().last().unwrap_or(' ')
-        };
+        // At day zoom, show the weekday letter. At minute zoom, show the last minute digit;
+        // at 30m/1h zoom, show the last hour digit. Between 1h and 1d only mark local day
+        // boundaries. At 5m/10m/15m the minute's last digit only alternates 0/5 or stays 0,
+        // so show the tens digit instead (5m: 001122…, 15m: 0134).
+        let ch = tick_char(local, secs, secs > 3600 && secs < 86400 && is_boundary(start, end, secs));
         let mut style = Style::default().fg(Color::DarkGray);
         if col == cursor_col {
             style = style.bg(CURSOR_BG).fg(Color::White);
@@ -221,5 +219,23 @@ fn render_body(f: &mut Frame, area: Rect, app: &AppRef) {
             };
             buf.set_string(x, y, out.to_string(), style);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{Local, TimeZone};
+
+    use super::tick_char;
+
+    #[test]
+    fn minute_ticks_show_changing_digits() {
+        let at = |minute| Local.with_ymd_and_hms(2026, 1, 5, 10, minute, 0).unwrap();
+        for (minute, expected) in [(0, '0'), (15, '1'), (30, '3'), (45, '4')] {
+            assert_eq!(tick_char(at(minute), 900, false), expected);
+        }
+        assert_eq!(tick_char(at(5), 300, false), '0');
+        assert_eq!(tick_char(at(55), 300, false), '5');
+        assert_eq!(tick_char(at(7), 60, false), '7');
     }
 }

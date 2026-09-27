@@ -19,7 +19,8 @@ Then run `antty` from inside a project directory.
 
 ## Harness support
 
-Currently reads oh-my-pi (omp) session logs. Other harnesses are planned.
+Reads oh-my-pi (omp) and Claude Code session logs, shown together. Other
+harnesses are planned.
 
 ## Docs
 

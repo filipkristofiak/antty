@@ -1,4 +1,5 @@
 mod attrib;
+mod claude;
 mod cli;
 mod cmdline;
 mod model;
@@ -11,7 +12,6 @@ mod tree;
 mod ui;
 mod watch;
 
-use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -22,21 +22,10 @@ use attrib::Attributor;
 use cli::Args;
 use cmdline::{CmdKind, CmdLine};
 use model::{Model, Ts};
-use sessions::Msg;
+use sessions::{Harness, Msg};
 use timeline::View;
 use tree::{Row, Tree};
 use ui::{AppRef, Mode, UiState};
-
-/// The direct child of `sessions_root` that `file` lives under, regardless of whether that dir
-/// has been confirmed (via header cwd match) as belonging to the current project yet. Message
-/// routing uses this instead of a cached "the" project dir so a session created after startup
-/// (e.g. the live-demo scenario, brand-new project with zero history) is still classified
-/// correctly on its very first line.
-fn project_dir_of(file: &Path, sessions_root: &Path) -> Option<PathBuf> {
-    let rel = file.strip_prefix(sessions_root).ok()?;
-    let first = rel.components().next()?;
-    Some(sessions_root.join(first.as_os_str()))
-}
 
 /// Earliest/latest timestamp across everything currently in the model, for the initial "fit".
 fn model_time_range(model: &Model) -> Option<(Ts, Ts)> {
@@ -132,7 +121,6 @@ struct App {
     view: View,
     ui: UiState,
     attributor: Attributor,
-    sessions_root: PathBuf,
     idle_gap: i64,
     layout: ui::LayoutInfo,
 }
@@ -431,17 +419,14 @@ impl App {
 
     fn handle_message(&mut self, msg: Msg) -> bool {
         match msg {
-            Msg::Lines { participant_file, lines } => {
-                let Some(dir) = project_dir_of(&participant_file, &self.sessions_root) else {
-                    return false;
-                };
-                if self.ui.status_extra.as_deref().is_some_and(|s| s.starts_with("no omp sessions")) {
+            Msg::Lines { harness, project_dir, participant_file, lines } => {
+                if self.ui.status_extra.as_deref().is_some_and(|s| s.starts_with("no agent sessions")) {
                     self.ui.status_extra = None;
                 }
-                let who = sessions::ensure_participant(&mut self.model, &participant_file, &dir);
+                let who = harness.ensure_participant(&mut self.model, &participant_file, &project_dir);
                 for line in lines {
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
-                        parse::ingest(&mut self.model, who, &v, self.idle_gap);
+                        harness.ingest(&mut self.model, who, &v, self.idle_gap);
                     }
                 }
                 parse::flush_dirty_spans(&mut self.model, self.idle_gap);
@@ -770,12 +755,15 @@ fn main() -> anyhow::Result<()> {
     let args = Args::parse()?;
 
     let mut model = Model::new(args.project.clone());
-    model.sessions_root = args.sessions_dir.clone();
-    let (project_dir, offsets) = sessions::load_initial(&mut model, &args.sessions_dir, &args.project, args.idle_gap);
+    model.session_roots = vec![args.omp_dir.clone(), args.claude_dir.clone()];
+    let sources: Vec<sessions::TailSource> = [(Harness::Omp, &args.omp_dir), (Harness::Claude, &args.claude_dir)]
+        .into_iter()
+        .map(|(harness, root)| sessions::load_initial(&mut model, harness, root, &args.project, args.idle_gap))
+        .collect();
 
     let mut status_extra = None;
-    if project_dir.is_none() {
-        status_extra = Some(format!("no omp sessions for {}", args.project.display()));
+    if sources.iter().all(|s| s.project_dir.is_none()) {
+        status_extra = Some(format!("no agent sessions for {}", args.project.display()));
     }
 
     let attributor = Attributor::new(&args.state_dir, &args.project);
@@ -790,7 +778,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     let (tx, rx) = mpsc::channel::<Msg>();
-    let _tailer = sessions::spawn_tailer(args.sessions_dir.clone(), args.project.clone(), project_dir, offsets, tx.clone());
+    let _tailer = sessions::spawn_tailer(args.project.clone(), sources, tx.clone());
 
     let mut watch_on = false;
     if !args.no_watch {
@@ -817,7 +805,6 @@ fn main() -> anyhow::Result<()> {
         view: View::fit(chrono::Utc::now() - chrono::Duration::hours(1), chrono::Utc::now(), layout.gantt_width.max(1) as usize),
         ui: ui_state,
         attributor,
-        sessions_root: args.sessions_dir.clone(),
         idle_gap: args.idle_gap,
         layout,
     };
@@ -981,7 +968,6 @@ mod tests {
             view: View::fit(now - chrono::Duration::hours(1), now, layout.gantt_width as usize),
             ui,
             attributor: Attributor::new(&state_dir, &root),
-            sessions_root: root.clone(),
             idle_gap: 30,
             layout,
         };
@@ -1030,7 +1016,6 @@ mod tests {
             view: View::fit(now - chrono::Duration::hours(1), now, layout.gantt_width as usize),
             ui,
             attributor: Attributor::new(&state_dir, &root),
-            sessions_root: root.clone(),
             idle_gap: 30,
             layout,
         };

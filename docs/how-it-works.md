@@ -2,22 +2,26 @@
 
 ## Session discovery
 
-`sessions.rs`'s `discover_project_dir` finds the direct child of the sessions
-root whose most-recent top-level session file has a header `cwd` equal to the
-project root; header matching is authoritative, so omp's directory-name
-encoding is never reimplemented. Session files are tailed live: `load_initial`
-reads every jsonl file once at startup, and `spawn_tailer` polls the project
-dir and each file once per second afterward, resuming exactly where the
-initial read left off.
+Each harness (`sessions::Harness`: omp, Claude Code) has its own session
+root (`--omp-dir`, `--claude-dir`). Per root, `discover_project_dir` finds the
+direct child whose most-recent top-level session file records a `cwd` equal
+to the project root (omp: the header line; Claude Code: the first record
+carrying `cwd`, in `claude.rs`); matching the logged cwd is authoritative, so
+neither harness's directory-name encoding is reimplemented. Session files are
+tailed live: `load_initial` reads every jsonl file of each root once at
+startup, and `spawn_tailer` polls every root's project dir and each file once
+per second afterward, resuming exactly where the initial read left off.
 
 ## Parsing tool calls into file events
 
-`parse.rs` ingests one jsonl line at a time (`ingest`), tolerant of schema
-drift — unrecognized types/shapes are no-ops. It normalizes tool-arg path
-strings into project-relative or external/session/web scopes (`normalize`,
-`locate`), turns `read`/`write`/`edit` tool results into `FileEvent`s with
-before/after content snapshots, and accumulates per-participant raw activity
-intervals that later get merged into spans.
+`parse.rs` (omp) and `claude.rs` (Claude Code) ingest one jsonl line at a
+time (`ingest`), tolerant of schema drift — unrecognized types/shapes are
+no-ops. Both normalize tool-arg path strings into project-relative or
+external/session/web scopes (`normalize`, `locate`), turn read/write/edit tool
+results into `FileEvent`s with before/after content snapshots, and accumulate
+per-participant raw activity intervals that later get merged into spans.
+Claude Code logs no per-message completion time, so the gap between an
+assistant record and the previous user/assistant record counts as activity.
 
 ## Filesystem watcher
 

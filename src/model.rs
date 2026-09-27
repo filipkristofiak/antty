@@ -170,9 +170,12 @@ pub struct Model {
     /// edit oldText/newText) and live watcher reads. Keyed by project-relative path; each Vec
     /// sorted by timestamp.
     pub snapshots: HashMap<PathBuf, Vec<(Ts, String)>>,
-    /// omp's sessions dir (`--sessions-dir`); empty until `main` sets it, which disables
-    /// session-dir detection.
-    pub sessions_root: PathBuf,
+    /// every harness's session root (`--omp-dir`, `--claude-dir`); empty disables session-dir
+    /// detection.
+    pub session_roots: Vec<PathBuf>,
+    /// glue: latest user/assistant entry timestamp per participant; start of the next assistant
+    /// generation interval (Claude Code, which has no per-message completion time).
+    pub last_entry_ts: HashMap<usize, Ts>,
 }
 
 impl Model {
@@ -202,24 +205,28 @@ impl Model {
             raw_intervals: HashMap::new(),
             dirty_spans: HashSet::new(),
             snapshots: HashMap::new(),
-            sessions_root: PathBuf::new(),
+            session_roots: Vec::new(),
+            last_entry_ts: HashMap::new(),
         }
     }
 
-    /// For `abs` = `<sessions_root>/<any project dir>/<session stem>/<rest>`, the session whose
-    /// jsonl file stem is `<session stem>`, and `<rest>`. Matching the stem (not the whole dir)
-    /// keeps this correct for sessions `/move`d between project dirs. None if `sessions_root` is
-    /// empty, `abs` is outside it, or no known session has that stem.
+    /// For `abs` = `<session root>/<any project dir>/<session stem>/<rest>`, the session whose
+    /// jsonl file stem is `<session stem>`, and `<rest>`. Roots are tried in order; the first
+    /// match wins. Matching the stem (not the whole dir) keeps this correct for sessions
+    /// `/move`d between project dirs. None if `abs` is outside every root or no known session
+    /// has that stem.
     pub fn session_dir_split(&self, abs: &Path) -> Option<(usize, PathBuf)> {
-        if self.sessions_root.as_os_str().is_empty() {
-            return None;
-        }
-        let rest = abs.strip_prefix(&self.sessions_root).ok()?;
-        let mut comps = rest.components();
-        comps.next()?; // project dir component
-        let stem = comps.next()?.as_os_str();
-        let idx = self.sessions.iter().position(|s| s.file.file_stem() == Some(stem))?;
-        Some((idx, comps.as_path().to_path_buf()))
+        self.session_roots.iter().find_map(|root| {
+            if root.as_os_str().is_empty() {
+                return None;
+            }
+            let rest = abs.strip_prefix(root).ok()?;
+            let mut comps = rest.components();
+            comps.next()?; // project dir component
+            let stem = comps.next()?.as_os_str();
+            let idx = self.sessions.iter().position(|s| s.file.file_stem() == Some(stem))?;
+            Some((idx, comps.as_path().to_path_buf()))
+        })
     }
 
     /// Record `cwd` as an alias of `root` if it isn't already `root` but resolves to it, so
@@ -292,6 +299,7 @@ impl Model {
         self.spans.retain(|s| s.who != who);
         self.tool_windows.retain(|w| w.who != who);
         self.raw_intervals.remove(&who.0);
+        self.last_entry_ts.remove(&who.0);
         let p = &self.participants[who.0];
         if p.kind == ParticipantKind::Main
             && let Some(session) = p.session

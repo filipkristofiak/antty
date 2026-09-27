@@ -19,8 +19,9 @@ Plain `cargo` works wherever it's already on `PATH`.
 - `src/cli.rs` — `RawArgs`/`Args`: flag parsing, tilde expansion, defaults.
 - `src/cmdline.rs` — `:`/`/` line editing and in-memory history.
 - `src/model.rs` — core data model: participants, sessions, file events, spans, snapshots.
-- `src/sessions.rs` — `discover_project_dir` (header-`cwd` matching), initial load + live tailer.
-- `src/parse.rs` — ingests jsonl lines into model events; path normalization and scoping.
+- `src/sessions.rs` — `Harness` dispatch, omp's `discover_omp_project_dir` (header-`cwd` matching), initial load + live tailer over every harness.
+- `src/parse.rs` — ingests omp jsonl lines into model events; path normalization and scoping.
+- `src/claude.rs` — Claude Code reader: project-dir discovery (first-`cwd` matching), transcript scan, participants, ingest.
 - `src/watch.rs` — recursive filesystem watcher, `.gitignore`-aware (including nested ones).
 - `src/attrib.rs` — attributes watcher events to tool-call windows; persists/replays the JSONL state log.
 - `src/snapshot.rs` — file content snapshots and unified diffs.
@@ -38,9 +39,9 @@ Plain `cargo` works wherever it's already on `PATH`.
 
 ## Conventions
 
-- Harness-agnostic naming: "omp" appears only where describing omp's on-disk
-  format (`parse.rs`, `sessions.rs`, the default `--sessions-dir`, the
-  "no omp sessions" status string).
+- Harness-agnostic naming: "omp"/"Claude Code" appear only where describing
+  that harness's on-disk format (`parse.rs`, `claude.rs`, `sessions.rs`, the
+  `--omp-dir`/`--claude-dir` flags and their defaults).
 - Any change that affects the built binary (`src/`, `Cargo.toml`
   dependency/feature/profile changes, `build.rs`) bumps the `version` in
   `Cargo.toml`, then runs `cargo build` (or `cargo update -p antty`) in the

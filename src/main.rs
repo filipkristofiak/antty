@@ -1,7 +1,9 @@
 mod attrib;
 mod cli;
+mod cmdline;
 mod model;
 mod parse;
+mod search;
 mod sessions;
 mod snapshot;
 mod timeline;
@@ -14,11 +16,11 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use notify::RecommendedWatcher;
 use ratatui::layout::Rect;
 
 use attrib::Attributor;
 use cli::Args;
+use cmdline::{CmdKind, CmdLine};
 use model::{Model, Ts};
 use sessions::Msg;
 use timeline::View;
@@ -266,6 +268,53 @@ impl App {
         self.rows.get(self.ui.selected).copied()
     }
 
+    /// Open the ancestors needed to show a match in its current forest.
+    fn reveal(&mut self, row: Row) {
+        match row {
+            Row::Node(idx) => {
+                let mut top = idx;
+                while let Some(parent) = self.tree.nodes[top].parent {
+                    top = parent;
+                    self.ui.expand.dir_overrides.insert(self.tree.nodes[parent].key.clone(), true);
+                }
+                for (&session, roots) in &self.tree.session_files {
+                    if roots.contains(&top) {
+                        self.ui.expand.expanded_sessions.insert(session);
+                    }
+                }
+            }
+            Row::Participant(pid, _) if self.model.participants[pid.0].kind != model::ParticipantKind::Main => {
+                if let Some(session) = self.model.participants[pid.0].session {
+                    self.ui.expand.expanded_sessions.insert(session);
+                }
+            }
+            _ => {}
+        }
+        self.land_on(Some(row));
+    }
+
+    fn search_step(&mut self, query: &str, forward: bool, n: usize) -> bool {
+        let full = search::full_rows(&self.model, &self.tree, self.ui.expand.touched_only);
+        let matches: Vec<usize> = full.iter().enumerate()
+            .filter(|&(_, &row)| search::is_match(&tree::row_label(&self.model, &self.tree, row), query))
+            .map(|(idx, _)| idx)
+            .collect();
+        let cur = self.selected_row().and_then(|row| full.iter().position(|&candidate| candidate == row));
+        let Some((idx, wrapped)) = search::step(&matches, cur, forward, n) else {
+            self.ui.flash = Some(format!("Pattern not found: {query}"));
+            return false;
+        };
+        if wrapped {
+            self.ui.flash = Some(if forward {
+                "search hit BOTTOM, continuing at TOP"
+            } else {
+                "search hit TOP, continuing at BOTTOM"
+            }.into());
+        }
+        self.reveal(full[idx]);
+        true
+    }
+
     fn toggle_expand(&mut self) {
         match self.selected_row() {
             Some(Row::Node(idx)) if self.tree.nodes[idx].is_dir => {
@@ -380,11 +429,11 @@ impl App {
         }
     }
 
-    fn handle_message(&mut self, msg: Msg) {
+    fn handle_message(&mut self, msg: Msg) -> bool {
         match msg {
             Msg::Lines { participant_file, lines } => {
                 let Some(dir) = project_dir_of(&participant_file, &self.sessions_root) else {
-                    return;
+                    return false;
                 };
                 if self.ui.status_extra.as_deref().is_some_and(|s| s.starts_with("no omp sessions")) {
                     self.ui.status_extra = None;
@@ -397,28 +446,37 @@ impl App {
                 }
                 parse::flush_dirty_spans(&mut self.model, self.idle_gap);
                 self.rebuild();
+                true
             }
             Msg::Reset(path) => {
                 if let Some(&who) = self.model.file_participant.get(&path) {
                     self.model.clear_participant_data(who);
                     self.rebuild();
+                    return true;
                 }
+                false
             }
             Msg::Fs(raw) => {
                 self.attributor.push(raw);
+                false
             }
             Msg::Tick => {
                 let pushed = self.attributor.classify_and_apply(&mut self.model, chrono::Utc::now());
                 if pushed > 0 {
                     self.rebuild();
                 }
+                self.ui.mode == Mode::Picker || pushed > 0
+            }
+            Msg::WatchError(e) => {
+                self.ui.status_extra = Some(format!("watch: {e}"));
+                true
             }
         }
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> bool {
         self.ui.flash = None;
-        if self.ui.command.is_some() {
+        if self.ui.cmdline.is_some() {
             return self.handle_key_command(key);
         }
         match self.ui.mode {
@@ -435,35 +493,60 @@ impl App {
         }
     }
 
-    /// Vim-style `:` command line, Normal mode only. `:q`/`:q!`/`:qa`/`:qa!`/`:quit` quit;
-    /// anything else unrecognized flashes an error, matching vim's own message.
+    /// Handle the `:` command line and `/` search line.
     fn handle_key_command(&mut self, key: KeyEvent) -> bool {
         match key.code {
-            KeyCode::Esc => self.ui.command = None,
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => self.ui.command = None,
+            KeyCode::Esc => self.ui.cmdline = None,
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => self.ui.cmdline = None,
             KeyCode::Backspace => {
-                if let Some(cmd) = self.ui.command.as_mut() {
-                    if cmd.is_empty() {
-                        self.ui.command = None;
-                    } else {
-                        cmd.pop();
+                if !self.ui.cmdline.as_mut().unwrap().backspace() {
+                    self.ui.cmdline = None;
+                }
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.ui.cmdline.as_mut().unwrap().clear();
+            }
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.ui.cmdline.as_mut().unwrap().delete_word();
+            }
+            KeyCode::Up | KeyCode::Down => {
+                let line = self.ui.cmdline.as_mut().unwrap();
+                let history = match line.kind {
+                    CmdKind::Command => &self.ui.command_history,
+                    CmdKind::Search => &self.ui.search_history,
+                };
+                if key.code == KeyCode::Up { line.older(history) } else { line.newer(history) }
+            }
+            KeyCode::Enter => {
+                let line = self.ui.cmdline.take().unwrap();
+                match line.kind {
+                    CmdKind::Command => {
+                        let cmd = line.text.trim();
+                        if !cmd.is_empty() {
+                            cmdline::record(&mut self.ui.command_history, &line.text);
+                        }
+                        match cmd {
+                            "q" | "q!" | "qa" | "qa!" | "quit" => return true,
+                            "" => {}
+                            other => self.ui.flash = Some(format!("not an editor command: {other}")),
+                        }
+                    }
+                    CmdKind::Search => {
+                        let query = if line.text.is_empty() {
+                            self.ui.search_history.last().cloned()
+                        } else {
+                            cmdline::record(&mut self.ui.search_history, &line.text);
+                            Some(line.text)
+                        };
+                        if let Some(query) = query
+                            && self.search_step(&query, true, 1) {
+                                self.ui.search = Some(query);
+                            }
                     }
                 }
             }
-            KeyCode::Enter => {
-                let cmd = self.ui.command.take().unwrap_or_default();
-                match cmd.trim() {
-                    "q" | "q!" | "qa" | "qa!" | "quit" => return true,
-                    "" => {}
-                    other => self.ui.flash = Some(format!("not an editor command: {other}")),
-                }
-            }
-            // Plain char only: a held Ctrl (Ctrl-U/Ctrl-W/…) is not a line-editing binding here,
-            // so it's ignored rather than typed literally.
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if let Some(cmd) = self.ui.command.as_mut() {
-                    cmd.push(c);
-                }
+                self.ui.cmdline.as_mut().unwrap().push(c);
             }
             _ => {}
         }
@@ -515,6 +598,7 @@ impl App {
                     KeyCode::Char('b') => self.scroll_viewport(-n * (body - 2).max(1), true),
                     KeyCode::Char('e') => self.scroll_viewport(n, false),
                     KeyCode::Char('y') => self.scroll_viewport(-n, false),
+                    KeyCode::Char('c') => self.ui.flash = Some("Type :q and press <Enter> to exit".into()),
                     _ => {}
                 }
             }
@@ -536,7 +620,8 @@ impl App {
         let n = count.unwrap_or(1);
         let ni = n as i64;
         match key.code {
-            KeyCode::Char(':') => self.ui.command = Some(String::new()),
+            KeyCode::Char(':') => self.ui.cmdline = Some(CmdLine::new(CmdKind::Command)),
+            KeyCode::Char('/') => self.ui.cmdline = Some(CmdLine::new(CmdKind::Search)),
             KeyCode::Char('j') | KeyCode::Down => self.move_selected(ni),
             KeyCode::Char('k') | KeyCode::Up => self.move_selected(-ni),
             KeyCode::Char('G') => self.goto_row(count.map_or(self.rows.len().saturating_sub(1), |c| c - 1)),
@@ -554,8 +639,14 @@ impl App {
                     self.view.zoom_out();
                 }
             }
-            KeyCode::Char('n') => self.jump_to_activity(true, n),
-            KeyCode::Char('N') => self.jump_to_activity(false, n),
+            KeyCode::Char('n') | KeyCode::Char('N') => {
+                let forward = key.code == KeyCode::Char('n');
+                if let Some(query) = self.ui.search.clone() {
+                    self.search_step(&query, forward, n);
+                } else {
+                    self.jump_to_activity(forward, n);
+                }
+            }
             KeyCode::Char('}') => self.goto_row(section_target(&self.rows, self.ui.selected, true, n)),
             KeyCode::Char('{') => self.goto_row(section_target(&self.rows, self.ui.selected, false, n)),
             KeyCode::Char('0') => self.view.cursor = self.view.origin,
@@ -577,6 +668,7 @@ impl App {
             }
             KeyCode::Char('s') => self.open_picker(),
             KeyCode::Char('?') => self.ui.mode = Mode::Help,
+            KeyCode::Esc => self.ui.search = None,
             _ => {}
         }
         false
@@ -700,10 +792,15 @@ fn main() -> anyhow::Result<()> {
     let (tx, rx) = mpsc::channel::<Msg>();
     let _tailer = sessions::spawn_tailer(args.sessions_dir.clone(), args.project.clone(), project_dir, offsets, tx.clone());
 
-    let _watcher: Option<RecommendedWatcher> =
-        if args.no_watch { None } else { watch::spawn_watcher(args.project.clone(), tx.clone()) };
+    let mut watch_on = false;
+    if !args.no_watch {
+        match watch::spawn_watcher(args.project.clone(), tx.clone()) {
+            Ok(()) => watch_on = true,
+            Err(e) => status_extra = Some(format!("watch: {e}")),
+        }
+    }
 
-    let mut ui_state = UiState::new(!args.no_watch);
+    let mut ui_state = UiState::new(watch_on);
     ui_state.status_extra = status_extra;
 
     let mut terminal = ratatui::init();
@@ -736,9 +833,11 @@ fn run_loop(
     app: &mut App,
     rx: mpsc::Receiver<Msg>,
 ) -> anyhow::Result<()> {
+    let mut dirty = true;
+    let mut drawn_now_col = i64::MIN;
     loop {
         while let Ok(msg) = rx.try_recv() {
-            app.handle_message(msg);
+            dirty |= app.handle_message(msg);
         }
 
         if event::poll(Duration::from_millis(200))? {
@@ -747,10 +846,15 @@ fn run_loop(
                     if app.handle_key(key) {
                         return Ok(());
                     }
+                    dirty = true;
                 }
-                Event::Resize(_, _) => {}
+                Event::Resize(_, _) => dirty = true,
                 _ => {}
             }
+        }
+
+        if !dirty && app.view.col_for(chrono::Utc::now()) == drawn_now_col {
+            continue;
         }
 
         let size = terminal.size()?;
@@ -758,11 +862,13 @@ fn run_loop(
         app.layout = ui::compute_layout(root_rect, app.ui.mode);
         app.clamp_scroll();
         app.view.clamp_to_view(app.layout.gantt_width.max(1) as usize);
+        drawn_now_col = app.view.col_for(chrono::Utc::now());
 
         terminal.draw(|f| {
             let app_ref = app.as_ref();
             ui::draw(f, &app_ref);
         })?;
+        dirty = false;
     }
 }
 
@@ -896,6 +1002,67 @@ mod tests {
         app.handle_key_normal(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         keys(&mut app, "j");
         assert_eq!(app.ui.selected, 3);
+        drop(app);
+        std::fs::remove_dir_all(&root).unwrap();
+        std::fs::remove_dir_all(&state_dir).unwrap();
+    }
+
+    #[test]
+    fn search_reveals_collapsed_matches_wraps_and_preserves_last_success() {
+        let root = std::env::temp_dir().join(format!("antty-main-test-search-{}", std::process::id()));
+        let state_dir = root.with_extension("state");
+        let _ = std::fs::remove_dir_all(&root);
+        for dir in ["alpha", "beta"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join("needle.txt"), "").unwrap();
+        }
+        std::fs::write(root.join("top.txt"), "").unwrap();
+        let model = Model::new(root.clone());
+        let tree = Tree::build(&model);
+        let ui = UiState::new(false);
+        let rows = tree::build_rows(&model, &tree, &ui.expand);
+        let layout = ui::compute_layout(Rect::new(0, 0, 200, 50), Mode::Normal);
+        let now = chrono::Utc::now();
+        let mut app = App {
+            model,
+            tree,
+            rows,
+            view: View::fit(now - chrono::Duration::hours(1), now, layout.gantt_width as usize),
+            ui,
+            attributor: Attributor::new(&state_dir, &root),
+            sessions_root: root.clone(),
+            idle_gap: 30,
+            layout,
+        };
+        let key = |app: &mut App, code| { app.handle_key(KeyEvent::new(code, KeyModifiers::NONE)); };
+        key(&mut app, KeyCode::Char('/'));
+        for c in "needle".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        assert_eq!(app.selected_row(), Some(Row::Section("participants")), "typing does not jump");
+        key(&mut app, KeyCode::Enter);
+        let assert_parent = |app: &App, expected: &str| {
+            let Row::Node(idx) = app.selected_row().unwrap() else { panic!("expected file row") };
+            assert_eq!(app.tree.nodes[idx].name, "needle.txt");
+            let parent = app.tree.nodes[idx].parent.unwrap();
+            assert!(app.ui.expand.is_dir_expanded(&app.tree, parent));
+            assert_eq!(app.tree.nodes[parent].name, expected);
+        };
+        assert_parent(&app, "alpha");
+        key(&mut app, KeyCode::Char('n'));
+        assert_parent(&app, "beta");
+        key(&mut app, KeyCode::Char('n'));
+        assert_parent(&app, "alpha");
+        assert_eq!(app.ui.flash.as_deref(), Some("search hit BOTTOM, continuing at TOP"));
+        key(&mut app, KeyCode::Char('/'));
+        for c in "Needle".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.ui.flash.as_deref(), Some("Pattern not found: Needle"));
+        assert_eq!(app.ui.search.as_deref(), Some("needle"));
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.ui.search, None);
         drop(app);
         std::fs::remove_dir_all(&root).unwrap();
         std::fs::remove_dir_all(&state_dir).unwrap();

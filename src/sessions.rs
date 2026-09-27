@@ -18,6 +18,7 @@ pub enum Msg {
     Reset(PathBuf),
     Fs(RawFs),
     Tick,
+    WatchError(String),
 }
 
 pub struct FileRole {

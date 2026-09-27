@@ -74,7 +74,7 @@ impl GitignoreSet {
         let Ok(rd) = fs::read_dir(dir) else { return };
         for entry in rd.flatten() {
             let path = entry.path();
-            if !path.is_dir() {
+            if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
                 continue;
             }
             if path.file_name().and_then(|n| n.to_str()) == Some(".git") {
@@ -116,6 +116,27 @@ impl GitignoreSet {
 
     pub fn is_ignored(&self, path: &Path, is_dir: bool) -> bool {
         Self::is_ignored_with(&self.root, &self.layers, path, is_dir)
+    }
+
+    /// Directories needing individual inotify watches; never follow symlinked directories.
+    pub fn watch_dirs(&self, start: &Path) -> Vec<PathBuf> {
+        let mut dirs = Vec::new();
+        let mut stack = vec![start.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            if let Ok(entries) = fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                        continue;
+                    }
+                    let path = entry.path();
+                    if entry.file_name() != ".git" && !self.is_ignored(&path, true) {
+                        stack.push(path);
+                    }
+                }
+            }
+            dirs.push(dir);
+        }
+        dirs
     }
 }
 
@@ -199,18 +220,69 @@ fn handle_event(gi: &GitignoreSet, event: Event, tx: &Sender<Msg>) {
     }
 }
 
-/// Spawn the recursive fs watcher on `root`. The returned watcher must be kept alive
-/// (bound to a named variable) for the duration of the program; dropping it stops watching.
-pub fn spawn_watcher(root: PathBuf, tx: Sender<Msg>) -> Option<RecommendedWatcher> {
+/// Start the filesystem watcher. Startup errors are returned; later failures are sent to the UI.
+pub fn spawn_watcher(root: PathBuf, tx: Sender<Msg>) -> notify::Result<()> {
+    start(root, tx, RecommendedWatcher::kind() == notify::WatcherKind::Inotify)
+}
+
+fn start(root: PathBuf, tx: Sender<Msg>, per_dir: bool) -> notify::Result<()> {
     let gitignore = GitignoreSet::build(&root);
-    let mut watcher = notify::recommended_watcher(move |res: notify::Result<Event>| {
-        if let Ok(event) = res {
-            handle_event(&gitignore, event, &tx);
+    let (events_tx, events_rx) = std::sync::mpsc::channel::<notify::Result<Event>>();
+    let mut watcher = notify::recommended_watcher(events_tx)?;
+    if per_dir {
+        watcher.watch(&root, RecursiveMode::NonRecursive)?;
+        let mut reported = false;
+        for dir in gitignore.watch_dirs(&root).into_iter().skip(1) {
+            if let Err(e) = watcher.watch(&dir, RecursiveMode::NonRecursive) {
+                if !reported {
+                    let _ = tx.send(Msg::WatchError(e.to_string()));
+                    reported = true;
+                }
+                if matches!(e.kind, notify::ErrorKind::MaxFilesWatch) {
+                    break;
+                }
+            }
         }
-    })
-    .ok()?;
-    watcher.watch(&root, RecursiveMode::Recursive).ok()?;
-    Some(watcher)
+    } else {
+        watcher.watch(&root, RecursiveMode::Recursive)?;
+    }
+    std::thread::Builder::new()
+        .name("antty-watch".into())
+        .spawn(move || {
+            // Add watches here, not in notify's callback: inotify's watch() waits for a reply
+            // from the event-loop thread running that callback.
+            let mut watcher = watcher;
+            for result in events_rx {
+                match result {
+                    Ok(event) => {
+                        if per_dir {
+                            watch_new_dirs(&mut watcher, &gitignore, &event, &tx);
+                        }
+                        handle_event(&gitignore, event, &tx);
+                    }
+                    Err(e) => { let _ = tx.send(Msg::WatchError(e.to_string())); }
+                }
+            }
+        })
+        .map_err(notify::Error::io)?;
+    Ok(())
+}
+
+fn watch_new_dirs(watcher: &mut RecommendedWatcher, gi: &GitignoreSet, event: &Event, tx: &Sender<Msg>) {
+    if !matches!(event.kind, EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(_))) {
+        return;
+    }
+    for path in &event.paths {
+        if !fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir()) || gi.is_ignored(path, true) {
+            continue;
+        }
+        for dir in gi.watch_dirs(path) {
+            if let Err(e) = watcher.watch(&dir, RecursiveMode::NonRecursive) {
+                let _ = tx.send(Msg::WatchError(e.to_string()));
+                return;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -236,5 +308,28 @@ mod tests {
             "a nested .gitignore's rules must be honored even though the root has none"
         );
         assert!(!set.is_ignored(&root.join("a.txt"), false), "an untouched-by-any-rule file must not be ignored");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn watch_dirs_excludes_ignored_and_symlinked_trees() {
+        let root = std::env::temp_dir().join(format!("antty-watch-test-dirs-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src/a")).unwrap();
+        fs::create_dir_all(root.join("target/debug")).unwrap();
+        fs::create_dir_all(root.join(".git/objects")).unwrap();
+        fs::write(root.join(".gitignore"), "target/\n").unwrap();
+        std::os::unix::fs::symlink(root.join("src"), root.join("link")).unwrap();
+        std::os::unix::fs::symlink(&root, root.join("cycle")).unwrap();
+        let dirs = GitignoreSet::build(&root).watch_dirs(&root);
+        assert!(dirs.contains(&root));
+        assert!(dirs.contains(&root.join("src")));
+        assert!(dirs.contains(&root.join("src/a")));
+        assert!(dirs.iter().position(|dir| dir == &root.join("src")).unwrap()
+            < dirs.iter().position(|dir| dir == &root.join("src/a")).unwrap());
+        for excluded in ["target", "target/debug", ".git", "link", "cycle"] {
+            assert!(!dirs.contains(&root.join(excluded)), "{excluded}");
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 }

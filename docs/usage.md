@@ -10,7 +10,7 @@ antty [OPTIONS]
 | --- | --- |
 | `--project <PROJECT>` | Project root to show sessions for. Defaults to the current directory. |
 | `--sessions-dir <SESSIONS_DIR>` | Root directory holding the agent session jsonl files (default: omp's `~/.omp/agent/sessions`). |
-| `--state-dir <STATE_DIR>` | Directory used to persist watcher-observed filesystem changes. |
+| `--state-dir <STATE_DIR>` | Directory used to persist watcher-observed filesystem changes (default: `$XDG_STATE_HOME/antty`, else `~/.local/state/antty`). |
 | `--no-watch` | Disable the live filesystem watcher. |
 | `--idle-gap <IDLE_GAP>` | Idle gap (seconds) used to merge raw activity intervals into spans. Default: 30. |
 
@@ -52,7 +52,8 @@ Bottom: a status bar with key hints and current zoom/session/watch state.
 | `+/-` | zoom in/out |
 | `t` | cursor to now, pinned near the right edge |
 | `f` | fit all activity, latest near the right edge |
-| `n/N` | next/prev bucket with activity on the selected row |
+| `/` | search row names (smartcase); Enter jumps to the next match |
+| `n/N` | next/prev search match; no search: next/prev activity on the row |
 | `Space/za` | toggle dir/session; on a file: collapse its dir |
 | `zo/zc` | open/close; zc on a file or closed dir: its parent |
 | `zO/zC` | open/close recursively |
@@ -64,6 +65,13 @@ Bottom: a status bar with key hints and current zoom/session/watch state.
 | `s` | session picker |
 | `?` | this help |
 | `:q⏎` | quit |
-| `q/Esc` | close overlay; Esc also cancels a count/prefix |
+| `Ctrl-C` | hint: quit with :q⏎ |
+| `:/ line` | Ctrl-U clear · Ctrl-W delete word · ↑/↓ history |
+| `q/Esc` | close overlay; Esc also cancels a count/prefix and clears the search |
 
 In Normal mode, letter keys act only when typed without Ctrl/Alt; unlisted Ctrl chords do nothing.
+
+## Differences from vim
+
+- `-` zooms out (paired with `+`); it does not open the parent directory as in oil.nvim/vim-vinegar. On a file, `zc` closes and selects its parent dir.
+- `H`/`L` pan the timeline by half the pane width; they do not jump to the top/bottom visible row. Use `zt`/`zb` to place the selected row instead.

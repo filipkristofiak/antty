@@ -3,32 +3,22 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders};
 
-use crate::model::{Model, ParticipantKind};
-use crate::tree::Row;
+use crate::model::ParticipantKind;
+use crate::search;
+use crate::tree::{self, Row};
 
 use super::{AppRef, color_for, truncate};
 
 const SELECTED_BG: Color = Color::Rgb(50, 70, 130);
 
 fn row_text_and_style(app: &AppRef, row: Row) -> (String, Style) {
-    match row {
-        Row::Section(name) => (name.to_uppercase(), Style::default().add_modifier(Modifier::BOLD)),
+    let label = tree::row_label(app.model, app.tree, row);
+    let highlighted = app.ui.search.as_deref().is_some_and(|query| search::is_match(&label, query));
+    let (text, mut style) = match row {
+        Row::Section(_) => (label, Style::default().add_modifier(Modifier::BOLD)),
         Row::Participant(pid, depth) => {
             let indent = "  ".repeat(depth);
             let p = &app.model.participants[pid.0];
-            let label = if pid == Model::YOU {
-                "you".to_string()
-            } else if p.kind == ParticipantKind::Main {
-                match p.session {
-                    Some(sidx) => {
-                        let s = &app.model.sessions[sidx];
-                        format!("{} · {}", s.title, s.start.with_timezone(&chrono::Local).format("%m-%d %H:%M"))
-                    }
-                    None => p.label.clone(),
-                }
-            } else {
-                p.label.clone()
-            };
             let marker = if p.kind == ParticipantKind::Main {
                 match p.session {
                     Some(sidx) if app.ui.expand.expanded_sessions.contains(&sidx) => "▾ ",
@@ -52,9 +42,13 @@ fn row_text_and_style(app: &AppRef, row: Row) -> (String, Style) {
             if node.deleted {
                 style = style.fg(Color::DarkGray);
             }
-            (format!("{indent}{arrow}{}", node.name), style)
+            (format!("{indent}{arrow}{label}"), style)
         }
+    };
+    if highlighted {
+        style = style.add_modifier(Modifier::UNDERLINED);
     }
+    (text, style)
 }
 
 pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {

@@ -45,17 +45,17 @@ every other Ctrl chord runs the bare letter's action.
 
 ## 4. Search
 
-- [ ] `/` searches tree rows by name; `n`/`N` cycle matches while a search is
-  active (today `n`/`N` jump activity — decide precedence, e.g. search matches
-  until `Esc` clears the search).
+- [x] `/` searches every tree row by name and reveals collapsed matches; `n`/`N`
+  cycle matches while a search is active. `Esc` clears it; otherwise `n`/`N`
+  jump to activity on the selected row.
 
 ## 5. Feedback
 
-- [ ] Show a pending prefix (`z`, `g`, counts) in the status bar, like
+- [x] Show a pending prefix (`z`, `g`, counts) in the status bar, like
   `showcmd`.
-- [ ] `Ctrl-C` in Normal mode flashes `Type :q and press <Enter> to exit`,
+- [x] `Ctrl-C` in Normal mode flashes `Type :q and press <Enter> to exit`,
   mirroring Neovim. `q` stays a no-op at top level.
-- [ ] `:` line: `Ctrl-U` clears, `Ctrl-W` deletes a word; `↑`/`↓` history.
+- [x] `:` line: `Ctrl-U` clears, `Ctrl-W` deletes a word; `↑`/`↓` history.
 
 ## 6. Minor mapping clashes
 
@@ -63,25 +63,26 @@ Keep, but document in `docs/usage.md`:
 
 - `-` zooms out; oil.nvim/vim-vinegar users expect "parent directory".
 - `H`/`L` pan the timeline; vim uses them for screen top/bottom.
+- [x] Documented in docs/usage.md ("Differences from vim").
 
 ## 7. Bugs
 
-- [ ] 15-minute zoom tick row reads `5050…`: `render_header`
+- [x] 15-minute zoom tick row reads `5050…`: `render_header`
   (`src/ui/gantt_pane.rs`) prints the minute's last digit, which only alternates
   0/5 at 15m columns. Same class as the already-handled 10m case.
 
 ## 8. Linux runtime
 
-- [ ] Watcher failure is silent and the status bar still reports `watch:on`:
+- [x] Watcher failure is silent and the status bar still reports `watch:on`:
   `spawn_watcher` (`src/watch.rs`) drops errors via `.ok()?`, and `main`
   sets watch state from `!args.no_watch`, not from the watcher result. Surface
   the error; report the real state.
-- [ ] inotify watch budget: `RecursiveMode::Recursive` adds a watch per
+- [x] inotify watch budget: `RecursiveMode::Recursive` adds a watch per
   directory, including gitignored `target/`/`node_modules/`; `.gitignore` is
   applied only after events arrive. Large repos can exhaust
   `fs.inotify.max_user_watches`. Watch non-ignored directories only.
-- [ ] Default `--state-dir` honors `$XDG_STATE_HOME` before
+- [x] Default `--state-dir` honors `$XDG_STATE_HOME` before
   `~/.local/state/antty` (`src/cli.rs`); don't fall back to a relative path
   when `HOME` is unset.
-- [ ] `run_loop` redraws every 200 ms even when idle; draw only on input,
+- [x] `run_loop` redraws every 200 ms even when idle; draw only on input,
   messages, resize, or a clock-column change.

@@ -17,6 +17,7 @@ Plain `cargo` works wherever it's already on `PATH`.
 
 - `src/main.rs` — event loop, key handling, `App` state, startup wiring.
 - `src/cli.rs` — `RawArgs`/`Args`: flag parsing, tilde expansion, defaults.
+- `src/cmdline.rs` — `:`/`/` line editing and in-memory history.
 - `src/model.rs` — core data model: participants, sessions, file events, spans, snapshots.
 - `src/sessions.rs` — `discover_project_dir` (header-`cwd` matching), initial load + live tailer.
 - `src/parse.rs` — ingests jsonl lines into model events; path normalization and scoping.
@@ -25,6 +26,7 @@ Plain `cargo` works wherever it's already on `PATH`.
 - `src/snapshot.rs` — file content snapshots and unified diffs.
 - `src/timeline.rs` — zoom levels, time↔column mapping, idle-gap span merging.
 - `src/tree.rs` — builds the `PARTICIPANTS`/`FILES`/`MOUNTS`/`WEB` row forests.
+- `src/search.rs` — smartcase full-tree search and wrapped match stepping.
 - `src/ui/mod.rs` — `Mode`, layout math, top-level `draw`.
 - `src/ui/tree_pane.rs` — left pane: sections, participants, file tree rows.
 - `src/ui/gantt_pane.rs` — right pane: the Gantt timeline.

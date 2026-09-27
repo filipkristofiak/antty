@@ -277,6 +277,30 @@ pub enum Row {
     Node(usize),
 }
 
+/// A row's searchable name without its indentation or expand/collapse marker.
+pub fn row_label(model: &Model, tree: &Tree, row: Row) -> String {
+    match row {
+        Row::Section(name) => name.to_uppercase(),
+        Row::Participant(pid, _) => {
+            let p = &model.participants[pid.0];
+            if pid == Model::YOU {
+                "you".to_string()
+            } else if p.kind == ParticipantKind::Main {
+                match p.session {
+                    Some(sidx) => {
+                        let s = &model.sessions[sidx];
+                        format!("{} · {}", s.title, s.start.with_timezone(&chrono::Local).format("%m-%d %H:%M"))
+                    }
+                    None => p.label.clone(),
+                }
+            } else {
+                p.label.clone()
+            }
+        }
+        Row::Node(idx) => tree.nodes[idx].name.clone(),
+    }
+}
+
 pub struct ExpandState {
     /// explicit user toggles, keyed by `Node.key`; always wins over `auto_open`/`all_open`.
     pub dir_overrides: HashMap<String, bool>,

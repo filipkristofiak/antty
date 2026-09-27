@@ -7,6 +7,8 @@ const KEYS: &[(&str, &str)] = &[
     ("j/k, ↓/↑", "row down/up"),
     ("g/G", "first/last row"),
     ("Ctrl-d/Ctrl-u", "half page down/up"),
+    ("Ctrl-f/Ctrl-b", "page down/up"),
+    ("Ctrl-e/Ctrl-y", "scroll rows down/up by one"),
     ("h/l, ←/→", "time cursor ±1 column"),
     ("H/L", "pan by half the pane width"),
     ("+/-", "zoom in/out"),

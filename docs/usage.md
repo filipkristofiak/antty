@@ -70,3 +70,8 @@ Bottom: a status bar with key hints and current zoom/session/watch state.
 | `q/Esc` | close overlay; Esc also cancels a count/prefix and clears the search |
 
 In Normal mode, letter keys act only when typed without Ctrl/Alt; unlisted Ctrl chords do nothing.
+
+## Differences from vim
+
+- `-` zooms out (paired with `+`); it does not open the parent directory as in oil.nvim/vim-vinegar. On a file, `zc` closes and selects its parent dir.
+- `H`/`L` pan the timeline by half the pane width; they do not jump to the top/bottom visible row. Use `zt`/`zb` to place the selected row instead.

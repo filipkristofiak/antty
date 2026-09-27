@@ -63,6 +63,7 @@ Keep, but document in `docs/usage.md`:
 
 - `-` zooms out; oil.nvim/vim-vinegar users expect "parent directory".
 - `H`/`L` pan the timeline; vim uses them for screen top/bottom.
+- [x] Documented in docs/usage.md ("Differences from vim").
 
 ## 7. Bugs
 

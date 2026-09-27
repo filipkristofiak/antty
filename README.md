@@ -27,6 +27,7 @@ Currently reads oh-my-pi (omp) session logs. Other harnesses are planned.
 - [Usage](docs/usage.md)
 - [How it works](docs/how-it-works.md)
 - [Architecture](docs/architecture.md)
+- [Roadmap](docs/roadmap.md)
 
 ## License
 

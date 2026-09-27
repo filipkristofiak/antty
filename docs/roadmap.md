@@ -1,0 +1,88 @@
+# Roadmap
+
+antty borrows vim/Neovim muscle memory; it does not integrate with the Neovim
+ecosystem (no editor hand-off, plugin, or remote API). The goal is that a
+vim user's reflexes either do the expected thing or nothing — never something
+different.
+
+Priority order: a key that does the *wrong* thing (false friend) is worse than
+a key that does nothing (dead key), which is worse than a missing nicety.
+
+## 1. False friends: modifier guard in Normal mode
+
+`handle_key_normal` (`src/main.rs`) only checks modifiers on `Ctrl-d`/`Ctrl-u`;
+every other Ctrl chord runs the bare letter's action.
+
+| Reflex | Vim meaning | antty today |
+| --- | --- | --- |
+| `Ctrl-f` | page down | fit — discards the current zoom |
+| `Ctrl-z` | suspend | arms the `z` prefix, swallowing the next key |
+| `Ctrl-n` | line down | next activity (`Ctrl-p` is dead) |
+| `Ctrl-a` | increment | toggles auto-follow |
+| `Ctrl-l` | redraw | time cursor right |
+| `Ctrl-g` | file info | first row |
+| `Ctrl-t` / `Ctrl-s` | tag pop / — | cursor to now / session picker |
+
+- [ ] Plain-letter bindings match only with no modifier other than Shift.
+- [ ] `Ctrl-f`/`Ctrl-b`: page down/up; `Ctrl-e`/`Ctrl-y`: scroll one row.
+- [ ] Unbound Ctrl chords are no-ops.
+
+## 2. Consistent overlays
+
+- [ ] Picker closes on `q` (today only `Esc`, `handle_key_picker`), matching
+  Detail/Diff/Help.
+- [ ] Picker: `g`/`G`, `Ctrl-d`/`Ctrl-u`.
+- [ ] Detail list: `g`/`G`.
+
+## 3. Vim grammar
+
+- [ ] Counts: `5j`, `10l`, `3n`, etc.
+- [ ] Folds: `zo`/`zc`/`zO`/`zC` alongside `za`/`zM`/`zR`.
+- [ ] Time-axis line motions: `0` to view start, `$` to now.
+- [ ] Section motions: `{`/`}` between `PARTICIPANTS`/`FILES`/`MOUNTS`/`WEB`.
+- [ ] `zz`/`zt`/`zb`: scroll the selected row to middle/top/bottom.
+- [ ] `gg` as first row; frees a single `g` as a prefix (today `g` alone
+  jumps, so `gg` works only incidentally).
+
+## 4. Search
+
+- [ ] `/` searches tree rows by name; `n`/`N` cycle matches while a search is
+  active (today `n`/`N` jump activity — decide precedence, e.g. search matches
+  until `Esc` clears the search).
+
+## 5. Feedback
+
+- [ ] Show a pending prefix (`z`, `g`, counts) in the status bar, like
+  `showcmd`.
+- [ ] `Ctrl-C` in Normal mode flashes `Type :q and press <Enter> to exit`,
+  mirroring Neovim. `q` stays a no-op at top level.
+- [ ] `:` line: `Ctrl-U` clears, `Ctrl-W` deletes a word; `↑`/`↓` history.
+
+## 6. Minor mapping clashes
+
+Keep, but document in `docs/usage.md`:
+
+- `-` zooms out; oil.nvim/vim-vinegar users expect "parent directory".
+- `H`/`L` pan the timeline; vim uses them for screen top/bottom.
+
+## 7. Bugs
+
+- [ ] 15-minute zoom tick row reads `5050…`: `render_header`
+  (`src/ui/gantt_pane.rs`) prints the minute's last digit, which only alternates
+  0/5 at 15m columns. Same class as the already-handled 10m case.
+
+## 8. Linux runtime
+
+- [ ] Watcher failure is silent and the status bar still reports `watch:on`:
+  `spawn_watcher` (`src/watch.rs`) drops errors via `.ok()?`, and `main`
+  sets watch state from `!args.no_watch`, not from the watcher result. Surface
+  the error; report the real state.
+- [ ] inotify watch budget: `RecursiveMode::Recursive` adds a watch per
+  directory, including gitignored `target/`/`node_modules/`; `.gitignore` is
+  applied only after events arrive. Large repos can exhaust
+  `fs.inotify.max_user_watches`. Watch non-ignored directories only.
+- [ ] Default `--state-dir` honors `$XDG_STATE_HOME` before
+  `~/.local/state/antty` (`src/cli.rs`); don't fall back to a relative path
+  when `HOME` is unset.
+- [ ] `run_loop` redraws every 200 ms even when idle; draw only on input,
+  messages, resize, or a clock-column change.

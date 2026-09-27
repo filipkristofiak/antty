@@ -34,4 +34,4 @@ cargo uninstall antty
 ## Files read and written
 
 - Reads `~/.omp/agent/sessions`
-- Writes `~/.local/state/antty/<project path with / replaced by _>.jsonl`
+- Writes `$XDG_STATE_HOME/antty/<project path with / replaced by _>.jsonl` (default `~/.local/state/antty/<project path with / replaced by _>.jsonl`)

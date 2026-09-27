@@ -10,7 +10,7 @@ antty [OPTIONS]
 | --- | --- |
 | `--project <PROJECT>` | Project root to show sessions for. Defaults to the current directory. |
 | `--sessions-dir <SESSIONS_DIR>` | Root directory holding the agent session jsonl files (default: omp's `~/.omp/agent/sessions`). |
-| `--state-dir <STATE_DIR>` | Directory used to persist watcher-observed filesystem changes. |
+| `--state-dir <STATE_DIR>` | Directory used to persist watcher-observed filesystem changes (default: `$XDG_STATE_HOME/antty`, else `~/.local/state/antty`). |
 | `--no-watch` | Disable the live filesystem watcher. |
 | `--idle-gap <IDLE_GAP>` | Idle gap (seconds) used to merge raw activity intervals into spans. Default: 30. |
 

@@ -72,16 +72,16 @@ Keep, but document in `docs/usage.md`:
 
 ## 8. Linux runtime
 
-- [ ] Watcher failure is silent and the status bar still reports `watch:on`:
+- [x] Watcher failure is silent and the status bar still reports `watch:on`:
   `spawn_watcher` (`src/watch.rs`) drops errors via `.ok()?`, and `main`
   sets watch state from `!args.no_watch`, not from the watcher result. Surface
   the error; report the real state.
-- [ ] inotify watch budget: `RecursiveMode::Recursive` adds a watch per
+- [x] inotify watch budget: `RecursiveMode::Recursive` adds a watch per
   directory, including gitignored `target/`/`node_modules/`; `.gitignore` is
   applied only after events arrive. Large repos can exhaust
   `fs.inotify.max_user_watches`. Watch non-ignored directories only.
-- [ ] Default `--state-dir` honors `$XDG_STATE_HOME` before
+- [x] Default `--state-dir` honors `$XDG_STATE_HOME` before
   `~/.local/state/antty` (`src/cli.rs`); don't fall back to a relative path
   when `HOME` is unset.
-- [ ] `run_loop` redraws every 200 ms even when idle; draw only on input,
+- [x] `run_loop` redraws every 200 ms even when idle; draw only on input,
   messages, resize, or a clock-column change.

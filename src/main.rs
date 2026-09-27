@@ -14,7 +14,6 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use notify::RecommendedWatcher;
 use ratatui::layout::Rect;
 
 use attrib::Attributor;
@@ -380,11 +379,11 @@ impl App {
         }
     }
 
-    fn handle_message(&mut self, msg: Msg) {
+    fn handle_message(&mut self, msg: Msg) -> bool {
         match msg {
             Msg::Lines { participant_file, lines } => {
                 let Some(dir) = project_dir_of(&participant_file, &self.sessions_root) else {
-                    return;
+                    return false;
                 };
                 if self.ui.status_extra.as_deref().is_some_and(|s| s.starts_with("no omp sessions")) {
                     self.ui.status_extra = None;
@@ -397,21 +396,30 @@ impl App {
                 }
                 parse::flush_dirty_spans(&mut self.model, self.idle_gap);
                 self.rebuild();
+                true
             }
             Msg::Reset(path) => {
                 if let Some(&who) = self.model.file_participant.get(&path) {
                     self.model.clear_participant_data(who);
                     self.rebuild();
+                    return true;
                 }
+                false
             }
             Msg::Fs(raw) => {
                 self.attributor.push(raw);
+                false
             }
             Msg::Tick => {
                 let pushed = self.attributor.classify_and_apply(&mut self.model, chrono::Utc::now());
                 if pushed > 0 {
                     self.rebuild();
                 }
+                self.ui.mode == Mode::Picker || pushed > 0
+            }
+            Msg::WatchError(e) => {
+                self.ui.status_extra = Some(format!("watch: {e}"));
+                true
             }
         }
     }
@@ -700,10 +708,15 @@ fn main() -> anyhow::Result<()> {
     let (tx, rx) = mpsc::channel::<Msg>();
     let _tailer = sessions::spawn_tailer(args.sessions_dir.clone(), args.project.clone(), project_dir, offsets, tx.clone());
 
-    let _watcher: Option<RecommendedWatcher> =
-        if args.no_watch { None } else { watch::spawn_watcher(args.project.clone(), tx.clone()) };
+    let mut watch_on = false;
+    if !args.no_watch {
+        match watch::spawn_watcher(args.project.clone(), tx.clone()) {
+            Ok(()) => watch_on = true,
+            Err(e) => status_extra = Some(format!("watch: {e}")),
+        }
+    }
 
-    let mut ui_state = UiState::new(!args.no_watch);
+    let mut ui_state = UiState::new(watch_on);
     ui_state.status_extra = status_extra;
 
     let mut terminal = ratatui::init();
@@ -736,9 +749,11 @@ fn run_loop(
     app: &mut App,
     rx: mpsc::Receiver<Msg>,
 ) -> anyhow::Result<()> {
+    let mut dirty = true;
+    let mut drawn_now_col = i64::MIN;
     loop {
         while let Ok(msg) = rx.try_recv() {
-            app.handle_message(msg);
+            dirty |= app.handle_message(msg);
         }
 
         if event::poll(Duration::from_millis(200))? {
@@ -747,10 +762,15 @@ fn run_loop(
                     if app.handle_key(key) {
                         return Ok(());
                     }
+                    dirty = true;
                 }
-                Event::Resize(_, _) => {}
+                Event::Resize(_, _) => dirty = true,
                 _ => {}
             }
+        }
+
+        if !dirty && app.view.col_for(chrono::Utc::now()) == drawn_now_col {
+            continue;
         }
 
         let size = terminal.size()?;
@@ -758,11 +778,13 @@ fn run_loop(
         app.layout = ui::compute_layout(root_rect, app.ui.mode);
         app.clamp_scroll();
         app.view.clamp_to_view(app.layout.gantt_width.max(1) as usize);
+        drawn_now_col = app.view.col_for(chrono::Utc::now());
 
         terminal.draw(|f| {
             let app_ref = app.as_ref();
             ui::draw(f, &app_ref);
         })?;
+        dirty = false;
     }
 }
 

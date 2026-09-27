@@ -2,7 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState};
 
 use crate::model::{Model, ParticipantKind, Session, Ts};
 
@@ -41,7 +41,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
     f.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
-        .title("Sessions  (Space toggle · a all · Enter apply · Esc cancel)")
+        .title("Sessions  (Space toggle · a all · Enter apply · q/Esc cancel)")
         .style(Style::default().bg(Color::Black));
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -49,8 +49,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
     let now = chrono::Utc::now();
     let items: Vec<ListItem> = sorted_indices(app.model)
         .into_iter()
-        .enumerate()
-        .map(|(pos, i)| {
+        .map(|i| {
             let s = &app.model.sessions[i];
             let checked = if app.ui.picker_selected.contains(&i) { "x" } else { " " };
             let end = end_label(s, now);
@@ -61,14 +60,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
                 .filter(|p| p.session == Some(i) && p.kind == ParticipantKind::Subagent)
                 .count();
             let text = format!("[{checked}] {}  {}–{}  {n_sub} subagents", s.title, local(s.start).format("%m-%d %H:%M"), end);
-            let style = if pos == app.ui.picker_cursor {
-                Style::default().bg(Color::Rgb(50, 70, 130)).fg(Color::White)
-            } else {
-                Style::default().fg(Color::White)
-            };
-            ListItem::new(Line::from(text)).style(style)
+            ListItem::new(Line::from(text)).style(Style::default().fg(Color::White))
         })
         .collect();
 
-    f.render_widget(List::new(items), inner);
+    let mut state = ListState::default();
+    state.select(Some(app.ui.picker_cursor));
+    let list = List::new(items).highlight_style(Style::default().bg(Color::Rgb(50, 70, 130)).fg(Color::White));
+    f.render_stateful_widget(list, inner, &mut state);
 }

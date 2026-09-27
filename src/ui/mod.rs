@@ -150,6 +150,8 @@ pub struct LayoutInfo {
     pub body_height: u16,
     /// number of timeline columns in the gantt pane.
     pub gantt_width: u16,
+    /// centered session-picker overlay; its inner height sizes picker half-page moves.
+    pub picker_area: Rect,
 }
 
 /// Shared layout math so main.rs can size scroll/pan behavior identically to what `draw` renders.
@@ -182,7 +184,7 @@ pub fn compute_layout(root: Rect, mode: Mode) -> LayoutInfo {
     // 2 border rows + 2 header rows in the gantt pane; tree pane matches with its own spacer.
     let body_height = gantt_area.height.saturating_sub(4);
     let gantt_width = gantt_area.width.saturating_sub(2);
-    LayoutInfo { tree_area, gantt_area, detail_area, status_area: outer[1], body_height, gantt_width }
+    LayoutInfo { tree_area, gantt_area, detail_area, status_area: outer[1], body_height, gantt_width, picker_area: centered_rect(60, 60, root) }
 }
 
 /// Top-level draw: main split (tree | gantt) + status bar, with mode-specific overlays.
@@ -198,7 +200,7 @@ pub fn draw(f: &mut Frame, app: &AppRef) {
     status::render(f, layout.status_area, app);
 
     match app.ui.mode {
-        Mode::Picker => picker::render(f, centered_rect(60, 60, root), app),
+        Mode::Picker => picker::render(f, layout.picker_area, app),
         Mode::Help => help::render(f, centered_rect(50, 60, root)),
         Mode::Diff => {
             let area = Rect { height: root.height.saturating_sub(1), ..root };

@@ -29,10 +29,10 @@ every other Ctrl chord runs the bare letter's action.
 
 ## 2. Consistent overlays
 
-- [ ] Picker closes on `q` (today only `Esc`, `handle_key_picker`), matching
+- [x] Picker closes on `q` (today only `Esc`, `handle_key_picker`), matching
   Detail/Diff/Help.
-- [ ] Picker: `g`/`G`, `Ctrl-d`/`Ctrl-u`.
-- [ ] Detail list: `g`/`G`.
+- [x] Picker: `g`/`G`, `Ctrl-d`/`Ctrl-u`.
+- [x] Detail list: `g`/`G`.
 
 ## 3. Vim grammar
 

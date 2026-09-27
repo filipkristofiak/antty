@@ -266,6 +266,13 @@ impl App {
         self.view.clamp_to_view(self.layout.gantt_width.max(1) as usize);
     }
 
+    /// Select Detail item `idx`, reset the text scroll, and move the gantt cursor to it.
+    fn select_detail(&mut self, idx: usize) {
+        self.ui.detail_selected = idx;
+        self.ui.detail_scroll = 0;
+        self.sync_cursor_to_detail();
+    }
+
     fn open_picker(&mut self) {
         self.ui.mode = Mode::Picker;
         self.ui.picker_selected = if self.model.session_filter.is_empty() {
@@ -499,17 +506,11 @@ impl App {
                 }
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if n > 0 {
-                    self.ui.detail_selected = (self.ui.detail_selected + 1).min(n - 1);
-                }
-                self.ui.detail_scroll = 0;
-                self.sync_cursor_to_detail();
+                self.select_detail(if n > 0 { (self.ui.detail_selected + 1).min(n - 1) } else { 0 });
             }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.ui.detail_selected = self.ui.detail_selected.saturating_sub(1);
-                self.ui.detail_scroll = 0;
-                self.sync_cursor_to_detail();
-            }
+            KeyCode::Char('k') | KeyCode::Up => self.select_detail(self.ui.detail_selected.saturating_sub(1)),
+            KeyCode::Char('g') => self.select_detail(0),
+            KeyCode::Char('G') => self.select_detail(n.saturating_sub(1)),
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.ui.detail_scroll = self.ui.detail_scroll.saturating_add(10);
             }
@@ -549,8 +550,9 @@ impl App {
 
     fn handle_key_picker(&mut self, key: KeyEvent) -> bool {
         let n = self.model.sessions.len();
+        let half = (self.layout.picker_area.height.saturating_sub(2) / 2).max(1) as usize;
         match key.code {
-            KeyCode::Esc => self.ui.mode = Mode::Normal,
+            KeyCode::Char('q') | KeyCode::Esc => self.ui.mode = Mode::Normal,
             KeyCode::Enter => self.apply_picker(),
             KeyCode::Char('a') => self.ui.picker_selected = (0..n).collect(),
             KeyCode::Char(' ') => {
@@ -568,6 +570,16 @@ impl App {
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => self.ui.picker_cursor = self.ui.picker_cursor.saturating_sub(1),
+            KeyCode::Char('g') => self.ui.picker_cursor = 0,
+            KeyCode::Char('G') => self.ui.picker_cursor = n.saturating_sub(1),
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if n > 0 {
+                    self.ui.picker_cursor = (self.ui.picker_cursor + half).min(n - 1);
+                }
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.ui.picker_cursor = self.ui.picker_cursor.saturating_sub(half)
+            }
             _ => {}
         }
         false

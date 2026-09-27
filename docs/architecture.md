@@ -10,7 +10,7 @@ Two background producers send `Msg`s over one `mpsc` channel:
 
 | Producer | Sends |
 | --- | --- |
-| tailer thread (`sessions::spawn_tailer`), polls session files every 1s | `Msg::Lines`, `Msg::Reset`, one `Msg::Tick` per poll |
+| tailer thread (`sessions::spawn_tailer`), polls every harness's session files (omp, Claude Code) every 1s | `Msg::Lines` (tagged with its `Harness` and project dir), `Msg::Reset`, one `Msg::Tick` per poll |
 | `notify`'s watcher thread, via the `watch::handle_event` callback | `Msg::Fs` |
 
 The main thread is the only consumer and the only code that touches
@@ -63,7 +63,7 @@ with its diff, as a JSON line to
 rotation, so the file grows with edit volume.
 
 At startup `attrib::replay` reads the log back. It must run after
-`sessions::load_initial`, which registers the participants the logged
+`sessions::load_initial` for every harness, which registers the participants the logged
 lines refer to. Lines that fail to parse or resolve are skipped silently,
 so getting this order wrong loses history with no error. If the file
 can't be read at all, the status bar shows an error.

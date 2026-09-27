@@ -11,9 +11,13 @@ pub struct RawArgs {
     #[arg(long)]
     pub project: Option<PathBuf>,
 
-    /// Root directory holding the agent session jsonl files (default: omp's ~/.omp/agent/sessions).
+    /// Root directory of omp's session jsonl files (default: ~/.omp/agent/sessions).
     #[arg(long)]
-    pub sessions_dir: Option<PathBuf>,
+    pub omp_dir: Option<PathBuf>,
+
+    /// Claude Code projects directory holding its session jsonl files (default: $CLAUDE_CONFIG_DIR/projects, else ~/.claude/projects).
+    #[arg(long)]
+    pub claude_dir: Option<PathBuf>,
 
     /// Directory used to persist watcher-observed filesystem changes (default: $XDG_STATE_HOME/antty, else ~/.local/state/antty).
     #[arg(long)]
@@ -31,7 +35,8 @@ pub struct RawArgs {
 #[derive(Debug, Clone)]
 pub struct Args {
     pub project: PathBuf,
-    pub sessions_dir: PathBuf,
+    pub omp_dir: PathBuf,
+    pub claude_dir: PathBuf,
     pub state_dir: PathBuf,
     pub no_watch: bool,
     pub idle_gap: i64,
@@ -55,6 +60,13 @@ fn default_state_dir(xdg_state_home: Option<OsString>, home: Option<OsString>) -
     bail!("cannot choose a default --state-dir: neither $XDG_STATE_HOME nor $HOME is an absolute path; pass --state-dir")
 }
 
+fn default_claude_dir(claude_config_dir: Option<OsString>, home: &str) -> PathBuf {
+    match claude_config_dir.filter(|v| !v.is_empty()) {
+        Some(v) => expand_tilde(Path::new(&v)).join("projects"),
+        None => Path::new(home).join(".claude/projects"),
+    }
+}
+
 impl Args {
     pub fn parse() -> Result<Self> {
         let raw = RawArgs::parse();
@@ -71,10 +83,14 @@ impl Args {
             .canonicalize()
             .with_context(|| format!("failed to canonicalize --project {}", project_raw.display()))?;
 
-        let sessions_dir = raw
-            .sessions_dir
+        let omp_dir = raw
+            .omp_dir
             .map(|p| expand_tilde(&p))
             .unwrap_or_else(|| PathBuf::from(&home).join(".omp/agent/sessions"));
+        let claude_dir = raw
+            .claude_dir
+            .map(|p| expand_tilde(&p))
+            .unwrap_or_else(|| default_claude_dir(std::env::var_os("CLAUDE_CONFIG_DIR"), &home));
 
         let state_dir = match raw.state_dir {
             Some(p) => expand_tilde(&p),
@@ -82,7 +98,8 @@ impl Args {
         };
         Ok(Args {
             project,
-            sessions_dir,
+            omp_dir,
+            claude_dir,
             state_dir,
             no_watch: raw.no_watch,
             idle_gap: raw.idle_gap,
@@ -95,7 +112,7 @@ mod tests {
     use std::ffi::OsString;
     use std::path::PathBuf;
 
-    use super::default_state_dir;
+    use super::{default_claude_dir, default_state_dir};
 
     #[test]
     fn default_state_dir_uses_absolute_xdg_or_home() {
@@ -112,5 +129,13 @@ mod tests {
         }
         assert!(default_state_dir(None, None).is_err());
         assert!(default_state_dir(None, Some(OsString::new())).is_err());
+    }
+
+    #[test]
+    fn default_claude_dir_prefers_config_dir() {
+        assert_eq!(default_claude_dir(Some(OsString::from("/cfg")), "/home/t"), PathBuf::from("/cfg/projects"));
+        for unset in [Some(OsString::new()), None] {
+            assert_eq!(default_claude_dir(unset, "/home/t"), PathBuf::from("/home/t/.claude/projects"));
+        }
     }
 }

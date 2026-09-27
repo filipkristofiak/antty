@@ -9,9 +9,50 @@ use std::time::Duration;
 use crate::model::{Model, ParticipantId, ParticipantKind, Session};
 use crate::watch::RawFs;
 
+/// Which agent harness wrote a session log, and so which on-disk format to read it with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Harness {
+    Omp,
+    Claude,
+}
+
+impl Harness {
+    fn discover_project_dir(self, root: &Path, project_root: &Path) -> Option<PathBuf> {
+        match self {
+            Harness::Omp => discover_omp_project_dir(root, project_root),
+            Harness::Claude => crate::claude::discover_project_dir(root, project_root),
+        }
+    }
+
+    fn scan_files(self, project_dir: &Path) -> Vec<PathBuf> {
+        match self {
+            Harness::Omp => scan_jsonl_files(project_dir),
+            Harness::Claude => crate::claude::scan_files(project_dir),
+        }
+    }
+
+    /// Register `file`'s participant (and its ancestors) in `model`; idempotent.
+    pub fn ensure_participant(self, model: &mut Model, file: &Path, project_dir: &Path) -> ParticipantId {
+        match self {
+            Harness::Omp => ensure_omp_participant(model, file, project_dir),
+            Harness::Claude => crate::claude::ensure_participant(model, file, project_dir),
+        }
+    }
+
+    /// Ingest one parsed jsonl line from `who`'s session file. `idle_gap` is omp-only.
+    pub fn ingest(self, model: &mut Model, who: ParticipantId, v: &serde_json::Value, idle_gap: i64) {
+        match self {
+            Harness::Omp => crate::parse::ingest(model, who, v, idle_gap),
+            Harness::Claude => crate::claude::ingest(model, who, v),
+        }
+    }
+}
+
 /// Messages sent from background threads (tailer, fs watcher) to the main event loop.
 pub enum Msg {
     Lines {
+        harness: Harness,
+        project_dir: PathBuf,
         participant_file: PathBuf,
         lines: Vec<String>,
     },
@@ -29,7 +70,7 @@ pub struct FileRole {
 
 /// `D/<X1>/.../<Xk>/<name>.jsonl` has parent file `D/<X1>/.../<Xk>.jsonl`.
 /// A file directly inside the project dir (k == 0) has no parent (it is a Main session).
-pub fn parent_file_of(path: &Path, project_dir: &Path) -> Option<PathBuf> {
+fn parent_file_of(path: &Path, project_dir: &Path) -> Option<PathBuf> {
     let containing_dir = path.parent()?;
     if containing_dir == project_dir {
         return None;
@@ -39,7 +80,7 @@ pub fn parent_file_of(path: &Path, project_dir: &Path) -> Option<PathBuf> {
     Some(PathBuf::from(s))
 }
 
-pub fn classify_file(path: &Path, project_dir: &Path) -> FileRole {
+fn classify_file(path: &Path, project_dir: &Path) -> FileRole {
     let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
     let parent_file = parent_file_of(path, project_dir);
     if file_name == "__advisor.jsonl" {
@@ -70,7 +111,7 @@ pub fn classify_file(path: &Path, project_dir: &Path) -> FileRole {
 
 /// Recursively ensure `file`'s participant (and every ancestor's) is registered in `model`.
 /// Idempotent: returns the existing id if already known.
-pub fn ensure_participant(model: &mut Model, file: &Path, project_dir: &Path) -> ParticipantId {
+fn ensure_omp_participant(model: &mut Model, file: &Path, project_dir: &Path) -> ParticipantId {
     if let Some(&id) = model.file_participant.get(file) {
         return id;
     }
@@ -95,7 +136,7 @@ pub fn ensure_participant(model: &mut Model, file: &Path, project_dir: &Path) ->
         ParticipantKind::Advisor | ParticipantKind::Subagent => {
             let (parent_id, session) = match &role.parent_file {
                 Some(pf) => {
-                    let pid = ensure_participant(model, pf, project_dir);
+                    let pid = ensure_omp_participant(model, pf, project_dir);
                     (Some(pid), model.participants[pid.0].session)
                 }
                 None => (None, None),
@@ -121,21 +162,21 @@ fn read_header_cwd(path: &Path) -> Option<PathBuf> {
     v.get("cwd").and_then(|c| c.as_str()).map(PathBuf::from)
 }
 
-fn is_jsonl(path: &Path) -> bool {
+pub(crate) fn is_jsonl(path: &Path) -> bool {
     path.extension().map(|e| e == "jsonl").unwrap_or(false)
 }
 
-fn is_dotfile(path: &Path) -> bool {
+pub(crate) fn is_dotfile(path: &Path) -> bool {
     path.file_name()
         .and_then(|n| n.to_str())
         .map(|n| n.starts_with('.'))
         .unwrap_or(true)
 }
 
-/// Find the direct child of `sessions_root` whose most-recent top-level session file has
+/// Find the direct child of omp's `sessions_root` whose most-recent top-level session file has
 /// `cwd == project_root`. Header matching is authoritative; we never reimplement omp's
 /// cwd-encoding rule.
-pub fn discover_project_dir(sessions_root: &Path, project_root: &Path) -> Option<PathBuf> {
+fn discover_omp_project_dir(sessions_root: &Path, project_root: &Path) -> Option<PathBuf> {
     let rd = fs::read_dir(sessions_root).ok()?;
     for entry in rd.flatten() {
         let dir = entry.path();
@@ -180,8 +221,8 @@ fn scan_jsonl_files_rec(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Collect every non-dotfile `*.jsonl` under `project_dir`, recursively.
-pub fn scan_jsonl_files(project_dir: &Path) -> Vec<PathBuf> {
+/// Collect every non-dotfile `*.jsonl` under omp's `project_dir`, recursively.
+fn scan_jsonl_files(project_dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     scan_jsonl_files_rec(project_dir, &mut out);
     out
@@ -213,21 +254,31 @@ pub struct TailState {
     pub partial: Vec<u8>,
 }
 
-/// Synchronously read every jsonl file for the project's session dir once, ingesting all
-/// historical lines into `model`. Returns the discovered project dir (if any) and each file's
-/// resulting tail state (offset just past the last complete newline, plus any dangling partial
-/// bytes), so a subsequent tailer can resume exactly from there without losing or duplicating a
-/// line that was mid-write at startup.
+/// One harness's session root being tailed for the current project.
+pub struct TailSource {
+    pub harness: Harness,
+    pub root: PathBuf,
+    /// the project's dir under `root`, once discovered.
+    pub project_dir: Option<PathBuf>,
+    pub states: HashMap<PathBuf, TailState>,
+}
+
+/// Synchronously read every jsonl file for the project's session dir under `root` once,
+/// ingesting all historical lines into `model`. Returns the discovered project dir (if any) and
+/// each file's resulting tail state (offset just past the last complete newline, plus any
+/// dangling partial bytes), so a subsequent tailer can resume exactly from there without losing
+/// or duplicating a line that was mid-write at startup.
 pub fn load_initial(
     model: &mut Model,
-    sessions_root: &Path,
+    harness: Harness,
+    root: &Path,
     project_root: &Path,
     idle_gap: i64,
-) -> (Option<PathBuf>, HashMap<PathBuf, TailState>) {
-    let project_dir = discover_project_dir(sessions_root, project_root);
+) -> TailSource {
+    let project_dir = harness.discover_project_dir(root, project_root);
     let mut states = HashMap::new();
     if let Some(dir) = &project_dir {
-        for f in scan_jsonl_files(dir) {
+        for f in harness.scan_files(dir) {
             let Ok(bytes) = fs::read(&f) else { continue };
             let (lines, partial) = split_lines(Vec::new(), &bytes);
             // `offset` stops right before any dangling (incomplete) trailing line; we do NOT
@@ -237,45 +288,37 @@ pub fn load_initial(
             // on top, duplicating the fragment and breaking its JSON. Leaving the tail state's
             // partial empty lets the next read pick the dangling bytes up fresh, exactly once.
             let consumed = (bytes.len() - partial.len()) as u64;
-            let who = ensure_participant(model, &f, dir);
+            let who = harness.ensure_participant(model, &f, dir);
             for line in &lines {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-                    crate::parse::ingest(model, who, &v, idle_gap);
+                    harness.ingest(model, who, &v, idle_gap);
                 }
             }
             states.insert(f, TailState { offset: consumed, partial: Vec::new() });
         }
     }
     crate::parse::flush_dirty_spans(model, idle_gap);
-    (project_dir, states)
+    TailSource { harness, root: root.to_path_buf(), project_dir, states }
 }
 
-/// Background thread: rediscovers the project's session dir and tails every jsonl file in it
-/// once per second, forwarding complete lines to the main thread. `initial_states` seeds each
-/// file's starting offset from `load_initial`; `partial` starts empty in every seeded entry, so
-/// any line still incomplete at startup is read fresh on the first tick.
-pub fn spawn_tailer(
-    sessions_root: PathBuf,
-    project_root: PathBuf,
-    initial_project_dir: Option<PathBuf>,
-    initial_states: HashMap<PathBuf, TailState>,
-    tx: Sender<Msg>,
-) -> thread::JoinHandle<()> {
+/// Background thread: for every source, rediscovers the project's session dir and tails every
+/// jsonl file in it once per second, forwarding complete lines to the main thread. Each source's
+/// `states` seeds file offsets from `load_initial`; `partial` starts empty in every seeded entry,
+/// so any line still incomplete at startup is read fresh on the first tick.
+pub fn spawn_tailer(project_root: PathBuf, mut sources: Vec<TailSource>, tx: Sender<Msg>) -> thread::JoinHandle<()> {
     thread::spawn(move || {
-        let mut project_dir = initial_project_dir;
-        let mut states: HashMap<PathBuf, TailState> = initial_states;
-
         loop {
-            if project_dir.is_none() {
-                project_dir = discover_project_dir(&sessions_root, &project_root);
-            }
-            if let Some(dir) = &project_dir {
-                for f in scan_jsonl_files(dir) {
+            for src in sources.iter_mut() {
+                if src.project_dir.is_none() {
+                    src.project_dir = src.harness.discover_project_dir(&src.root, &project_root);
+                }
+                let Some(dir) = &src.project_dir else { continue };
+                for f in src.harness.scan_files(dir) {
                     let size = match fs::metadata(&f) {
                         Ok(m) => m.len(),
                         Err(_) => continue,
                     };
-                    let state = states.entry(f.clone()).or_insert(TailState { offset: 0, partial: Vec::new() });
+                    let state = src.states.entry(f.clone()).or_insert(TailState { offset: 0, partial: Vec::new() });
                     if size < state.offset {
                         state.offset = 0;
                         state.partial.clear();
@@ -296,6 +339,8 @@ pub fn spawn_tailer(
                                     state.partial = new_partial;
                                     if !lines.is_empty() {
                                         let _ = tx.send(Msg::Lines {
+                                            harness: src.harness,
+                                            project_dir: dir.clone(),
                                             participant_file: f.clone(),
                                             lines,
                                         });
@@ -340,9 +385,9 @@ mod tests {
         fs::write(&file, format!("{title_line}{header_line}{half_written}")).unwrap();
 
         let mut model = Model::new(project_root.clone());
-        let (dir, states) = load_initial(&mut model, &sessions_root, &project_root, 30);
-        assert_eq!(dir, Some(project_dir));
-        let state = states.get(&file).expect("tail state seeded for the file");
+        let src = load_initial(&mut model, Harness::Omp, &sessions_root, &project_root, 30);
+        assert_eq!(src.project_dir, Some(project_dir));
+        let state = src.states.get(&file).expect("tail state seeded for the file");
         assert!(state.partial.is_empty(), "load_initial must not carry the dangling line forward in-memory");
 
         // The writer finishes the line and appends more, exactly like a live tailer tick would see.

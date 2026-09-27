@@ -116,7 +116,7 @@ fn temp_roots() -> &'static [PathBuf] {
 /// belongs to and the `FileEvent.rel` to store. None for other internal schemes (omp://,
 /// xd://, agent://, artifact://, skill://, …), http(s) (handled by the `read` arm), and
 /// unresolvable paths.
-fn locate(model: &Model, who: ParticipantId, raw: &str, file_cwd: &Path) -> Option<(Scope, PathBuf)> {
+pub(crate) fn locate(model: &Model, who: ParticipantId, raw: &str, file_cwd: &Path) -> Option<(Scope, PathBuf)> {
     if let Some(rest) = raw.strip_prefix("ssh://") {
         let without_query = rest.split('?').next().unwrap_or(rest);
         let clean = strip_selector(without_query);
@@ -154,7 +154,7 @@ fn locate(model: &Model, who: ParticipantId, raw: &str, file_cwd: &Path) -> Opti
 // timestamps
 // ---------------------------------------------------------------------------
 
-fn parse_ts_iso(s: &str) -> Option<Ts> {
+pub(crate) fn parse_ts_iso(s: &str) -> Option<Ts> {
     chrono::DateTime::parse_from_rfc3339(s)
         .ok()
         .map(|dt| dt.with_timezone(&chrono::Utc))
@@ -168,7 +168,7 @@ fn parse_ts_ms(n: i64) -> Ts {
 // span bookkeeping
 // ---------------------------------------------------------------------------
 
-fn push_raw_interval(model: &mut Model, who: ParticipantId, start: Ts, end: Ts) {
+pub(crate) fn push_raw_interval(model: &mut Model, who: ParticipantId, start: Ts, end: Ts) {
     let (start, end) = if start <= end { (start, end) } else { (end, start) };
     model.raw_intervals.entry(who.0).or_default().push((start, end));
     model.dirty_spans.insert(who.0);
@@ -1196,7 +1196,7 @@ mod tests {
         // model_with_main's session file stem is "session"; the resolved path here sits under a
         // *different* project dir ("-other-proj") than the session's current `cwd`, simulating a
         // session that has been `/move`d since this write happened.
-        model.sessions_root = PathBuf::from("/sr");
+        model.session_roots = vec![PathBuf::from("/sr")];
         let start_v: Value = serde_json::json!({
             "type":"custom","customType":"tool_execution_start",
             "data":{"toolCallId":"w1","toolName":"write","startedAt":"2026-01-01T00:00:00.000Z","args":{"path":"local://plan.md","content":"x"}}

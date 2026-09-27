@@ -416,8 +416,7 @@ impl App {
             KeyCode::Char('+') | KeyCode::Char('=') => self.view.zoom_in(),
             KeyCode::Char('-') => self.view.zoom_out(),
             KeyCode::Char('t') => {
-                self.view.cursor = chrono::Utc::now();
-                self.view.clamp_to_view(width);
+                self.view.anchor_right(chrono::Utc::now(), width);
             }
             KeyCode::Char('f') => self.fit(),
             KeyCode::Char('n') => self.jump_to_activity(true),

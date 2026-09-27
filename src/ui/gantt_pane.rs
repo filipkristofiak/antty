@@ -30,7 +30,7 @@ fn is_boundary(start: Ts, end: Ts, col_secs: i64) -> bool {
     // before each end of `[start, end)`: if they differ, a crossing happened somewhere within.
     let a = (start - chrono::Duration::seconds(1)).with_timezone(&chrono::Local);
     let b = (end - chrono::Duration::seconds(1)).with_timezone(&chrono::Local);
-    if col_secs <= 900 { a.hour() != b.hour() } else { a.date_naive() != b.date_naive() }
+    if col_secs < 3600 { a.hour() != b.hour() } else { a.date_naive() != b.date_naive() }
 }
 
 fn render_header(f: &mut Frame, area: Rect, app: &AppRef) {
@@ -39,13 +39,14 @@ fn render_header(f: &mut Frame, area: Rect, app: &AppRef) {
     let cursor_col = app.view.col_for(app.view.cursor);
     let buf = f.buffer_mut();
 
-    // At col_secs <= 900, `origin` (a multiple of col_secs) is also guaranteed a multiple of
-    // 3600 divided evenly by col_secs, so every hour mark lands exactly on a bucket's `start`:
-    // label that instant directly. At coarser zooms (6h/1d columns) a local day boundary is not
-    // guaranteed to land on a bucket start (the local UTC offset need not divide col_secs), so
-    // `is_boundary` finds the crossing anywhere in the bucket and we label its tail instead.
+    // At col_secs < 3600 (every such level divides 3600), `origin` (a multiple of col_secs) is
+    // also guaranteed a multiple of 3600 divided evenly by col_secs, so every hour mark lands
+    // exactly on a bucket's `start`: label that instant directly. At coarser zooms (2h and up) a
+    // local day boundary is not guaranteed to land on a bucket start (the local UTC offset need
+    // not divide col_secs), so `is_boundary` finds the crossing anywhere in the bucket and we
+    // label its tail instead.
     let label_instant = |start: Ts, end: Ts| -> chrono::DateTime<chrono::Local> {
-        if secs <= 900 {
+        if secs < 3600 {
             start.with_timezone(&chrono::Local)
         } else {
             (end - chrono::Duration::seconds(1)).with_timezone(&chrono::Local)
@@ -59,7 +60,7 @@ fn render_header(f: &mut Frame, area: Rect, app: &AppRef) {
         let boundary = col == 0 || is_boundary(start, end, secs);
         if boundary && col >= next_free {
             let is_month_start = local.format("%d").to_string() == "01";
-            let label = if secs <= 900 {
+            let label = if secs < 3600 {
                 local.format("%H:%M").to_string()
             } else if col == 0 || is_month_start {
                 local.format("%b %d").to_string()
@@ -78,10 +79,12 @@ fn render_header(f: &mut Frame, area: Rect, app: &AppRef) {
     for col in 0..width {
         let (start, end) = app.view.bucket(col);
         let local = label_instant(start, end);
-        // At day zoom, every column is a day: show its weekday letter. At minute/hour zoom,
-        // show the last digit of the minute/hour. In between (e.g. 6h columns), a per-column
-        // hour digit cycles through unrelated values and reads as noise, so only columns where
-        // a local day actually begins get a mark; the rest stay blank except for the cursor.
+        // At day zoom, every column is a day: show its weekday letter. At minute zoom, show the
+        // last digit of the minute; at 30m/1h zoom, the last digit of the hour. In between (e.g.
+        // 2h/3h/6h/12h columns), a per-column hour digit cycles through unrelated values and
+        // reads as noise, so only columns where a local day actually begins get a mark; the rest
+        // stay blank except for the cursor. At 10m columns the minute always ends in 0, so show
+        // the minute's tens digit (0-5) instead.
         let ch = if secs >= 86400 {
             local.format("%a").to_string().chars().next().unwrap_or(' ')
         } else if secs > 3600 {
@@ -90,8 +93,10 @@ fn render_header(f: &mut Frame, area: Rect, app: &AppRef) {
             } else {
                 ' '
             }
-        } else if secs >= 3600 {
+        } else if secs >= 1800 {
             local.format("%H").to_string().chars().last().unwrap_or(' ')
+        } else if secs == 600 {
+            local.format("%M").to_string().chars().next().unwrap_or(' ')
         } else {
             local.format("%M").to_string().chars().last().unwrap_or(' ')
         };

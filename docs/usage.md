@@ -44,8 +44,8 @@ Bottom: a status bar with key hints and current zoom/session/watch state.
 | `h/l, ←/→` | time cursor ±1 column |
 | `H/L` | pan by half the pane width |
 | `+/-` | zoom in/out |
-| `t` | cursor to now |
-| `f` | fit |
+| `t` | cursor to now, pinned near the right edge |
+| `f` | fit all activity, latest near the right edge |
 | `n/N` | next/prev bucket with activity on the selected row |
 | `Space/za` | toggle dir/session; on a file: collapse its dir |
 | `zM/zR` | collapse/expand all dirs |

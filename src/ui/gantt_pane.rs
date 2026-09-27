@@ -7,10 +7,7 @@ use ratatui::widgets::{Block, Borders};
 use crate::model::{Model, ParticipantId, ParticipantKind, Ts, TouchKind};
 use crate::tree::Row;
 
-use super::{AppRef, color_for, palette_color};
-
-const SELECTED_BG: Color = Color::Rgb(50, 70, 130);
-const CURSOR_BG: Color = Color::Rgb(40, 40, 60);
+use super::{AppRef, CURSOR_BG, HIGHLIGHT_FG, SELECTED_BG, color_for, palette_color};
 
 pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
     let block = Block::default().borders(Borders::ALL).title("Gantt Chart Timeline");
@@ -100,7 +97,7 @@ fn render_header(f: &mut Frame, area: Rect, app: &AppRef) {
         let ch = tick_char(local, secs, secs > 3600 && secs < 86400 && is_boundary(start, end, secs));
         let mut style = Style::default().fg(Color::DarkGray);
         if col == cursor_col {
-            style = style.bg(CURSOR_BG).fg(Color::White);
+            style = style.bg(CURSOR_BG).fg(HIGHLIGHT_FG);
         }
         let x = area.x + col as u16;
         buf.set_string(x, area.y + 1, ch.to_string(), style);

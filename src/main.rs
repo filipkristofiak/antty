@@ -2,6 +2,7 @@ mod attrib;
 mod claude;
 mod cli;
 mod cmdline;
+mod editor;
 mod model;
 mod parse;
 mod search;
@@ -123,6 +124,7 @@ struct App {
     attributor: Attributor,
     idle_gap: i64,
     layout: ui::LayoutInfo,
+    launch: Option<editor::Invocation>,
 }
 
 impl App {
@@ -254,6 +256,50 @@ impl App {
 
     fn selected_row(&self) -> Option<Row> {
         self.rows.get(self.ui.selected).copied()
+    }
+
+    fn open_in_editor(&mut self, target: Result<(std::path::PathBuf, Option<usize>), &'static str>) {
+        match target {
+            Err(msg) => self.ui.flash = Some(msg.into()),
+            Ok((path, _)) if !path.is_file() => {
+                self.ui.flash = Some(format!("no longer on disk: {}", path.display()));
+            }
+            Ok((path, line)) => {
+                match editor::invocation(&path, line, std::env::var_os("NVIM"), std::env::var_os("EDITOR")) {
+                    Ok(inv) => self.launch = Some(inv),
+                    Err(msg) => self.ui.flash = Some(msg),
+                }
+            }
+        }
+    }
+
+    fn selected_file_target(&self) -> Result<(std::path::PathBuf, Option<usize>), &'static str> {
+        let Some(Row::Node(idx)) = self.selected_row() else { return Err("not a file") };
+        let node = &self.tree.nodes[idx];
+        if node.is_dir {
+            return Err("not a file");
+        }
+        let path = if let Some(rel) = node.key.strip_prefix("f:") {
+            self.model.root.join(rel)
+        } else if let Some(&idx) = node.events.first() {
+            editor::event_path(&self.model, &self.model.events[idx]).ok_or("not a local file")?
+        } else {
+            return Err("not a file");
+        };
+        let mut events: Vec<_> = node.events.iter().map(|&idx| &self.model.events[idx])
+            .filter(|e| self.model.visible(e.who)).collect();
+        events.sort_by_key(|e| std::cmp::Reverse(e.end));
+        let line = events.into_iter().find_map(|e| editor::event_line(&self.model, e));
+        Ok((path, line))
+    }
+
+    fn detail_target(&self) -> Result<(std::path::PathBuf, Option<usize>), &'static str> {
+        let Some(ui::DetailItem::Event(idx)) = ui::detail::selected_item(&self.as_ref()) else {
+            return Err("not a file");
+        };
+        let e = &self.model.events[idx];
+        let path = editor::event_path(&self.model, e).ok_or("not a local file")?;
+        Ok((path, editor::event_line(&self.model, e)))
     }
 
     /// Open the ancestors needed to show a match in its current forest.
@@ -647,6 +693,7 @@ impl App {
                 self.refresh_rows();
             }
             KeyCode::Enter => self.enter_detail(),
+            KeyCode::Char('e') => self.open_in_editor(self.selected_file_target()),
             KeyCode::Char('T') => {
                 self.ui.expand.touched_only = !self.ui.expand.touched_only;
                 self.refresh_rows();
@@ -664,6 +711,7 @@ impl App {
         let n = ui::detail::resolve_items(&app_ref).len();
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.ui.mode = Mode::Normal,
+            KeyCode::Char('e') => self.open_in_editor(self.detail_target()),
             KeyCode::Enter => {
                 if n > 0 {
                     self.ui.mode = Mode::Diff;
@@ -696,6 +744,7 @@ impl App {
         let page = self.layout.body_height.max(2) / 2;
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.ui.mode = Mode::Detail,
+            KeyCode::Char('e') => self.open_in_editor(self.detail_target()),
             KeyCode::Char('j') | KeyCode::Down => self.ui.diff_scroll = self.ui.diff_scroll.saturating_add(1),
             KeyCode::Char('k') | KeyCode::Up => self.ui.diff_scroll = self.ui.diff_scroll.saturating_sub(1),
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -790,6 +839,7 @@ fn main() -> anyhow::Result<()> {
 
     let mut ui_state = UiState::new(watch_on);
     ui_state.status_extra = status_extra;
+    ui_state.no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
 
     let mut terminal = ratatui::init();
     let size = terminal.size()?;
@@ -807,6 +857,7 @@ fn main() -> anyhow::Result<()> {
         attributor,
         idle_gap: args.idle_gap,
         layout,
+        launch: None,
     };
     app.fit();
 
@@ -832,6 +883,9 @@ fn run_loop(
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     if app.handle_key(key) {
                         return Ok(());
+                    }
+                    if let Some(inv) = app.launch.take() {
+                        app.ui.flash = editor::run(terminal, &inv)?;
                     }
                     dirty = true;
                 }
@@ -970,6 +1024,7 @@ mod tests {
             attributor: Attributor::new(&state_dir, &root),
             idle_gap: 30,
             layout,
+            launch: None,
         };
         fn keys(app: &mut App, chars: &str) {
             for c in chars.chars() {
@@ -1018,6 +1073,7 @@ mod tests {
             attributor: Attributor::new(&state_dir, &root),
             idle_gap: 30,
             layout,
+            launch: None,
         };
         let key = |app: &mut App, code| { app.handle_key(KeyEvent::new(code, KeyModifiers::NONE)); };
         key(&mut app, KeyCode::Char('/'));

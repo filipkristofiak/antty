@@ -21,11 +21,11 @@ aider, avante.nvim or codecompanion.nvim, so antty shows them nothing.
 
 ## 2. Open in editor
 
-- [ ] A key on file rows and on Detail/Diff event rows opens the file (at the
+- [x] `e` on file rows and on Detail/Diff event rows opens the file (at the
   first changed line when known).
-- [ ] Inside Neovim's `:terminal` (`$NVIM` set):
-  `nvim --server "$NVIM" --remote` opens it in the parent Neovim.
-- [ ] Otherwise `$EDITOR +<line> <file>`, suspending the TUI until it exits.
+- [x] Inside Neovim's `:terminal` (`$NVIM` set):
+  `nvim --server "$NVIM" --remote-expr` opens it in the parent Neovim.
+- [x] Otherwise `$EDITOR +<line> <file>`, suspending the TUI until it exits.
 
 ## 3. External diff tools
 
@@ -41,14 +41,14 @@ aider, avante.nvim or codecompanion.nvim, so antty shows them nothing.
 
 ## 5. Colours and themes
 
-- [ ] Help, picker and status bars use the terminal's default background, not
+- [x] Help, picker and status bars use the terminal's default background, not
   `Color::Black` (`src/ui/help.rs`, `src/ui/picker.rs`, `src/ui/status.rs`).
-- [ ] The selection (`Rgb(50,70,130)`) and cursor-column (`Rgb(40,40,60)`)
+- [x] The selection (`Rgb(50,70,130)`) and cursor-column (`Rgb(40,40,60)`)
   colours stay readable on light themes (`tree_pane.rs`, `gantt_pane.rs`,
   `detail.rs`, `picker.rs`).
-- [ ] Drop `Color::White` from the participant lane palette (`src/ui/mod.rs`);
+- [x] Drop `Color::White` from the participant lane palette (`src/ui/mod.rs`);
   it vanishes on light backgrounds.
-- [ ] Honor `NO_COLOR`.
+- [x] Honor `NO_COLOR`.
 
 ## 6. Packaging
 

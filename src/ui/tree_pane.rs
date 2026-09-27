@@ -7,9 +7,7 @@ use crate::model::ParticipantKind;
 use crate::search;
 use crate::tree::{self, Row};
 
-use super::{AppRef, color_for, truncate};
-
-const SELECTED_BG: Color = Color::Rgb(50, 70, 130);
+use super::{AppRef, HIGHLIGHT_FG, SELECTED_BG, color_for, truncate};
 
 fn row_text_and_style(app: &AppRef, row: Row) -> (String, Style) {
     let label = tree::row_label(app.model, app.tree, row);
@@ -72,6 +70,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
         let (text, mut style) = row_text_and_style(app, row);
         let is_selected = row_idx == app.ui.selected;
         if is_selected {
+            if matches!(style.fg, None | Some(Color::DarkGray)) {
+                style = style.fg(HIGHLIGHT_FG);
+            }
             style = style.bg(SELECTED_BG);
             buf.set_string(inner.x, body_y + r, " ".repeat(width), style);
         }

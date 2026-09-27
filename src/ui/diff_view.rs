@@ -14,7 +14,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
         DetailItem::Event(idx) => {
             let e = &app.model.events[*idx];
             format!(
-                " {} · {} · {} · {}  (j/k scroll · Ctrl-d/u page · g/G top/bottom · Esc back) ",
+                " {} · {} · {} · {}  (j/k scroll · Ctrl-d/u page · g/G top/bottom · e edit · Esc back) ",
                 detail::display_target(app.model, e),
                 app.model.participants[e.who.0].label,
                 detail::event_kind_label(e),

@@ -26,3 +26,9 @@ Currently reads oh-my-pi (omp) session logs. Other harnesses are planned.
 - [Installation](docs/installation.md)
 - [Usage](docs/usage.md)
 - [How it works](docs/how-it-works.md)
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT) at your option.
+

@@ -4,18 +4,24 @@ use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 const KEYS: &[(&str, &str)] = &[
+    ("[count]", "repeat: 5j 10l 2H 3n 2} 3Ctrl-e …"),
     ("j/k, ↓/↑", "row down/up"),
-    ("g/G", "first/last row"),
-    ("Ctrl-d/Ctrl-u", "half page down/up"),
+    ("gg/G", "first/last row; [count]: row N"),
+    ("{/}", "prev/next section header"),
+    ("Ctrl-d/Ctrl-u", "half page down/up; [count]: N rows"),
     ("Ctrl-f/Ctrl-b", "page down/up"),
     ("Ctrl-e/Ctrl-y", "scroll rows down/up by one"),
+    ("zz/zt/zb", "selected row to middle/top/bottom"),
     ("h/l, ←/→", "time cursor ±1 column"),
+    ("0/$", "time cursor to view start / now"),
     ("H/L", "pan by half the pane width"),
     ("+/-", "zoom in/out"),
     ("t", "cursor to now, pinned near the right edge"),
     ("f", "fit all activity, latest near the right edge"),
     ("n/N", "next/prev bucket with activity on the selected row"),
     ("Space/za", "toggle dir/session; on a file: collapse its dir"),
+    ("zo/zc", "open/close; zc on a file or closed dir: its parent"),
+    ("zO/zC", "open/close recursively"),
     ("zM/zR", "collapse/expand all dirs"),
     ("a", "auto-expand the focused session's files on/off"),
     ("Enter", "open Detail for the selected row"),
@@ -24,7 +30,7 @@ const KEYS: &[(&str, &str)] = &[
     ("s", "session picker"),
     ("?", "this help"),
     (":q⏎", "quit"),
-    ("q/Esc", "close overlay"),
+    ("q/Esc", "close overlay; Esc also cancels a count/prefix"),
 ];
 
 pub fn render(f: &mut Frame, area: Rect) {

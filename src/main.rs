@@ -81,6 +81,48 @@ fn scrolled(scroll: usize, selected: usize, len: usize, height: usize, delta: i6
     (new_scroll, new_sel)
 }
 
+/// Largest accepted Normal-mode count; further digits are ignored.
+const MAX_COUNT: usize = 9999;
+
+/// Index of the nth section header strictly after/before selection, or the end of the list.
+fn section_target(rows: &[Row], selected: usize, forward: bool, n: usize) -> usize {
+    if rows.is_empty() {
+        return 0;
+    }
+    let nth = n.max(1) - 1;
+    let sections = if forward {
+        rows.iter()
+            .enumerate()
+            .skip(selected.saturating_add(1))
+            .filter(|(_, row)| matches!(row, Row::Section(_)))
+            .map(|(i, _)| i)
+            .nth(nth)
+    } else {
+        rows[..selected.min(rows.len())]
+            .iter()
+            .enumerate()
+            .rev()
+            .filter(|(_, row)| matches!(row, Row::Section(_)))
+            .map(|(i, _)| i)
+            .nth(nth)
+    };
+    sections.unwrap_or(if forward { rows.len() - 1 } else { 0 })
+}
+
+/// Viewport scroll placing the selection `offset` rows below its top, clamped at list ends.
+fn scroll_placing(selected: usize, len: usize, height: usize, offset: usize) -> usize {
+    selected.saturating_sub(offset).min(len.saturating_sub(height))
+}
+
+/// Nth distinct activity after/before the cursor; clamp to the farthest available timestamp.
+fn nth_activity(times: &[Ts], cursor: Ts, forward: bool, n: usize) -> Option<Ts> {
+    if forward {
+        times.iter().filter(|&&t| t > cursor).take(n.max(1)).last().copied()
+    } else {
+        times.iter().rev().filter(|&&t| t < cursor).take(n.max(1)).last().copied()
+    }
+}
+
 struct App {
     model: Model,
     tree: Tree,
@@ -180,6 +222,15 @@ impl App {
         self.land_on(row);
     }
 
+    fn goto_row(&mut self, idx: usize) {
+        self.move_selected(idx as i64 - self.ui.selected as i64);
+    }
+
+    fn place_selected(&mut self, offset: usize) {
+        let h = self.layout.body_height.max(1) as usize;
+        self.ui.scroll = scroll_placing(self.ui.selected, self.rows.len(), h, offset);
+    }
+
     fn scroll_viewport(&mut self, delta: i64, carry: bool) {
         let len = self.rows.len();
         if len == 0 {
@@ -241,6 +292,16 @@ impl App {
         self.refresh_rows();
     }
 
+    fn fold(&mut self, open: bool, recursive: bool) {
+        let Some(row) = self.selected_row() else { return };
+        if let Some(target) = self.ui.expand.fold(&self.model, &self.tree, row, open, recursive)
+            && let Some(pos) = self.rows.iter().position(|r| *r == target)
+        {
+            self.ui.selected = pos;
+        }
+        self.refresh_rows();
+    }
+
     fn enter_detail(&mut self) {
         if matches!(self.selected_row(), Some(Row::Section(_)) | None) {
             return;
@@ -298,7 +359,7 @@ impl App {
         self.rebuild();
     }
 
-    fn jump_to_activity(&mut self, forward: bool) {
+    fn jump_to_activity(&mut self, forward: bool, n: usize) {
         let Some(row) = self.selected_row() else { return };
         let mut times: Vec<Ts> = match row {
             Row::Node(idx) => self.tree.nodes[idx]
@@ -312,12 +373,7 @@ impl App {
         };
         times.sort();
         times.dedup();
-        let cursor = self.view.cursor;
-        let candidate = if forward {
-            times.into_iter().find(|t| *t > cursor)
-        } else {
-            times.into_iter().rev().find(|t| *t < cursor)
-        };
+        let candidate = nth_activity(&times, self.view.cursor, forward, n);
         if let Some(t) = candidate {
             self.view.cursor = t;
             self.view.clamp_to_view(self.layout.gantt_width.max(1) as usize);
@@ -422,62 +478,94 @@ impl App {
         // have their own table below, and any other modifier combination is a no-op — a vim
         // reflex must never trigger a different action.
         let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
-        if self.ui.pending_z {
-            self.ui.pending_z = false;
+        if let Some(prefix) = self.ui.pending.take() {
+            let count = self.ui.count.take();
             if plain {
-                match key.code {
-                    KeyCode::Char('a') => self.toggle_expand(),
-                    KeyCode::Char('M') => {
+                match (prefix, key.code) {
+                    ('z', KeyCode::Char('a')) => self.toggle_expand(),
+                    ('z', KeyCode::Char('o')) => self.fold(true, false),
+                    ('z', KeyCode::Char('O')) => self.fold(true, true),
+                    ('z', KeyCode::Char('c')) => self.fold(false, false),
+                    ('z', KeyCode::Char('C')) => self.fold(false, true),
+                    ('z', KeyCode::Char('M')) => {
                         self.ui.expand.collapse_all();
                         self.refresh_rows();
                     }
-                    KeyCode::Char('R') => {
+                    ('z', KeyCode::Char('R')) => {
                         self.ui.expand.expand_all();
                         self.refresh_rows();
                     }
+                    ('z', KeyCode::Char('z')) => self.place_selected(body as usize / 2),
+                    ('z', KeyCode::Char('t')) => self.place_selected(0),
+                    ('z', KeyCode::Char('b')) => self.place_selected(body as usize - 1),
+                    ('g', KeyCode::Char('g')) => self.goto_row(count.map_or(0, |c| c - 1)),
                     _ => {}
                 }
             }
             return false;
         }
         if !plain {
+            let count = self.ui.count.take();
             if key.modifiers == KeyModifiers::CONTROL {
+                let n = count.unwrap_or(1) as i64;
                 match key.code {
-                    KeyCode::Char('d') => self.move_selected(half_page),
-                    KeyCode::Char('u') => self.move_selected(-half_page),
-                    KeyCode::Char('f') => self.scroll_viewport((body - 2).max(1), true),
-                    KeyCode::Char('b') => self.scroll_viewport(-(body - 2).max(1), true),
-                    KeyCode::Char('e') => self.scroll_viewport(1, false),
-                    KeyCode::Char('y') => self.scroll_viewport(-1, false),
+                    KeyCode::Char('d') => self.move_selected(count.map_or(half_page, |c| c as i64)),
+                    KeyCode::Char('u') => self.move_selected(-count.map_or(half_page, |c| c as i64)),
+                    KeyCode::Char('f') => self.scroll_viewport(n * (body - 2).max(1), true),
+                    KeyCode::Char('b') => self.scroll_viewport(-n * (body - 2).max(1), true),
+                    KeyCode::Char('e') => self.scroll_viewport(n, false),
+                    KeyCode::Char('y') => self.scroll_viewport(-n, false),
                     _ => {}
                 }
             }
             return false;
         }
         match key.code {
+            KeyCode::Char(c @ '1'..='9') | KeyCode::Char(c @ '0') if c != '0' || self.ui.count.is_some() => {
+                let digit = c.to_digit(10).unwrap() as usize;
+                self.ui.count = Some((self.ui.count.unwrap_or(0) * 10 + digit).min(MAX_COUNT));
+                return false;
+            }
+            KeyCode::Char(c @ ('z' | 'g')) => {
+                self.ui.pending = Some(c);
+                return false;
+            }
+            _ => {}
+        }
+        let count = self.ui.count.take();
+        let n = count.unwrap_or(1);
+        let ni = n as i64;
+        match key.code {
             KeyCode::Char(':') => self.ui.command = Some(String::new()),
-            KeyCode::Char('j') | KeyCode::Down => self.move_selected(1),
-            KeyCode::Char('k') | KeyCode::Up => self.move_selected(-1),
-            KeyCode::Char('g') => self.move_selected(-(self.rows.len() as i64)),
-            KeyCode::Char('G') => self.move_selected(self.rows.len() as i64),
-            KeyCode::Char('h') | KeyCode::Left => self.view.move_cursor_cols(-1, width),
-            KeyCode::Char('l') | KeyCode::Right => self.view.move_cursor_cols(1, width),
-            KeyCode::Char('H') => {
-                self.view.move_cursor_cols(-(width as i64 / 2), width);
+            KeyCode::Char('j') | KeyCode::Down => self.move_selected(ni),
+            KeyCode::Char('k') | KeyCode::Up => self.move_selected(-ni),
+            KeyCode::Char('G') => self.goto_row(count.map_or(self.rows.len().saturating_sub(1), |c| c - 1)),
+            KeyCode::Char('h') | KeyCode::Left => self.view.move_cursor_cols(-ni, width),
+            KeyCode::Char('l') | KeyCode::Right => self.view.move_cursor_cols(ni, width),
+            KeyCode::Char('H') => self.view.move_cursor_cols(-ni * (width as i64 / 2), width),
+            KeyCode::Char('L') => self.view.move_cursor_cols(ni * (width as i64 / 2), width),
+            KeyCode::Char('+') | KeyCode::Char('=') => {
+                for _ in 0..n.min(timeline::ZOOM_LEVELS.len()) {
+                    self.view.zoom_in();
+                }
             }
-            KeyCode::Char('L') => {
-                self.view.move_cursor_cols(width as i64 / 2, width);
+            KeyCode::Char('-') => {
+                for _ in 0..n.min(timeline::ZOOM_LEVELS.len()) {
+                    self.view.zoom_out();
+                }
             }
-            KeyCode::Char('+') | KeyCode::Char('=') => self.view.zoom_in(),
-            KeyCode::Char('-') => self.view.zoom_out(),
-            KeyCode::Char('t') => {
-                self.view.anchor_right(chrono::Utc::now(), width);
+            KeyCode::Char('n') => self.jump_to_activity(true, n),
+            KeyCode::Char('N') => self.jump_to_activity(false, n),
+            KeyCode::Char('}') => self.goto_row(section_target(&self.rows, self.ui.selected, true, n)),
+            KeyCode::Char('{') => self.goto_row(section_target(&self.rows, self.ui.selected, false, n)),
+            KeyCode::Char('0') => self.view.cursor = self.view.origin,
+            KeyCode::Char('$') => {
+                self.view.cursor = chrono::Utc::now();
+                self.view.clamp_to_view(width);
             }
+            KeyCode::Char('t') => self.view.anchor_right(chrono::Utc::now(), width),
             KeyCode::Char('f') => self.fit(),
-            KeyCode::Char('n') => self.jump_to_activity(true),
-            KeyCode::Char('N') => self.jump_to_activity(false),
             KeyCode::Char(' ') => self.toggle_expand(),
-            KeyCode::Char('z') => self.ui.pending_z = true,
             KeyCode::Char('a') => {
                 self.ui.expand.auto_follow = !self.ui.expand.auto_follow;
                 self.refresh_rows();
@@ -680,7 +768,7 @@ fn run_loop(
 
 #[cfg(test)]
 mod tests {
-    use super::scrolled;
+    use super::*;
 
     #[test]
     fn scroll_by_one_pushes_selection_to_new_top() {
@@ -720,5 +808,96 @@ mod tests {
     #[test]
     fn page_up_clamps_at_top() {
         assert_eq!(scrolled(3, 5, 30, 10, -8, true), (0, 0));
+    }
+
+    #[test]
+    fn section_motions_stop_at_headers_or_list_ends() {
+        let rows = [
+            Row::Section("participants"),
+            Row::Participant(Model::YOU, 0),
+            Row::Participant(Model::YOU, 0),
+            Row::Section("files"),
+            Row::Node(0),
+            Row::Node(0),
+            Row::Section("mounts"),
+            Row::Node(0),
+        ];
+        assert_eq!(section_target(&rows, 1, true, 1), 3);
+        assert_eq!(section_target(&rows, 1, true, 2), 6);
+        assert_eq!(section_target(&rows, 6, true, 1), 7);
+        assert_eq!(section_target(&rows, 1, true, 5), 7);
+        assert_eq!(section_target(&rows, 5, false, 1), 3);
+        assert_eq!(section_target(&rows, 3, false, 1), 0);
+        assert_eq!(section_target(&rows, 5, false, 5), 0);
+        assert_eq!(section_target(&[], 0, true, 1), 0);
+    }
+
+    #[test]
+    fn placing_selected_clamps_at_both_ends() {
+        assert_eq!(scroll_placing(25, 30, 10, 0), 20);
+        assert_eq!(scroll_placing(15, 30, 10, 5), 10);
+        assert_eq!(scroll_placing(3, 30, 10, 9), 0);
+        assert_eq!(scroll_placing(2, 5, 10, 0), 0);
+    }
+
+    #[test]
+    fn counted_activity_jumps_clamp_to_last_available_time() {
+        let t0 = chrono::Utc::now();
+        let t1 = t0 + chrono::Duration::seconds(10);
+        let t2 = t1 + chrono::Duration::seconds(10);
+        let times = [t0, t1, t2];
+        let cursor = t0 + chrono::Duration::seconds(1);
+        assert_eq!(nth_activity(&times, cursor, true, 1), Some(t1));
+        assert_eq!(nth_activity(&times, cursor, true, 2), Some(t2));
+        assert_eq!(nth_activity(&times, cursor, true, 5), Some(t2));
+        assert_eq!(nth_activity(&times, cursor, false, 1), Some(t0));
+        assert_eq!(nth_activity(&times, t2 + chrono::Duration::seconds(1), true, 1), None);
+    }
+
+    #[test]
+    fn normal_mode_counts_prefixes_and_escape_move_the_selected_row() {
+        let root = std::env::temp_dir().join(format!("antty-main-test-vim-grammar-{}", std::process::id()));
+        let state_dir = root.with_extension("state");
+        std::fs::create_dir_all(&root).unwrap();
+        for i in 0..8 {
+            std::fs::write(root.join(format!("{i}.txt")), "").unwrap();
+        }
+        let model = Model::new(root.clone());
+        let tree = Tree::build(&model);
+        let ui = UiState::new(false);
+        let rows = tree::build_rows(&model, &tree, &ui.expand);
+        let layout = ui::compute_layout(Rect::new(0, 0, 200, 50), Mode::Normal);
+        let now = chrono::Utc::now();
+        let mut app = App {
+            model,
+            tree,
+            rows,
+            view: View::fit(now - chrono::Duration::hours(1), now, layout.gantt_width as usize),
+            ui,
+            attributor: Attributor::new(&state_dir, &root),
+            sessions_root: root.clone(),
+            idle_gap: 30,
+            layout,
+        };
+        fn keys(app: &mut App, chars: &str) {
+            for c in chars.chars() {
+                app.handle_key_normal(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+            }
+        }
+        keys(&mut app, "5j");
+        assert_eq!(app.ui.selected, 5);
+        keys(&mut app, "g");
+        assert_eq!(app.ui.selected, 5);
+        keys(&mut app, "g");
+        assert_eq!(app.ui.selected, 0);
+        keys(&mut app, "3gg");
+        assert_eq!(app.ui.selected, 2);
+        keys(&mut app, "2");
+        app.handle_key_normal(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        keys(&mut app, "j");
+        assert_eq!(app.ui.selected, 3);
+        drop(app);
+        std::fs::remove_dir_all(&root).unwrap();
+        std::fs::remove_dir_all(&state_dir).unwrap();
     }
 }

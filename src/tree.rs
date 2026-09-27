@@ -326,6 +326,66 @@ impl ExpandState {
         self.dir_overrides.insert(tree.nodes[idx].key.clone(), !cur);
     }
 
+    /// Set a dir open/closed; recursively apply the state to its descendant dirs when requested.
+    pub fn set_dir(&mut self, tree: &Tree, idx: usize, open: bool, recursive: bool) {
+        let node = &tree.nodes[idx];
+        if !node.is_dir {
+            return;
+        }
+        self.dir_overrides.insert(node.key.clone(), open);
+        if recursive {
+            for &child in &node.children {
+                self.set_dir(tree, child, open, true);
+            }
+        }
+    }
+
+    /// Apply `zo`/`zO`/`zc`/`zC`, returning an enclosing row when closing it moves the cursor.
+    pub fn fold(&mut self, model: &Model, tree: &Tree, row: Row, open: bool, recursive: bool) -> Option<Row> {
+        match row {
+            Row::Node(idx) => {
+                let node = &tree.nodes[idx];
+                if open {
+                    self.set_dir(tree, idx, true, recursive);
+                } else if !node.is_dir {
+                    let parent = node.parent?;
+                    self.set_dir(tree, parent, false, recursive);
+                    return Some(Row::Node(parent));
+                } else if recursive || self.is_dir_expanded(tree, idx) {
+                    self.set_dir(tree, idx, false, recursive);
+                } else if let Some(parent) = node.parent {
+                    self.set_dir(tree, parent, false, false);
+                    return Some(Row::Node(parent));
+                }
+            }
+            Row::Participant(pid, _) if pid != Model::YOU => {
+                let participant = &model.participants[pid.0];
+                let Some(session) = participant.session else { return None };
+                match participant.kind {
+                    ParticipantKind::Main => {
+                        if open {
+                            self.expanded_sessions.insert(session);
+                        } else {
+                            self.expanded_sessions.remove(&session);
+                        }
+                        if recursive && let Some(roots) = tree.session_files.get(&session) {
+                            for &root in roots {
+                                self.set_dir(tree, root, open, true);
+                            }
+                        }
+                    }
+                    ParticipantKind::Subagent | ParticipantKind::Advisor if !open => {
+                        self.expanded_sessions.remove(&session);
+                        return Some(Row::Participant(model.sessions[session].main, 0));
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+
     /// Close every dir. Also clears `auto_focus`/`auto_open`, so a session that had auto-opened
     /// dirs stays fully closed even while the cursor is still sitting on its row — it reopens
     /// only once the cursor next lands on a participant row (`refocus`).
@@ -679,5 +739,81 @@ mod tests {
         state.collapse_all();
         let rows2 = build_rows(&model, &tree, &state);
         assert!(!node_names(&tree, &rows2).contains(&"b.rs".to_string()));
+    }
+
+    #[test]
+    fn zc_on_file_closes_parent_and_returns_it() {
+        let root = temp_root("zc-file");
+        let (model, _) = model_with_main(root);
+        let tree = Tree::build(&model);
+        let src = tree.nodes.iter().position(|n| n.name == "src" && n.is_dir).unwrap();
+        let a_rs = tree.nodes.iter().position(|n| n.name == "a.rs").unwrap();
+        let mut state = ExpandState::default();
+        state.expand_all();
+
+        assert_eq!(state.fold(&model, &tree, Row::Node(a_rs), false, false), Some(Row::Node(src)));
+        assert!(!state.is_dir_expanded(&tree, src));
+    }
+
+    #[test]
+    fn zc_on_collapsed_dir_escalates_to_parent() {
+        let root = temp_root("zc-dir");
+        let (model, _) = model_with_main(root);
+        let tree = Tree::build(&model);
+        let src = tree.nodes.iter().position(|n| n.name == "src" && n.is_dir).unwrap();
+        let ui = tree.nodes.iter().position(|n| n.name == "ui" && n.is_dir).unwrap();
+        let mut state = ExpandState::default();
+        state.expand_all();
+
+        assert_eq!(state.fold(&model, &tree, Row::Node(ui), false, false), None);
+        assert!(!state.is_dir_expanded(&tree, ui));
+        assert_eq!(state.fold(&model, &tree, Row::Node(ui), false, false), Some(Row::Node(src)));
+        assert!(!state.is_dir_expanded(&tree, src));
+    }
+
+    #[test]
+    fn zc_recursive_then_zo_reopens_one_level_only() {
+        let root = temp_root("zc-recursive");
+        let (model, _) = model_with_main(root);
+        let tree = Tree::build(&model);
+        let src = tree.nodes.iter().position(|n| n.name == "src" && n.is_dir).unwrap();
+        let mut state = ExpandState::default();
+        state.expand_all();
+        state.fold(&model, &tree, Row::Node(src), false, true);
+        state.fold(&model, &tree, Row::Node(src), true, false);
+
+        let names = node_names(&tree, &build_rows(&model, &tree, &state));
+        assert!(names.contains(&"ui".to_string()));
+        assert!(names.contains(&"a.rs".to_string()));
+        assert!(!names.contains(&"b.rs".to_string()));
+    }
+
+    #[test]
+    fn zo_recursive_opens_every_descendant() {
+        let root = temp_root("zo-recursive");
+        let (model, _) = model_with_main(root);
+        let tree = Tree::build(&model);
+        let src = tree.nodes.iter().position(|n| n.name == "src" && n.is_dir).unwrap();
+        let mut state = ExpandState::default();
+        state.fold(&model, &tree, Row::Node(src), true, true);
+
+        assert!(node_names(&tree, &build_rows(&model, &tree, &state)).contains(&"b.rs".to_string()));
+    }
+
+    #[test]
+    fn zc_on_subagent_collapses_session_and_returns_main_row() {
+        let root = temp_root("zc-subagent");
+        let (mut model, _) = model_with_main(root.clone());
+        let sub = model.get_or_create_participant(&root.join("sub.jsonl"), ParticipantKind::Subagent, "sub".into(), None, None);
+        model.participants[sub.0].session = Some(0);
+        let tree = Tree::build(&model);
+        let mut state = ExpandState::default();
+        state.expanded_sessions.insert(0);
+
+        assert_eq!(
+            state.fold(&model, &tree, Row::Participant(sub, 1), false, false),
+            Some(Row::Participant(model.sessions[0].main, 0))
+        );
+        assert!(state.expanded_sessions.is_empty());
     }
 }

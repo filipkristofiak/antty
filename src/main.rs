@@ -67,6 +67,20 @@ fn model_time_range(model: &Model) -> Option<(Ts, Ts)> {
     }
 }
 
+/// Scroll a `height`-row viewport over `len` rows by `delta`, returning `(scroll, selected)`.
+/// `carry`: the selection moves by `delta` too (paging); otherwise it stays put unless it would
+/// leave the viewport, in which case it's pushed to the nearest visible edge (vim `Ctrl-e`/`Ctrl-y`).
+fn scrolled(scroll: usize, selected: usize, len: usize, height: usize, delta: i64, carry: bool) -> (usize, usize) {
+    let max_scroll = len.saturating_sub(height);
+    let new_scroll = (scroll as i64 + delta).clamp(0, max_scroll as i64) as usize;
+    let new_sel = if carry {
+        (selected as i64 + delta).clamp(0, len as i64 - 1) as usize
+    } else {
+        selected.clamp(new_scroll, (new_scroll + height - 1).min(len - 1))
+    };
+    (new_scroll, new_sel)
+}
+
 struct App {
     model: Model,
     tree: Tree,
@@ -164,6 +178,21 @@ impl App {
         self.ui.selected = next as usize;
         let row = self.selected_row();
         self.land_on(row);
+    }
+
+    fn scroll_viewport(&mut self, delta: i64, carry: bool) {
+        let len = self.rows.len();
+        if len == 0 {
+            return;
+        }
+        let h = self.layout.body_height.max(1) as usize;
+        let (scroll, selected) = scrolled(self.ui.scroll, self.ui.selected, len, h, delta, carry);
+        self.ui.scroll = scroll;
+        if selected != self.ui.selected {
+            self.ui.selected = selected;
+            let row = self.selected_row();
+            self.land_on(row);
+        }
     }
 
     fn as_ref(&self) -> AppRef<'_> {
@@ -380,20 +409,41 @@ impl App {
 
     fn handle_key_normal(&mut self, key: KeyEvent) -> bool {
         let width = self.layout.gantt_width.max(1) as usize;
-        let half_page = (self.layout.body_height.max(1) / 2).max(1) as i64;
+        let body = self.layout.body_height.max(1) as i64;
+        let half_page = (body / 2).max(1);
+        // Letter bindings fire only when typed plain (Shift is part of the letter); Ctrl chords
+        // have their own table below, and any other modifier combination is a no-op — a vim
+        // reflex must never trigger a different action.
+        let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
         if self.ui.pending_z {
             self.ui.pending_z = false;
-            match key.code {
-                KeyCode::Char('a') => self.toggle_expand(),
-                KeyCode::Char('M') => {
-                    self.ui.expand.collapse_all();
-                    self.refresh_rows();
+            if plain {
+                match key.code {
+                    KeyCode::Char('a') => self.toggle_expand(),
+                    KeyCode::Char('M') => {
+                        self.ui.expand.collapse_all();
+                        self.refresh_rows();
+                    }
+                    KeyCode::Char('R') => {
+                        self.ui.expand.expand_all();
+                        self.refresh_rows();
+                    }
+                    _ => {}
                 }
-                KeyCode::Char('R') => {
-                    self.ui.expand.expand_all();
-                    self.refresh_rows();
+            }
+            return false;
+        }
+        if !plain {
+            if key.modifiers == KeyModifiers::CONTROL {
+                match key.code {
+                    KeyCode::Char('d') => self.move_selected(half_page),
+                    KeyCode::Char('u') => self.move_selected(-half_page),
+                    KeyCode::Char('f') => self.scroll_viewport((body - 2).max(1), true),
+                    KeyCode::Char('b') => self.scroll_viewport(-(body - 2).max(1), true),
+                    KeyCode::Char('e') => self.scroll_viewport(1, false),
+                    KeyCode::Char('y') => self.scroll_viewport(-1, false),
+                    _ => {}
                 }
-                _ => {}
             }
             return false;
         }
@@ -403,8 +453,6 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => self.move_selected(-1),
             KeyCode::Char('g') => self.move_selected(-(self.rows.len() as i64)),
             KeyCode::Char('G') => self.move_selected(self.rows.len() as i64),
-            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => self.move_selected(half_page),
-            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => self.move_selected(-half_page),
             KeyCode::Char('h') | KeyCode::Left => self.view.move_cursor_cols(-1, width),
             KeyCode::Char('l') | KeyCode::Right => self.view.move_cursor_cols(1, width),
             KeyCode::Char('H') => {
@@ -615,5 +663,50 @@ fn run_loop(
             let app_ref = app.as_ref();
             ui::draw(f, &app_ref);
         })?;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scrolled;
+
+    #[test]
+    fn scroll_by_one_pushes_selection_to_new_top() {
+        assert_eq!(scrolled(0, 0, 30, 10, 1, false), (1, 1));
+    }
+
+    #[test]
+    fn scroll_by_one_leaves_visible_selection_in_place() {
+        assert_eq!(scrolled(5, 12, 30, 10, 1, false), (6, 12));
+    }
+
+    #[test]
+    fn scroll_at_max_is_a_no_op() {
+        assert_eq!(scrolled(20, 29, 30, 10, 1, false), (20, 29));
+    }
+
+    #[test]
+    fn scroll_up_by_one_pushes_selection_to_new_bottom() {
+        assert_eq!(scrolled(10, 19, 30, 10, -1, false), (9, 18));
+    }
+
+    #[test]
+    fn page_down_carries_selection() {
+        assert_eq!(scrolled(0, 3, 30, 10, 8, true), (8, 11));
+    }
+
+    #[test]
+    fn page_down_on_last_page_clamps_scroll_and_selection() {
+        assert_eq!(scrolled(20, 25, 30, 10, 8, true), (20, 29));
+    }
+
+    #[test]
+    fn page_down_with_fewer_rows_than_viewport() {
+        assert_eq!(scrolled(0, 0, 5, 10, 8, true), (0, 4));
+    }
+
+    #[test]
+    fn page_up_clamps_at_top() {
+        assert_eq!(scrolled(3, 5, 30, 10, -8, true), (0, 0));
     }
 }

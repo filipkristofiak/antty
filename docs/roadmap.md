@@ -23,9 +23,9 @@ every other Ctrl chord runs the bare letter's action.
 | `Ctrl-g` | file info | first row |
 | `Ctrl-t` / `Ctrl-s` | tag pop / — | cursor to now / session picker |
 
-- [ ] Plain-letter bindings match only with no modifier other than Shift.
-- [ ] `Ctrl-f`/`Ctrl-b`: page down/up; `Ctrl-e`/`Ctrl-y`: scroll one row.
-- [ ] Unbound Ctrl chords are no-ops.
+- [x] Plain-letter bindings match only with no modifier other than Shift.
+- [x] `Ctrl-f`/`Ctrl-b`: page down/up; `Ctrl-e`/`Ctrl-y`: scroll one row.
+- [x] Unbound Ctrl chords are no-ops.
 
 ## 2. Consistent overlays
 

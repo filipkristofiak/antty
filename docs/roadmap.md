@@ -19,38 +19,19 @@ aider, avante.nvim or codecompanion.nvim, so antty shows them nothing.
 - [x] `--sessions-dir` becomes `--omp-dir`; add `--claude-dir`.
 - [ ] Codex CLI, aider, avante.nvim, codecompanion.nvim readers.
 
-## 2. Open in editor
-
-- [x] `e` on file rows and on Detail/Diff event rows opens the file (at the
-  first changed line when known).
-- [x] Inside Neovim's `:terminal` (`$NVIM` set):
-  `nvim --server "$NVIM" --remote-expr` opens it in the parent Neovim.
-- [x] Otherwise `$EDITOR +<line> <file>`, suspending the TUI until it exits.
-
-## 3. External diff tools
+## 2. External diff tools
 
 - [ ] Hand the diff to `$PAGER` / delta / difftastic instead of the built-in
   renderer.
 - [ ] Open `nvim -d` on the before/after snapshots.
 
-## 4. Keys
+## 3. Keys
 
 - [ ] `ZZ` / `ZQ` quit. `Ctrl-C` keeps flashing
   `Type :q and press <Enter> to exit`.
 - [ ] `Ctrl-z` suspends to the shell and restores the TUI on resume.
 
-## 5. Colours and themes
-
-- [x] Help, picker and status bars use the terminal's default background, not
-  `Color::Black` (`src/ui/help.rs`, `src/ui/picker.rs`, `src/ui/status.rs`).
-- [x] The selection (`Rgb(50,70,130)`) and cursor-column (`Rgb(40,40,60)`)
-  colours stay readable on light themes (`tree_pane.rs`, `gantt_pane.rs`,
-  `detail.rs`, `picker.rs`).
-- [x] Drop `Color::White` from the participant lane palette (`src/ui/mod.rs`);
-  it vanishes on light backgrounds.
-- [x] Honor `NO_COLOR`.
-
-## 6. Packaging
+## 4. Packaging
 
 - [ ] Publish to crates.io.
 - [ ] CI: build and test on Linux and macOS.
@@ -58,7 +39,7 @@ aider, avante.nvim or codecompanion.nvim, so antty shows them nothing.
 - [ ] Shell completions (`clap_complete`) and a man page.
 - [ ] AUR package and Nix flake.
 
-## 7. Git branches and file moves (major)
+## 5. Git branches and file moves (major)
 
 FILES already lists more than the files on disk: it is a disk walk plus
 every project file an event touched, and files no longer on disk show as
@@ -98,3 +79,9 @@ and leave the default view unchanged.
 - 15-minute zoom tick digits.
 - Linux runtime: watcher errors surfaced, only non-ignored dirs watched,
   `$XDG_STATE_HOME` honored, no idle redraws.
+- Open in editor: `e` opens file, Detail and Diff event rows at the first
+  changed line when known; uses the parent Neovim via `$NVIM` or suspends for
+  `$EDITOR` and restores the TUI afterwards.
+- Colours and themes: help, picker and status use the terminal's default
+  background; highlights remain readable on light themes; the participant
+  palette avoids white; `NO_COLOR` is honored.

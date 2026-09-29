@@ -27,6 +27,7 @@ const KEYS: &[(&str, &str)] = &[
     ("Enter", "open Detail for the selected row"),
     ("Enter (Detail)", "full-screen diff of selected event"),
     ("e", "open file in $EDITOR, or the parent Neovim when $NVIM is set (file rows, Detail, Diff)"),
+    ("D", "diff of selected event in delta (Detail, Diff); needs delta on PATH"),
     ("T", "touched-only"),
     ("s", "session picker"),
     ("?", "this help"),

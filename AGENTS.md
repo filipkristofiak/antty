@@ -18,6 +18,7 @@ Plain `cargo` works wherever it's already on `PATH`.
 - `src/main.rs` — event loop, key handling, `App` state, startup wiring.
 - `src/cli.rs` — `RawArgs`/`Args`: flag parsing, tilde expansion, defaults.
 - `src/cmdline.rs` — `:`/`/` line editing and in-memory history.
+- `src/delta.rs` — unified patch for an event and the optional `delta` invocation.
 - `src/model.rs` — core data model: participants, sessions, file events, spans, snapshots.
 - `src/sessions.rs` — `Harness` dispatch, omp's `discover_omp_project_dir` (header-`cwd` matching), initial load + live tailer over every harness.
 - `src/parse.rs` — ingests omp jsonl lines into model events; path normalization and scoping.

@@ -2,6 +2,7 @@ mod attrib;
 mod claude;
 mod cli;
 mod cmdline;
+mod delta;
 mod editor;
 mod model;
 mod parse;
@@ -270,6 +271,17 @@ impl App {
                     Err(msg) => self.ui.flash = Some(msg),
                 }
             }
+        }
+    }
+
+    fn open_in_delta(&mut self) {
+        let Some(ui::DetailItem::Event(idx)) = ui::detail::selected_item(&self.as_ref()) else {
+            self.ui.flash = Some("no diff for this item".into());
+            return;
+        };
+        match delta::event_patch(&self.model, &self.model.events[idx]) {
+            Ok(patch) => self.launch = Some(delta::invocation(patch)),
+            Err(msg) => self.ui.flash = Some(msg.into()),
         }
     }
 
@@ -712,6 +724,7 @@ impl App {
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.ui.mode = Mode::Normal,
             KeyCode::Char('e') => self.open_in_editor(self.detail_target()),
+            KeyCode::Char('D') => self.open_in_delta(),
             KeyCode::Enter => {
                 if n > 0 {
                     self.ui.mode = Mode::Diff;
@@ -745,6 +758,7 @@ impl App {
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.ui.mode = Mode::Detail,
             KeyCode::Char('e') => self.open_in_editor(self.detail_target()),
+            KeyCode::Char('D') => self.open_in_delta(),
             KeyCode::Char('j') | KeyCode::Down => self.ui.diff_scroll = self.ui.diff_scroll.saturating_add(1),
             KeyCode::Char('k') | KeyCode::Up => self.ui.diff_scroll = self.ui.diff_scroll.saturating_sub(1),
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {

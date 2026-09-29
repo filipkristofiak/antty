@@ -63,6 +63,7 @@ Bottom: a status bar with key hints and current zoom/session/watch state.
 | `Enter` | open Detail for the selected row |
 | `Enter (Detail)` | full-screen diff of selected event |
 | `e` | open file in `$EDITOR`, or the parent Neovim when `$NVIM` is set (file rows, Detail, Diff) |
+| `D` | diff of selected event in delta (Detail, Diff); needs delta on PATH |
 | `T` | touched-only |
 | `s` | session picker |
 | `?` | this help |
@@ -74,6 +75,8 @@ Bottom: a status bar with key hints and current zoom/session/watch state.
 In Normal mode, letter keys act only when typed without Ctrl/Alt; unlisted Ctrl chords do nothing.
 
 `$EDITOR` is split on whitespace; antty adds `+<line>` when known and suspends the TUI until it exits. When `$NVIM` is non-empty, antty asks that Neovim instance to open the file instead. Unset `$EDITOR` without `$NVIM` shows an error. `NO_COLOR` (non-empty) disables foreground/background colours, retaining selection as reverse video.
+
+`D` pipes the selected event's diff to `delta --paging always` and suspends antty until delta's pager exits. delta chooses its pager from `DELTA_PAGER`, then `PAGER`, then `less`. After the pager exits, press any key to return to antty; this keeps short diffs visible even when the pager quits automatically. delta is optional; if it is not on PATH, `D` shows an error. omp edit diffs are converted from their recorded numbered lines, including when full before/after file contents are unavailable. Events without a unified diff show an error.
 
 ## Differences from vim
 

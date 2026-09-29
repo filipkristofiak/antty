@@ -21,8 +21,8 @@ aider, avante.nvim or codecompanion.nvim, so antty shows them nothing.
 
 ## 2. External diff tools
 
-- [ ] Hand the diff to `$PAGER` / delta / difftastic instead of the built-in
-  renderer.
+- [x] Hand the diff to delta (`D` in Detail/Diff).
+- [ ] Hand the diff to `$PAGER` / difftastic instead of the built-in renderer.
 - [ ] Open `nvim -d` on the before/after snapshots.
 
 ## 3. Keys

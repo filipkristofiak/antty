@@ -62,6 +62,8 @@ pub struct Invocation {
     pub program: OsString,
     pub args: Vec<OsString>,
     pub suspend: bool,
+    /// Bytes written to the child's stdin; honored only when `suspend` is true.
+    pub stdin: Option<String>,
 }
 
 pub fn invocation(
@@ -78,6 +80,7 @@ pub fn invocation(
             program: "nvim".into(),
             args: vec!["--server".into(), nvim, "--remote-expr".into(), expr.into()],
             suspend: false,
+            stdin: None,
         });
     }
     let editor = editor.filter(|v| !v.is_empty()).ok_or("$EDITOR is not set")?;
@@ -90,19 +93,21 @@ pub fn invocation(
         words.push(format!("+{n}").into());
     }
     words.push(path.as_os_str().to_os_string());
-    Ok(Invocation { program, args: words, suspend: true })
+    Ok(Invocation { program, args: words, suspend: true, stdin: None })
 }
 
 /// Run `inv`; returns a flash message on failure. Suspending invocations hand the terminal to
 /// the child and restore the TUI afterwards.
 pub fn run(terminal: &mut ratatui::DefaultTerminal, inv: &Invocation) -> std::io::Result<Option<String>> {
-    use std::io::stdout;
+    use std::io::{stdout, Write};
     use std::process::{Command, Stdio};
+    use crossterm::event::{self, Event, KeyEventKind};
 
     let program = inv.program.to_string_lossy();
     if !inv.suspend {
         let result = Command::new(&inv.program).args(&inv.args).stdin(Stdio::null()).output();
         return Ok(match result {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Some(format!("{program}: not found on PATH")),
             Err(err) => Some(format!("{program}: {err}")),
             Ok(out) if !out.status.success() => Some(
                 String::from_utf8_lossy(&out.stderr)
@@ -117,12 +122,37 @@ pub fn run(terminal: &mut ratatui::DefaultTerminal, inv: &Invocation) -> std::io
 
     ratatui::restore();
     crossterm::execute!(stdout(), crossterm::cursor::Show)?;
-    let result = Command::new(&inv.program).args(&inv.args).status();
+    let result = match &inv.stdin {
+        None => Command::new(&inv.program).args(&inv.args).status(),
+        Some(input) => Command::new(&inv.program).args(&inv.args).stdin(Stdio::piped()).spawn()
+            .and_then(|mut child| {
+                if let Some(mut pipe) = child.stdin.take() {
+                    let _ = pipe.write_all(input.as_bytes());
+                }
+                child.wait()
+            }),
+    };
     crossterm::terminal::enable_raw_mode()?;
+    // A pager may exit without waiting (less -F, cat, etc.). Keep its output on the
+    // primary screen until the user has had a chance to read it.
+    let pause = if inv.stdin.is_some() && result.is_ok() {
+        crossterm::execute!(stdout(), crossterm::style::Print("\r\n-- press any key to return to antty --"))?;
+        loop {
+            match event::read() {
+                Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => break Ok(()),
+                Ok(_) => {}
+                Err(err) => break Err(err),
+            }
+        }
+    } else {
+        Ok(())
+    };
     crossterm::execute!(stdout(), crossterm::terminal::EnterAlternateScreen)?;
     terminal.clear()?;
     terminal.hide_cursor()?;
+    pause?;
     Ok(match result {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Some(format!("{program}: not found on PATH")),
         Err(err) => Some(format!("{program}: {err}")),
         Ok(status) if !status.success() => Some(format!("{program} exited with {status}")),
         Ok(_) => None,

@@ -19,19 +19,16 @@ aider, avante.nvim or codecompanion.nvim, so antty shows them nothing.
 - [x] `--sessions-dir` becomes `--omp-dir`; add `--claude-dir`.
 - [ ] Codex CLI, aider, avante.nvim, codecompanion.nvim readers.
 
-## 2. External diff tools
+## 2. Collapsible timeline gaps
 
-- [x] Hand the diff to delta (`D` in Detail/Diff).
-- [ ] Hand the diff to `$PAGER` / difftastic instead of the built-in renderer.
-- [ ] Open `nvim -d` on the before/after snapshots.
+- [ ] Collapse runs of 6 or more columns idle across every row into a clearly
+  marked break (for example `~`) showing the skipped duration. Decide whether
+  this is opt-in or the default. The current linear time-to-column mapping
+  needs a piecewise replacement: cursor movement across the break, `t`/`f`
+  jumps, panning, zoom and time labels must stay accurate and not imply
+  adjacent events were simultaneous.
 
-## 3. Keys
-
-- [ ] `ZZ` / `ZQ` quit. `Ctrl-C` keeps flashing
-  `Type :q and press <Enter> to exit`.
-- [ ] `Ctrl-z` suspends to the shell and restores the TUI on resume.
-
-## 4. Packaging
+## 3. Packaging
 
 - [ ] Publish to crates.io.
 - [ ] CI: build and test on Linux and macOS.
@@ -39,7 +36,7 @@ aider, avante.nvim or codecompanion.nvim, so antty shows them nothing.
 - [ ] Shell completions (`clap_complete`) and a man page.
 - [ ] AUR package and Nix flake.
 
-## 5. Git branches and file moves (major)
+## 4. Git branches and file moves (major)
 
 FILES already lists more than the files on disk: it is a disk walk plus
 every project file an event touched, and files no longer on disk show as
@@ -85,3 +82,6 @@ and leave the default view unchanged.
 - Colours and themes: help, picker and status use the terminal's default
   background; highlights remain readable on light themes; the participant
   palette avoids white; `NO_COLOR` is honored.
+- External diffs: `D` in Detail/Diff pipes the selected event's diff to
+  `delta --paging always`; delta uses its configured pager.
+- Keys: `ZZ`/`ZQ` quit; `Ctrl-z` suspends and `fg` restores the TUI; `?` opens help from any view and returns there.

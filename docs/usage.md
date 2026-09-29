@@ -33,7 +33,7 @@ Bottom: a status bar with key hints and current zoom/session/watch state.
 - **Detail** (`Enter`) — event/span list for the selected row
 - **Diff** — full-screen scrollable diff or detail of the selected event (`Enter` again from Detail)
 - **Picker** (`s`) — session list, sorted by start time
-- **Help** (`?`) — the key table below
+- **Help** (`?` from any view) — the key table below; closing it returns to the view it was opened from
 
 ## Keys
 
@@ -66,9 +66,10 @@ Bottom: a status bar with key hints and current zoom/session/watch state.
 | `D` | diff of selected event in delta (Detail, Diff); needs delta on PATH |
 | `T` | touched-only |
 | `s` | session picker |
-| `?` | this help |
-| `:q⏎` | quit |
+| `?` | this help, from any view; closing returns there |
+| `:q⏎, ZZ/ZQ` | quit |
 | `Ctrl-C` | hint: quit with :q⏎ |
+| `Ctrl-z` | suspend to the shell; fg resumes |
 | `:/ line` | Ctrl-U clear · Ctrl-W delete word · ↑/↓ history |
 | `q/Esc` | close overlay; Esc also cancels a count/prefix and clears the search |
 

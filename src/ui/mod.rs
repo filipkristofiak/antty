@@ -66,6 +66,8 @@ pub enum DetailItem {
 
 pub struct UiState {
     pub mode: Mode,
+    /// View underneath the Help overlay; restored when Help closes.
+    pub help_return: Mode,
     pub selected: usize,
     pub scroll: usize,
     pub expand: ExpandState,
@@ -79,7 +81,7 @@ pub struct UiState {
     pub search: Option<String>,
     /// One-shot status message (e.g. unknown command); cleared on the next key press.
     pub flash: Option<String>,
-    /// Normal-mode prefix key awaiting its second key (`z` for folds/scroll, `g` for `gg`).
+    /// Normal-mode prefix key awaiting its second key (`z` for folds/scroll, `g` for `gg`, `Z` for quit).
     pub pending: Option<char>,
     /// Count typed before a Normal-mode command (`5j`); `None` until a digit is typed.
     pub count: Option<usize>,
@@ -100,6 +102,7 @@ impl UiState {
     pub fn new(watch_on: bool) -> Self {
         UiState {
             mode: Mode::Normal,
+            help_return: Mode::Normal,
             selected: 0,
             scroll: 0,
             expand: ExpandState::default(),
@@ -119,6 +122,11 @@ impl UiState {
             picker_selected: HashSet::new(),
             picker_cursor: 0,
         }
+    }
+
+    /// The view drawn under any Help overlay; decides layout and which overlay renders below help.
+    pub fn view_mode(&self) -> Mode {
+        if self.mode == Mode::Help { self.help_return } else { self.mode }
     }
 }
 
@@ -208,7 +216,7 @@ pub fn compute_layout(root: Rect, mode: Mode) -> LayoutInfo {
 /// Top-level draw: main split (tree | gantt) + status bar, with mode-specific overlays.
 pub fn draw(f: &mut Frame, app: &AppRef) {
     let root = f.area();
-    let layout = compute_layout(root, app.ui.mode);
+    let layout = compute_layout(root, app.ui.view_mode());
 
     if let Some(area) = layout.detail_area {
         detail::render(f, area, app);
@@ -217,15 +225,17 @@ pub fn draw(f: &mut Frame, app: &AppRef) {
     gantt_pane::render(f, layout.gantt_area, app);
     status::render(f, layout.status_area, app);
 
-    match app.ui.mode {
+    match app.ui.view_mode() {
         Mode::Picker => picker::render(f, layout.picker_area, app),
-        Mode::Help => help::render(f, centered_rect(60, 80, root)),
         Mode::Diff => {
             let area = Rect { height: root.height.saturating_sub(1), ..root };
             f.render_widget(Clear, area);
             diff_view::render(f, area, app);
         }
         _ => {}
+    }
+    if app.ui.mode == Mode::Help {
+        help::render(f, centered_rect(60, 80, root));
     }
     if app.ui.no_color {
         strip_colors(f.buffer_mut());

@@ -120,8 +120,7 @@ pub fn run(terminal: &mut ratatui::DefaultTerminal, inv: &Invocation) -> std::io
         });
     }
 
-    ratatui::restore();
-    crossterm::execute!(stdout(), crossterm::cursor::Show)?;
+    leave_tui()?;
     let result = match &inv.stdin {
         None => Command::new(&inv.program).args(&inv.args).status(),
         Some(input) => Command::new(&inv.program).args(&inv.args).stdin(Stdio::piped()).spawn()
@@ -147,9 +146,7 @@ pub fn run(terminal: &mut ratatui::DefaultTerminal, inv: &Invocation) -> std::io
     } else {
         Ok(())
     };
-    crossterm::execute!(stdout(), crossterm::terminal::EnterAlternateScreen)?;
-    terminal.clear()?;
-    terminal.hide_cursor()?;
+    enter_tui(terminal)?;
     pause?;
     Ok(match result {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Some(format!("{program}: not found on PATH")),
@@ -157,6 +154,35 @@ pub fn run(terminal: &mut ratatui::DefaultTerminal, inv: &Invocation) -> std::io
         Ok(status) if !status.success() => Some(format!("{program} exited with {status}")),
         Ok(_) => None,
     })
+}
+
+fn leave_tui() -> std::io::Result<()> {
+    ratatui::restore();
+    crossterm::execute!(std::io::stdout(), crossterm::cursor::Show)
+}
+
+fn enter_tui(terminal: &mut ratatui::DefaultTerminal) -> std::io::Result<()> {
+    crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen)?;
+    terminal.clear()?;
+    terminal.hide_cursor()
+}
+
+/// Stop antty like vim's `Ctrl-z`: hand the terminal back, SIGTSTP ourselves, and restore
+/// the TUI once the shell resumes us (`fg`). Returns a flash message on failure.
+#[cfg(unix)]
+pub fn suspend(terminal: &mut ratatui::DefaultTerminal) -> std::io::Result<Option<String>> {
+    leave_tui()?;
+    // SAFETY: raise(3) only delivers a signal to the calling process.
+    let failed = unsafe { libc::raise(libc::SIGTSTP) } != 0;
+    let err = failed.then(std::io::Error::last_os_error);
+    crossterm::terminal::enable_raw_mode()?;
+    enter_tui(terminal)?;
+    Ok(err.map(|e| format!("suspend: {e}")))
+}
+
+#[cfg(not(unix))]
+pub fn suspend(_terminal: &mut ratatui::DefaultTerminal) -> std::io::Result<Option<String>> {
+    Ok(Some("Ctrl-z: suspend is not supported on this platform".into()))
 }
 
 #[cfg(test)]

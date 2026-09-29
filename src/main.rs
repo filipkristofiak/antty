@@ -126,6 +126,7 @@ struct App {
     idle_gap: i64,
     layout: ui::LayoutInfo,
     launch: Option<editor::Invocation>,
+    suspend: bool,
 }
 
 impl App {
@@ -439,6 +440,11 @@ impl App {
         self.ui.picker_cursor = 0;
     }
 
+    fn open_help(&mut self) {
+        self.ui.help_return = self.ui.mode;
+        self.ui.mode = Mode::Help;
+    }
+
     fn apply_picker(&mut self) {
         let n = self.model.sessions.len();
         if self.ui.picker_selected.len() >= n {
@@ -508,7 +514,7 @@ impl App {
                 if pushed > 0 {
                     self.rebuild();
                 }
-                self.ui.mode == Mode::Picker || pushed > 0
+                self.ui.view_mode() == Mode::Picker || pushed > 0
             }
             Msg::WatchError(e) => {
                 self.ui.status_extra = Some(format!("watch: {e}"));
@@ -522,6 +528,12 @@ impl App {
         if self.ui.cmdline.is_some() {
             return self.handle_key_command(key);
         }
+        if key.code == KeyCode::Char('z') && key.modifiers == KeyModifiers::CONTROL {
+            self.ui.pending = None;
+            self.ui.count = None;
+            self.suspend = true;
+            return false;
+        }
         match self.ui.mode {
             Mode::Normal => self.handle_key_normal(key),
             Mode::Detail => self.handle_key_detail(key),
@@ -529,7 +541,7 @@ impl App {
             Mode::Picker => self.handle_key_picker(key),
             Mode::Help => {
                 if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('?')) {
-                    self.ui.mode = Mode::Normal;
+                    self.ui.mode = self.ui.help_return;
                 }
                 false
             }
@@ -608,6 +620,7 @@ impl App {
             let count = self.ui.count.take();
             if plain {
                 match (prefix, key.code) {
+                    ('Z', KeyCode::Char('Z') | KeyCode::Char('Q')) => return true,
                     ('z', KeyCode::Char('a')) => self.toggle_expand(),
                     ('z', KeyCode::Char('o')) => self.fold(true, false),
                     ('z', KeyCode::Char('O')) => self.fold(true, true),
@@ -653,7 +666,7 @@ impl App {
                 self.ui.count = Some((self.ui.count.unwrap_or(0) * 10 + digit).min(MAX_COUNT));
                 return false;
             }
-            KeyCode::Char(c @ ('z' | 'g')) => {
+            KeyCode::Char(c @ ('z' | 'g' | 'Z')) => {
                 self.ui.pending = Some(c);
                 return false;
             }
@@ -711,7 +724,7 @@ impl App {
                 self.refresh_rows();
             }
             KeyCode::Char('s') => self.open_picker(),
-            KeyCode::Char('?') => self.ui.mode = Mode::Help,
+            KeyCode::Char('?') => self.open_help(),
             KeyCode::Esc => self.ui.search = None,
             _ => {}
         }
@@ -723,6 +736,7 @@ impl App {
         let n = ui::detail::resolve_items(&app_ref).len();
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.ui.mode = Mode::Normal,
+            KeyCode::Char('?') => self.open_help(),
             KeyCode::Char('e') => self.open_in_editor(self.detail_target()),
             KeyCode::Char('D') => self.open_in_delta(),
             KeyCode::Enter => {
@@ -750,6 +764,10 @@ impl App {
 
     /// Full-screen diff view (`Mode::Diff`), opened from Detail with `Enter`.
     fn handle_key_diff(&mut self, key: KeyEvent) -> bool {
+        if key.code == KeyCode::Char('?') {
+            self.open_help();
+            return false;
+        }
         let app_ref = self.as_ref();
         let total = ui::detail::selected_item(&app_ref)
             .map(|it| ui::detail::detail_lines(&app_ref, &it).len())
@@ -781,6 +799,7 @@ impl App {
         let half = (self.layout.picker_area.height.saturating_sub(2) / 2).max(1) as usize;
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.ui.mode = Mode::Normal,
+            KeyCode::Char('?') => self.open_help(),
             KeyCode::Enter => self.apply_picker(),
             KeyCode::Char('a') => self.ui.picker_selected = (0..n).collect(),
             KeyCode::Char(' ') => {
@@ -858,7 +877,7 @@ fn main() -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
     let size = terminal.size()?;
     let root_rect = Rect::new(0, 0, size.width, size.height);
-    let layout = ui::compute_layout(root_rect, ui_state.mode);
+    let layout = ui::compute_layout(root_rect, ui_state.view_mode());
 
     let tree = Tree::build(&model);
     let rows = tree::build_rows(&model, &tree, &ui_state.expand);
@@ -872,6 +891,7 @@ fn main() -> anyhow::Result<()> {
         idle_gap: args.idle_gap,
         layout,
         launch: None,
+        suspend: false,
     };
     app.fit();
 
@@ -901,6 +921,9 @@ fn run_loop(
                     if let Some(inv) = app.launch.take() {
                         app.ui.flash = editor::run(terminal, &inv)?;
                     }
+                    if std::mem::take(&mut app.suspend) {
+                        app.ui.flash = editor::suspend(terminal)?;
+                    }
                     dirty = true;
                 }
                 Event::Resize(_, _) => dirty = true,
@@ -914,7 +937,7 @@ fn run_loop(
 
         let size = terminal.size()?;
         let root_rect = Rect::new(0, 0, size.width, size.height);
-        app.layout = ui::compute_layout(root_rect, app.ui.mode);
+        app.layout = ui::compute_layout(root_rect, app.ui.view_mode());
         app.clamp_scroll();
         app.view.clamp_to_view(app.layout.gantt_width.max(1) as usize);
         drawn_now_col = app.view.col_for(chrono::Utc::now());
@@ -930,6 +953,27 @@ fn run_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_app(root: &std::path::Path, state_dir: &std::path::Path) -> App {
+        let model = Model::new(root.to_path_buf());
+        let tree = Tree::build(&model);
+        let ui = UiState::new(false);
+        let rows = tree::build_rows(&model, &tree, &ui.expand);
+        let layout = ui::compute_layout(Rect::new(0, 0, 200, 50), Mode::Normal);
+        let now = chrono::Utc::now();
+        App {
+            model,
+            tree,
+            rows,
+            view: View::fit(now - chrono::Duration::hours(1), now, layout.gantt_width as usize),
+            ui,
+            attributor: Attributor::new(state_dir, root),
+            idle_gap: 30,
+            layout,
+            launch: None,
+            suspend: false,
+        }
+    }
 
     #[test]
     fn scroll_by_one_pushes_selection_to_new_top() {
@@ -1023,23 +1067,7 @@ mod tests {
         for i in 0..8 {
             std::fs::write(root.join(format!("{i}.txt")), "").unwrap();
         }
-        let model = Model::new(root.clone());
-        let tree = Tree::build(&model);
-        let ui = UiState::new(false);
-        let rows = tree::build_rows(&model, &tree, &ui.expand);
-        let layout = ui::compute_layout(Rect::new(0, 0, 200, 50), Mode::Normal);
-        let now = chrono::Utc::now();
-        let mut app = App {
-            model,
-            tree,
-            rows,
-            view: View::fit(now - chrono::Duration::hours(1), now, layout.gantt_width as usize),
-            ui,
-            attributor: Attributor::new(&state_dir, &root),
-            idle_gap: 30,
-            layout,
-            launch: None,
-        };
+        let mut app = test_app(&root, &state_dir);
         fn keys(app: &mut App, chars: &str) {
             for c in chars.chars() {
                 app.handle_key_normal(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
@@ -1061,6 +1089,33 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
         std::fs::remove_dir_all(&state_dir).unwrap();
     }
+    #[test]
+    fn zz_and_zq_quit_but_other_z_chords_do_not() {
+        let root = std::env::temp_dir().join(format!("antty-main-test-z-{}", std::process::id()));
+        let state_dir = root.with_extension("state");
+        std::fs::create_dir_all(&root).unwrap();
+        for i in 0..8 {
+            std::fs::write(root.join(format!("{i}.txt")), "").unwrap();
+        }
+        let mut app = test_app(&root, &state_dir);
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        assert!(!app.handle_key(key(KeyCode::Char('Z'))));
+        assert!(app.handle_key(key(KeyCode::Char('Z'))));
+        assert!(!app.handle_key(key(KeyCode::Char('Z'))));
+        assert!(app.handle_key(key(KeyCode::Char('Q'))));
+        assert!(!app.handle_key(key(KeyCode::Char('Z'))));
+        assert!(!app.handle_key(key(KeyCode::Char('x'))));
+        let selected = app.ui.selected;
+        assert!(!app.handle_key(key(KeyCode::Char('j'))));
+        assert_eq!(app.ui.selected, selected + 1);
+        assert!(!app.handle_key(key(KeyCode::Char('Z'))));
+        assert!(!app.handle_key(key(KeyCode::Esc)));
+        assert_eq!(app.ui.pending, None);
+        drop(app);
+        std::fs::remove_dir_all(&root).unwrap();
+        std::fs::remove_dir_all(&state_dir).unwrap();
+    }
+
 
     #[test]
     fn search_reveals_collapsed_matches_wraps_and_preserves_last_success() {
@@ -1072,23 +1127,7 @@ mod tests {
             std::fs::write(root.join(dir).join("needle.txt"), "").unwrap();
         }
         std::fs::write(root.join("top.txt"), "").unwrap();
-        let model = Model::new(root.clone());
-        let tree = Tree::build(&model);
-        let ui = UiState::new(false);
-        let rows = tree::build_rows(&model, &tree, &ui.expand);
-        let layout = ui::compute_layout(Rect::new(0, 0, 200, 50), Mode::Normal);
-        let now = chrono::Utc::now();
-        let mut app = App {
-            model,
-            tree,
-            rows,
-            view: View::fit(now - chrono::Duration::hours(1), now, layout.gantt_width as usize),
-            ui,
-            attributor: Attributor::new(&state_dir, &root),
-            idle_gap: 30,
-            layout,
-            launch: None,
-        };
+        let mut app = test_app(&root, &state_dir);
         let key = |app: &mut App, code| { app.handle_key(KeyEvent::new(code, KeyModifiers::NONE)); };
         key(&mut app, KeyCode::Char('/'));
         for c in "needle".chars() {
@@ -1118,6 +1157,49 @@ mod tests {
         assert_eq!(app.ui.search.as_deref(), Some("needle"));
         key(&mut app, KeyCode::Esc);
         assert_eq!(app.ui.search, None);
+        drop(app);
+        std::fs::remove_dir_all(&root).unwrap();
+        std::fs::remove_dir_all(&state_dir).unwrap();
+    }
+
+    #[test]
+    fn help_opens_from_every_view_and_returns_there_with_positions_intact() {
+        let root = std::env::temp_dir().join(format!("antty-main-test-help-{}", std::process::id()));
+        let state_dir = root.with_extension("state");
+        std::fs::create_dir_all(&root).unwrap();
+        for i in 0..8 {
+            std::fs::write(root.join(format!("{i}.txt")), "").unwrap();
+        }
+        let mut app = test_app(&root, &state_dir);
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        assert!(app.rows.len() > 2);
+        for mode in [Mode::Normal, Mode::Detail, Mode::Diff, Mode::Picker] {
+            app.ui.mode = mode;
+            app.ui.selected = 2;
+            app.ui.scroll = 1;
+            app.ui.detail_selected = 1;
+            app.ui.detail_scroll = 2;
+            app.ui.diff_scroll = 3;
+            app.ui.picker_cursor = 1;
+            app.ui.picker_selected.insert(0);
+            assert!(!app.handle_key(key(KeyCode::Char('?'))));
+            assert_eq!(app.ui.mode, Mode::Help);
+            assert_eq!(app.ui.view_mode(), mode);
+            assert!(!app.handle_key(key(KeyCode::Char('?'))));
+            assert_eq!(app.ui.mode, mode);
+            assert_eq!(app.ui.selected, 2);
+            assert_eq!(app.ui.scroll, 1);
+            assert_eq!(app.ui.detail_selected, 1);
+            assert_eq!(app.ui.detail_scroll, 2);
+            assert_eq!(app.ui.diff_scroll, 3);
+            assert_eq!(app.ui.picker_cursor, 1);
+            assert!(app.ui.picker_selected.contains(&0));
+        }
+        app.ui.mode = Mode::Normal;
+        assert!(!app.handle_key(key(KeyCode::Char('/'))));
+        assert!(!app.handle_key(key(KeyCode::Char('?'))));
+        assert_eq!(app.ui.cmdline.as_ref().unwrap().text, "?");
+        assert_eq!(app.ui.mode, Mode::Normal);
         drop(app);
         std::fs::remove_dir_all(&root).unwrap();
         std::fs::remove_dir_all(&state_dir).unwrap();

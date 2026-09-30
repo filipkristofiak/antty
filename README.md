@@ -2,7 +2,7 @@
 
 A terminal Gantt timeline of coding-agent sessions and the files they touched.
 
-![antty](docs/screenshot.png)
+![antty demo](docs/demo.gif)
 
 - Live session and subagent lanes
 - Per-file activity rows

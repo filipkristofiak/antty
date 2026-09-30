@@ -227,6 +227,7 @@ impl App {
             }
             KeyCode::Char('t') => self.view.anchor_right(chrono::Utc::now(), width),
             KeyCode::Char('f') => self.fit(),
+            KeyCode::Char('c') => self.view.toggle_collapse_gaps(),
             KeyCode::Char(' ') => self.toggle_expand(),
             KeyCode::Char('a') => {
                 self.ui.expand.auto_follow = !self.ui.expand.auto_follow;
@@ -364,11 +365,13 @@ mod tests {
         let rows = tree::build_rows(&model, &tree, &ui.expand);
         let layout = ui::compute_layout(Rect::new(0, 0, 200, 50), Mode::Normal);
         let now = chrono::Utc::now();
+        let mut view = View::new(true);
+        view.fit(now - chrono::Duration::hours(1), now, layout.gantt_width as usize);
         App {
             model,
             tree,
             rows,
-            view: View::fit(now - chrono::Duration::hours(1), now, layout.gantt_width as usize),
+            view,
             ui,
             attributor: Attributor::new(state_dir, root),
             idle_gap: 30,

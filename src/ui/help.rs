@@ -17,6 +17,7 @@ const KEYS: &[(&str, &str)] = &[
     ("+/-", "zoom in/out"),
     ("t", "cursor to now, pinned near the right edge"),
     ("f", "fit all activity, latest near the right edge"),
+    ("c", "collapse idle stretches into ' ~ ' breaks on/off"),
     ("/", "search row names (smartcase); Enter jumps to the next match"),
     ("n/N", "next/prev search match; no search: next/prev activity on the row"),
     ("Space/za", "toggle dir/session; on a file: collapse its dir"),

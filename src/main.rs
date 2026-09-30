@@ -112,6 +112,7 @@ impl App {
             _ => None,
         };
         self.tree = Tree::build(&self.model);
+        self.view.set_activity(timeline::visible_activity(&self.model));
         // A background data refresh, not a cursor movement: recompute `auto_open` from the
         // *existing* `auto_focus` (see `refresh_rows`) rather than re-deriving it from `row` —
         // otherwise every incoming tail line while parked on a session row would undo a `zM`
@@ -225,7 +226,7 @@ impl App {
         if now - max <= chrono::Duration::seconds(60) {
             max = now;
         }
-        self.view = View::fit(min, max, self.layout.gantt_width.max(1) as usize);
+        self.view.fit(min, max, self.layout.gantt_width.max(1) as usize);
     }
 
     fn selected_row(&self) -> Option<Row> {
@@ -550,11 +551,7 @@ fn main() -> anyhow::Result<()> {
         model,
         tree,
         rows,
-        view: View::fit(
-            chrono::Utc::now() - chrono::Duration::hours(1),
-            chrono::Utc::now(),
-            layout.gantt_width.max(1) as usize,
-        ),
+        view: View::new(!args.no_collapse_gaps),
         ui: ui_state,
         attributor,
         idle_gap: args.idle_gap,
@@ -562,6 +559,7 @@ fn main() -> anyhow::Result<()> {
         launch: None,
         suspend: false,
     };
+    app.view.set_activity(timeline::visible_activity(&app.model));
     app.fit();
 
     let result = run_loop(&mut terminal, &mut app, rx);

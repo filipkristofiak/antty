@@ -306,27 +306,26 @@ fn file_cwd(model: &Model, who: ParticipantId) -> PathBuf {
         .unwrap_or_else(|| model.root.clone())
 }
 
-fn event(
+struct EventCtx<'a> {
     who: ParticipantId,
-    rel: PathBuf,
-    scope: Scope,
-    kind: TouchKind,
-    tool: &str,
-    detail: EventDetail,
-    id: Option<&str>,
+    id: Option<&'a str>,
     start: Ts,
     end: Ts,
-) -> FileEvent {
-    FileEvent {
-        who,
-        rel,
-        scope,
-        kind,
-        source: TouchSource::Tool(tool.to_owned()),
-        start,
-        end,
-        tool_call_id: id.map(str::to_owned),
-        detail,
+}
+
+impl EventCtx<'_> {
+    fn event(&self, rel: PathBuf, scope: Scope, kind: TouchKind, tool: &str, detail: EventDetail) -> FileEvent {
+        FileEvent {
+            who: self.who,
+            rel,
+            scope,
+            kind,
+            source: TouchSource::Tool(tool.to_owned()),
+            start: self.start,
+            end: self.end,
+            tool_call_id: self.id.map(str::to_owned),
+            detail,
+        }
     }
 }
 
@@ -335,6 +334,7 @@ fn ingest_item(model: &mut Model, who: ParticipantId, payload: &Value, ts: Ts) {
     let id = item.get("id").and_then(Value::as_str);
     let start = payload.get("started_at_ms").and_then(Value::as_i64).map(parse_ts_ms).unwrap_or(ts);
     let end = payload.get("completed_at_ms").and_then(Value::as_i64).map(parse_ts_ms).unwrap_or(ts);
+    let ctx = EventCtx { who, id, start, end };
     match item.get("type").and_then(Value::as_str).unwrap_or("") {
         "UserMessage" => {
             let text = item
@@ -361,17 +361,7 @@ fn ingest_item(model: &mut Model, who: ParticipantId, payload: &Value, ts: Ts) {
                 if let Some(path) = cmd.get("path").and_then(Value::as_str)
                     && let Some((scope, rel)) = locate(model, who, path, &cwd)
                 {
-                    model.events.push(event(
-                        who,
-                        rel,
-                        scope,
-                        TouchKind::Read,
-                        "read",
-                        EventDetail::None,
-                        id,
-                        start,
-                        end,
-                    ));
+                    model.events.push(ctx.event(rel, scope, TouchKind::Read, "read", EventDetail::None));
                 }
             }
         }
@@ -386,6 +376,7 @@ fn ingest_item(model: &mut Model, who: ParticipantId, payload: &Value, ts: Ts) {
 fn file_changes(model: &mut Model, who: ParticipantId, changes: &Value, id: Option<&str>, start: Ts, end: Ts) {
     let Some(changes) = changes.as_object() else { return };
     let cwd = file_cwd(model, who);
+    let ctx = EventCtx { who, id, start, end };
     for (path, change) in changes {
         let Some((scope, rel)) = locate(model, who, path, &cwd) else { continue };
         let kind = change.get("type").and_then(Value::as_str).unwrap_or("");
@@ -406,22 +397,12 @@ fn file_changes(model: &mut Model, who: ParticipantId, changes: &Value, id: Opti
             }
             _ => continue,
         };
-        model.events.push(event(who, rel.clone(), scope, TouchKind::Write, tool, detail, id, start, end));
+        model.events.push(ctx.event(rel.clone(), scope, TouchKind::Write, tool, detail));
         if kind == "update"
             && let Some(to) = change.get("move_path").and_then(Value::as_str)
             && let Some((_, to_rel)) = locate(model, who, to, &cwd)
         {
-            model.events.push(event(
-                who,
-                rel,
-                scope,
-                TouchKind::Write,
-                "edit",
-                EventDetail::Moved { to: to_rel },
-                id,
-                start,
-                end,
-            ));
+            model.events.push(ctx.event(rel, scope, TouchKind::Write, "edit", EventDetail::Moved { to: to_rel }));
         }
     }
 }
@@ -431,17 +412,8 @@ fn web_search(model: &mut Model, who: ParticipantId, obj: &Value, id: Option<&st
     if matches!(action.get("type").and_then(Value::as_str), Some("open_page" | "find_in_page"))
         && let Some(url) = action.get("url").and_then(Value::as_str).filter(|url| !url.is_empty())
     {
-        model.events.push(event(
-            who,
-            PathBuf::from(url),
-            Scope::WebFetch,
-            TouchKind::Read,
-            "read",
-            EventDetail::None,
-            id,
-            start,
-            end,
-        ));
+        let ctx = EventCtx { who, id, start, end };
+        model.events.push(ctx.event(PathBuf::from(url), Scope::WebFetch, TouchKind::Read, "read", EventDetail::None));
         return;
     }
     let query = obj
@@ -458,16 +430,13 @@ fn web_search(model: &mut Model, who: ParticipantId, obj: &Value, id: Option<&st
                 .filter(|q| !q.is_empty())
         });
     if let Some(query) = query {
-        model.events.push(event(
-            who,
+        let ctx = EventCtx { who, id, start, end };
+        model.events.push(ctx.event(
             PathBuf::from(query.replace(['\n', '\r'], " ")),
             Scope::WebSearch,
             TouchKind::Read,
             "web_search",
             EventDetail::Search { sources: Vec::new() },
-            id,
-            start,
-            end,
         ));
     }
 }

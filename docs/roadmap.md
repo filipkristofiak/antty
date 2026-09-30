@@ -19,16 +19,7 @@ aider, avante.nvim or codecompanion.nvim, so antty shows them nothing.
 - [x] `--sessions-dir` becomes `--omp-dir`; add `--claude-dir`.
 - [ ] Codex CLI, aider, avante.nvim, codecompanion.nvim readers.
 
-## 2. Collapsible timeline gaps
-
-- [x] Collapse runs of 6 or more columns idle across visible activity into a
-  three-column ` ~ ` break, with the skipped duration in the header when it
-  fits. On by default; `c` toggles it and `--no-collapse-gaps` starts with a
-  linear timeline. Piecewise time-to-column mapping keeps cursor movement,
-  `t`/`f` jumps, panning, zoom and time labels accurate without making adjacent
-  events look simultaneous.
-
-## 3. Packaging
+## 2. Packaging
 
 - [ ] Publish to crates.io, after filling in `Cargo.toml`: `description`
   (required), `repository`, `readme`, `keywords`, `categories` and
@@ -37,7 +28,7 @@ aider, avante.nvim or codecompanion.nvim, so antty shows them nothing.
 - [ ] Shell completions (`clap_complete`) and a man page.
 - [ ] AUR package and Nix flake.
 
-## 4. Git branches and file moves (major)
+## 3. Git branches and file moves (major)
 
 FILES already lists more than the files on disk: it is a disk walk plus
 every project file an event touched, and files no longer on disk show as
@@ -62,7 +53,7 @@ and leave the default view unchanged.
   - rebuild the tree as of the cursor time from events, snapshots or git;
   - handle a checkout that changes the tree under a live session.
 
-## 5. More mouse support (consideration)
+## 4. More mouse support (consideration)
 
 - [ ] Consider horizontal timeline scrolling with a carefully chosen modifier,
   plus context-sensitive right-click/back-button actions for Enter, q, and
@@ -71,6 +62,10 @@ and leave the default view unchanged.
 
 ## Done
 
+- Timeline gaps: runs of 6 or more columns idle across visible activity
+  collapse into a three-column ` ~ ` break by default, with a duration label
+  when it fits. `c` toggles collapsing; `--no-collapse-gaps` starts linear.
+  Cursor movement, jumps, zoom, panning and time labels use the piecewise axis.
 - Modifier guard: plain-letter bindings ignore Ctrl chords; `Ctrl-f`/`Ctrl-b`/
   `Ctrl-e`/`Ctrl-y` scroll; unbound Ctrl chords are no-ops.
 - Consistent overlays: picker closes on `q`; `g`/`G` and `Ctrl-d`/`Ctrl-u` in

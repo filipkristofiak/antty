@@ -147,7 +147,7 @@ pub(crate) fn parse_ts_iso(s: &str) -> Option<Ts> {
     chrono::DateTime::parse_from_rfc3339(s).ok().map(|dt| dt.with_timezone(&chrono::Utc))
 }
 
-fn parse_ts_ms(n: i64) -> Ts {
+pub(crate) fn parse_ts_ms(n: i64) -> Ts {
     chrono::DateTime::<chrono::Utc>::from_timestamp_millis(n).unwrap_or_else(chrono::Utc::now)
 }
 

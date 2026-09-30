@@ -2,6 +2,7 @@ mod attrib;
 mod claude;
 mod cli;
 mod cmdline;
+mod codex;
 mod delta;
 mod editor;
 mod keys;
@@ -465,7 +466,7 @@ impl App {
                 let who = harness.ensure_participant(&mut self.model, &participant_file, &project_dir);
                 for line in lines {
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
-                        harness.ingest(&mut self.model, who, &v, self.idle_gap);
+                        harness.ingest(&mut self.model, who, &v, &project_dir, self.idle_gap);
                     }
                 }
                 parse::flush_dirty_spans(&mut self.model, self.idle_gap);
@@ -504,10 +505,11 @@ fn main() -> anyhow::Result<()> {
 
     let mut model = Model::new(args.project.clone());
     model.session_roots = vec![args.omp_dir.clone(), args.claude_dir.clone()];
-    let sources: Vec<sessions::TailSource> = [(Harness::Omp, &args.omp_dir), (Harness::Claude, &args.claude_dir)]
-        .into_iter()
-        .map(|(harness, root)| sessions::load_initial(&mut model, harness, root, &args.project, args.idle_gap))
-        .collect();
+    let sources: Vec<sessions::TailSource> =
+        [(Harness::Omp, &args.omp_dir), (Harness::Claude, &args.claude_dir), (Harness::Codex, &args.codex_dir)]
+            .into_iter()
+            .map(|(harness, root)| sessions::load_initial(&mut model, harness, root, &args.project, args.idle_gap))
+            .collect();
 
     let mut status_extra = None;
     if sources.iter().all(|s| s.project_dir.is_none()) {

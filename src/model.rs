@@ -170,11 +170,10 @@ pub struct Model {
     /// edit oldText/newText) and live watcher reads. Keyed by project-relative path; each Vec
     /// sorted by timestamp.
     pub snapshots: HashMap<PathBuf, Vec<(Ts, String)>>,
-    /// every harness's session root (`--omp-dir`, `--claude-dir`); empty disables session-dir
-    /// detection.
+    /// Session roots for formats with session-specific directories; other layouts are
+    /// excluded because `session_dir_split` cannot associate their paths with a session.
     pub session_roots: Vec<PathBuf>,
-    /// glue: latest user/assistant entry timestamp per participant; start of the next assistant
-    /// generation interval (Claude Code, which has no per-message completion time).
+    /// Latest entry in a participant's activity sequence; anchors the next interval.
     pub last_entry_ts: HashMap<usize, Ts>,
 }
 

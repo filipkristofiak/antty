@@ -21,12 +21,12 @@ aider, avante.nvim or codecompanion.nvim, so antty shows them nothing.
 
 ## 2. Collapsible timeline gaps
 
-- [ ] Collapse runs of 6 or more columns idle across every row into a clearly
-  marked break (for example `~`) showing the skipped duration. Decide whether
-  this is opt-in or the default. The current linear time-to-column mapping
-  needs a piecewise replacement: cursor movement across the break, `t`/`f`
-  jumps, panning, zoom and time labels must stay accurate and not imply
-  adjacent events were simultaneous.
+- [x] Collapse runs of 6 or more columns idle across visible activity into a
+  three-column ` ~ ` break, with the skipped duration in the header when it
+  fits. On by default; `c` toggles it and `--no-collapse-gaps` starts with a
+  linear timeline. Piecewise time-to-column mapping keeps cursor movement,
+  `t`/`f` jumps, panning, zoom and time labels accurate without making adjacent
+  events look simultaneous.
 
 ## 3. Packaging
 

@@ -97,7 +97,14 @@ impl Trie {
 
     /// Emit this trie's children as `Node`s (recursively), sorted dirs-first then
     /// case-insensitively by name. Returns the emitted children's indices.
-    fn emit(&self, key_prefix: &str, path: &str, depth: usize, parent: Option<usize>, nodes: &mut Vec<Node>) -> Vec<usize> {
+    fn emit(
+        &self,
+        key_prefix: &str,
+        path: &str,
+        depth: usize,
+        parent: Option<usize>,
+        nodes: &mut Vec<Node>,
+    ) -> Vec<usize> {
         let mut entries: Vec<(&String, &Trie)> = self.children.iter().collect();
         entries.sort_by_key(|(name, t)| (!effective_is_dir(t), name.to_lowercase()));
 
@@ -384,7 +391,7 @@ impl ExpandState {
             }
             Row::Participant(pid, _) if pid != Model::YOU => {
                 let participant = &model.participants[pid.0];
-                let Some(session) = participant.session else { return None };
+                let session = participant.session?;
                 match participant.kind {
                     ParticipantKind::Main => {
                         if open {
@@ -485,7 +492,10 @@ pub fn auto_open_nodes(model: &Model, tree: &Tree, focus: &[ParticipantId]) -> H
     tree.nodes
         .iter()
         .enumerate()
-        .filter(|(_, n)| n.is_dir && n.events.iter().any(|&i| focus.contains(&model.events[i].who) && model.visible(model.events[i].who)))
+        .filter(|(_, n)| {
+            n.is_dir
+                && n.events.iter().any(|&i| focus.contains(&model.events[i].who) && model.visible(model.events[i].who))
+        })
         .map(|(idx, _)| idx)
         .collect()
 }
@@ -828,7 +838,13 @@ mod tests {
     fn zc_on_subagent_collapses_session_and_returns_main_row() {
         let root = temp_root("zc-subagent");
         let (mut model, _) = model_with_main(root.clone());
-        let sub = model.get_or_create_participant(&root.join("sub.jsonl"), ParticipantKind::Subagent, "sub".into(), None, None);
+        let sub = model.get_or_create_participant(
+            &root.join("sub.jsonl"),
+            ParticipantKind::Subagent,
+            "sub".into(),
+            None,
+            None,
+        );
         model.participants[sub.0].session = Some(0);
         let tree = Tree::build(&model);
         let mut state = ExpandState::default();

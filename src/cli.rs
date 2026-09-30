@@ -44,9 +44,10 @@ pub struct Args {
 
 fn expand_tilde(p: &Path) -> PathBuf {
     if let Ok(s) = p.strip_prefix("~")
-        && let Ok(home) = std::env::var("HOME") {
-            return Path::new(&home).join(s);
-        }
+        && let Ok(home) = std::env::var("HOME")
+    {
+        return Path::new(&home).join(s);
+    }
     p.to_path_buf()
 }
 
@@ -57,7 +58,9 @@ fn default_state_dir(xdg_state_home: Option<OsString>, home: Option<OsString>) -
     if let Some(dir) = home.filter(|p| !p.is_empty() && Path::new(p).is_absolute()) {
         return Ok(PathBuf::from(dir).join(".local/state/antty"));
     }
-    bail!("cannot choose a default --state-dir: neither $XDG_STATE_HOME nor $HOME is an absolute path; pass --state-dir")
+    bail!(
+        "cannot choose a default --state-dir: neither $XDG_STATE_HOME nor $HOME is an absolute path; pass --state-dir"
+    )
 }
 
 fn default_claude_dir(claude_config_dir: Option<OsString>, home: &str) -> PathBuf {
@@ -83,10 +86,8 @@ impl Args {
             .canonicalize()
             .with_context(|| format!("failed to canonicalize --project {}", project_raw.display()))?;
 
-        let omp_dir = raw
-            .omp_dir
-            .map(|p| expand_tilde(&p))
-            .unwrap_or_else(|| PathBuf::from(&home).join(".omp/agent/sessions"));
+        let omp_dir =
+            raw.omp_dir.map(|p| expand_tilde(&p)).unwrap_or_else(|| PathBuf::from(&home).join(".omp/agent/sessions"));
         let claude_dir = raw
             .claude_dir
             .map(|p| expand_tilde(&p))
@@ -96,14 +97,7 @@ impl Args {
             Some(p) => expand_tilde(&p),
             None => default_state_dir(std::env::var_os("XDG_STATE_HOME"), std::env::var_os("HOME"))?,
         };
-        Ok(Args {
-            project,
-            omp_dir,
-            claude_dir,
-            state_dir,
-            no_watch: raw.no_watch,
-            idle_gap: raw.idle_gap,
-        })
+        Ok(Args { project, omp_dir, claude_dir, state_dir, no_watch: raw.no_watch, idle_gap: raw.idle_gap })
     }
 }
 

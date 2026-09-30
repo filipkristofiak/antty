@@ -210,7 +210,15 @@ pub fn compute_layout(root: Rect, mode: Mode) -> LayoutInfo {
     // 2 border rows + 2 header rows in the gantt pane; tree pane matches with its own spacer.
     let body_height = gantt_area.height.saturating_sub(4);
     let gantt_width = gantt_area.width.saturating_sub(2);
-    LayoutInfo { tree_area, gantt_area, detail_area, status_area: outer[1], body_height, gantt_width, picker_area: centered_rect(60, 60, root) }
+    LayoutInfo {
+        tree_area,
+        gantt_area,
+        detail_area,
+        status_area: outer[1],
+        body_height,
+        gantt_width,
+        picker_area: centered_rect(60, 60, root),
+    }
 }
 
 /// Top-level draw: main split (tree | gantt) + status bar, with mode-specific overlays.

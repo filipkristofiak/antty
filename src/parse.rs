@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::model::{
-    EventDetail, FileEvent, Model, ParticipantId, ParticipantKind, Pending, Prompt, Scope, ToolWindow, Ts, TouchKind,
-    TouchSource,
+    EventDetail, FileEvent, Model, ParticipantId, ParticipantKind, Pending, Prompt, Scope, ToolWindow, TouchKind,
+    TouchSource, Ts,
 };
 
 // ---------------------------------------------------------------------------
@@ -19,11 +19,7 @@ fn strip_one_selector(p: &str) -> &str {
     let is_keyword = matches!(suffix, "raw" | "img" | "conflicts");
     let is_range = !suffix.is_empty()
         && suffix.chars().all(|c| SELECTOR_CHARS.contains(c))
-        && suffix
-            .chars()
-            .next()
-            .map(|c| c.is_ascii_digit() || c == '-')
-            .unwrap_or(false);
+        && suffix.chars().next().map(|c| c.is_ascii_digit() || c == '-').unwrap_or(false);
     if is_keyword || is_range { &p[..idx] } else { p }
 }
 
@@ -38,10 +34,7 @@ fn lexical_clean(p: &Path) -> PathBuf {
         match comp {
             Component::CurDir => {}
             Component::ParentDir => {
-                let can_pop = matches!(
-                    out.last(),
-                    Some(Component::Normal(_))
-                );
+                let can_pop = matches!(out.last(), Some(Component::Normal(_)));
                 if can_pop {
                     out.pop();
                 } else {
@@ -71,11 +64,7 @@ fn absolutize(raw: &str, file_cwd: &Path) -> Option<PathBuf> {
     } else {
         PathBuf::from(stripped)
     };
-    let joined = if expanded.is_absolute() {
-        expanded
-    } else {
-        file_cwd.join(expanded)
-    };
+    let joined = if expanded.is_absolute() { expanded } else { file_cwd.join(expanded) };
     Some(lexical_clean(&joined))
 }
 
@@ -155,9 +144,7 @@ pub(crate) fn locate(model: &Model, who: ParticipantId, raw: &str, file_cwd: &Pa
 // ---------------------------------------------------------------------------
 
 pub(crate) fn parse_ts_iso(s: &str) -> Option<Ts> {
-    chrono::DateTime::parse_from_rfc3339(s)
-        .ok()
-        .map(|dt| dt.with_timezone(&chrono::Utc))
+    chrono::DateTime::parse_from_rfc3339(s).ok().map(|dt| dt.with_timezone(&chrono::Utc))
 }
 
 fn parse_ts_ms(n: i64) -> Ts {
@@ -333,11 +320,8 @@ fn ingest_custom(model: &mut Model, who: ParticipantId, v: &Value) {
             let Some(session_idx) = model.participants[who.0].session else {
                 return;
             };
-            if let Some(recorded_at) = v
-                .get("data")
-                .and_then(|d| d.get("recordedAt"))
-                .and_then(|x| x.as_str())
-                .and_then(parse_ts_iso)
+            if let Some(recorded_at) =
+                v.get("data").and_then(|d| d.get("recordedAt")).and_then(|x| x.as_str()).and_then(parse_ts_iso)
             {
                 model.sessions[session_idx].end = Some(recorded_at);
             }
@@ -398,11 +382,7 @@ fn ingest_user(model: &mut Model, who: ParticipantId, msg: &Value) {
     let Some(session_idx) = model.participants[who.0].session else {
         return;
     };
-    let at = msg
-        .get("timestamp")
-        .and_then(|x| x.as_i64())
-        .map(parse_ts_ms)
-        .unwrap_or_else(chrono::Utc::now);
+    let at = msg.get("timestamp").and_then(|x| x.as_i64()).map(parse_ts_ms).unwrap_or_else(chrono::Utc::now);
     model.prompts.push(Prompt { at, session: session_idx });
 }
 
@@ -413,16 +393,10 @@ fn ingest_user(model: &mut Model, who: ParticipantId, msg: &Value) {
 /// `cwd`, which omp rewrites for the whole file when a session is `/move`d. Empty when the
 /// result carries none of them.
 fn read_result_paths(details: &Value) -> Vec<String> {
-    if let Some("path") = details
-        .get("meta")
-        .and_then(|m| m.get("source"))
-        .and_then(|s| s.get("type"))
-        .and_then(|t| t.as_str())
-        && let Some(value) = details
-            .get("meta")
-            .and_then(|m| m.get("source"))
-            .and_then(|s| s.get("value"))
-            .and_then(|v| v.as_str())
+    if let Some("path") =
+        details.get("meta").and_then(|m| m.get("source")).and_then(|s| s.get("type")).and_then(|t| t.as_str())
+        && let Some(value) =
+            details.get("meta").and_then(|m| m.get("source")).and_then(|s| s.get("value")).and_then(|v| v.as_str())
     {
         return vec![value.to_string()];
     }
@@ -454,11 +428,8 @@ fn ingest_tool_result(model: &mut Model, who: ParticipantId, v: &Value, msg: &Va
         .unwrap_or_else(chrono::Utc::now);
     push_raw_interval(model, who, pending.start, end_ts);
 
-    if let Some(w) = model
-        .tool_windows
-        .iter_mut()
-        .rev()
-        .find(|w| w.who == who && w.tool_call_id == tool_call_id && w.end.is_none())
+    if let Some(w) =
+        model.tool_windows.iter_mut().rev().find(|w| w.who == who && w.tool_call_id == tool_call_id && w.end.is_none())
     {
         w.end = Some(end_ts);
     }
@@ -468,9 +439,7 @@ fn ingest_tool_result(model: &mut Model, who: ParticipantId, v: &Value, msg: &Va
     }
 
     let session_idx = model.participants[who.0].session;
-    let file_cwd = session_idx
-        .map(|i| model.sessions[i].cwd.clone())
-        .unwrap_or_else(|| model.root.clone());
+    let file_cwd = session_idx.map(|i| model.sessions[i].cwd.clone()).unwrap_or_else(|| model.root.clone());
     let details = msg.get("details").cloned().unwrap_or(Value::Null);
 
     match pending.tool.as_str() {
@@ -527,12 +496,7 @@ fn ingest_tool_result(model: &mut Model, who: ParticipantId, v: &Value, msg: &Va
             let Some((scope, rel)) = locate(model, who, path_str, &file_cwd) else {
                 return;
             };
-            let content = pending
-                .args
-                .get("content")
-                .and_then(|x| x.as_str())
-                .unwrap_or("")
-                .to_string();
+            let content = pending.args.get("content").and_then(|x| x.as_str()).unwrap_or("").to_string();
             model.record_snapshot(&rel, end_ts, content.clone());
             model.events.push(FileEvent {
                 who,
@@ -598,11 +562,7 @@ fn header_path(line: &str) -> Option<String> {
     let inner = &line[1..line.len() - 1];
     let hash = inner.rfind('#')?;
     let tag = &inner[hash + 1..];
-    if tag.len() == 4 && tag.chars().all(|c| c.is_ascii_hexdigit()) {
-        Some(inner[..hash].to_string())
-    } else {
-        None
-    }
+    if tag.len() == 4 && tag.chars().all(|c| c.is_ascii_hexdigit()) { Some(inner[..hash].to_string()) } else { None }
 }
 
 fn parse_edit_input_headers(input: &str) -> Vec<EditBlock> {
@@ -653,10 +613,9 @@ fn ingest_edit_result(
             let Some((scope, rel)) = locate(model, who, path_str, file_cwd) else {
                 continue;
             };
-            if let (Some(old), Some(new)) = (
-                entry.get("oldText").and_then(|x| x.as_str()),
-                entry.get("newText").and_then(|x| x.as_str()),
-            ) {
+            if let (Some(old), Some(new)) =
+                (entry.get("oldText").and_then(|x| x.as_str()), entry.get("newText").and_then(|x| x.as_str()))
+            {
                 model.record_snapshot(&rel, start, old.to_string());
                 model.record_snapshot(&rel, end, new.to_string());
             }
@@ -677,10 +636,9 @@ fn ingest_edit_result(
     }
     if let Some(path_str) = details.get("path").and_then(|x| x.as_str()) {
         if let Some((scope, rel)) = locate(model, who, path_str, file_cwd) {
-            if let (Some(old), Some(new)) = (
-                details.get("oldText").and_then(|x| x.as_str()),
-                details.get("newText").and_then(|x| x.as_str()),
-            ) {
+            if let (Some(old), Some(new)) =
+                (details.get("oldText").and_then(|x| x.as_str()), details.get("newText").and_then(|x| x.as_str()))
+            {
                 model.record_snapshot(&rel, start, old.to_string());
                 model.record_snapshot(&rel, end, new.to_string());
             }
@@ -706,11 +664,7 @@ fn ingest_edit_result(
         let Some((scope, rel)) = locate(model, who, &block.path, file_cwd) else {
             continue;
         };
-        let detail = if block.rem {
-            EventDetail::Removed
-        } else {
-            EventDetail::Diff(block.body.clone())
-        };
+        let detail = if block.rem { EventDetail::Removed } else { EventDetail::Diff(block.body.clone()) };
         model.events.push(FileEvent {
             who,
             rel: rel.clone(),
@@ -723,19 +677,20 @@ fn ingest_edit_result(
             detail,
         });
         if let Some(dest) = &block.mv
-            && let Some((_, to_rel)) = locate(model, who, dest, file_cwd) {
-                model.events.push(FileEvent {
-                    who,
-                    rel,
-                    scope,
-                    kind: TouchKind::Write,
-                    source: TouchSource::Tool("edit".to_string()),
-                    start,
-                    end,
-                    tool_call_id: Some(tool_call_id.to_string()),
-                    detail: EventDetail::Moved { to: to_rel },
-                });
-            }
+            && let Some((_, to_rel)) = locate(model, who, dest, file_cwd)
+        {
+            model.events.push(FileEvent {
+                who,
+                rel,
+                scope,
+                kind: TouchKind::Write,
+                source: TouchSource::Tool("edit".to_string()),
+                start,
+                end,
+                tool_call_id: Some(tool_call_id.to_string()),
+                detail: EventDetail::Moved { to: to_rel },
+            });
+        }
     }
 }
 
@@ -752,10 +707,7 @@ mod tests {
     #[test]
     fn normalize_strips_line_selector() {
         let r = root();
-        assert_eq!(
-            normalize("renderer/effect.js:33-343", &r, &r, &[]),
-            Some(PathBuf::from("renderer/effect.js"))
-        );
+        assert_eq!(normalize("renderer/effect.js:33-343", &r, &r, &[]), Some(PathBuf::from("renderer/effect.js")));
     }
 
     #[test]
@@ -1007,7 +959,7 @@ mod tests {
         });
         ingest(&mut model, who, &v, 30);
         assert_eq!(model.prompts.len(), 1);
-}
+    }
 
     #[test]
     fn title_slot_sets_initial_session_title() {

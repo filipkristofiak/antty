@@ -299,8 +299,8 @@ impl App {
         } else {
             return Err("not a file");
         };
-        let mut events: Vec<_> = node.events.iter().map(|&idx| &self.model.events[idx])
-            .filter(|e| self.model.visible(e.who)).collect();
+        let mut events: Vec<_> =
+            node.events.iter().map(|&idx| &self.model.events[idx]).filter(|e| self.model.visible(e.who)).collect();
         events.sort_by_key(|e| std::cmp::Reverse(e.end));
         let line = events.into_iter().find_map(|e| editor::event_line(&self.model, e));
         Ok((path, line))
@@ -342,7 +342,9 @@ impl App {
 
     fn search_step(&mut self, query: &str, forward: bool, n: usize) -> bool {
         let full = search::full_rows(&self.model, &self.tree, self.ui.expand.touched_only);
-        let matches: Vec<usize> = full.iter().enumerate()
+        let matches: Vec<usize> = full
+            .iter()
+            .enumerate()
             .filter(|&(_, &row)| search::is_match(&tree::row_label(&self.model, &self.tree, row), query))
             .map(|(idx, _)| idx)
             .collect();
@@ -352,11 +354,10 @@ impl App {
             return false;
         };
         if wrapped {
-            self.ui.flash = Some(if forward {
-                "search hit BOTTOM, continuing at TOP"
-            } else {
-                "search hit TOP, continuing at BOTTOM"
-            }.into());
+            self.ui.flash = Some(
+                if forward { "search hit BOTTOM, continuing at TOP" } else { "search hit TOP, continuing at BOTTOM" }
+                    .into(),
+            );
         }
         self.reveal(full[idx]);
         true
@@ -379,9 +380,10 @@ impl App {
             }
             Some(Row::Participant(pid, _)) => {
                 if let Some(sidx) = self.model.participants[pid.0].session
-                    && self.model.participants[pid.0].kind == model::ParticipantKind::Main {
-                        self.ui.expand.toggle_session(sidx);
-                    }
+                    && self.model.participants[pid.0].kind == model::ParticipantKind::Main
+                {
+                    self.ui.expand.toggle_session(sidx);
+                }
             }
             _ => {}
         }
@@ -594,9 +596,10 @@ impl App {
                             Some(line.text)
                         };
                         if let Some(query) = query
-                            && self.search_step(&query, true, 1) {
-                                self.ui.search = Some(query);
-                            }
+                            && self.search_step(&query, true, 1)
+                        {
+                            self.ui.search = Some(query);
+                        }
                     }
                 }
             }
@@ -769,9 +772,8 @@ impl App {
             return false;
         }
         let app_ref = self.as_ref();
-        let total = ui::detail::selected_item(&app_ref)
-            .map(|it| ui::detail::detail_lines(&app_ref, &it).len())
-            .unwrap_or(0);
+        let total =
+            ui::detail::selected_item(&app_ref).map(|it| ui::detail::detail_lines(&app_ref, &it).len()).unwrap_or(0);
         let page = self.layout.body_height.max(2) / 2;
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.ui.mode = Mode::Detail,
@@ -885,7 +887,11 @@ fn main() -> anyhow::Result<()> {
         model,
         tree,
         rows,
-        view: View::fit(chrono::Utc::now() - chrono::Duration::hours(1), chrono::Utc::now(), layout.gantt_width.max(1) as usize),
+        view: View::fit(
+            chrono::Utc::now() - chrono::Duration::hours(1),
+            chrono::Utc::now(),
+            layout.gantt_width.max(1) as usize,
+        ),
         ui: ui_state,
         attributor,
         idle_gap: args.idle_gap,
@@ -900,11 +906,7 @@ fn main() -> anyhow::Result<()> {
     result
 }
 
-fn run_loop(
-    terminal: &mut ratatui::DefaultTerminal,
-    app: &mut App,
-    rx: mpsc::Receiver<Msg>,
-) -> anyhow::Result<()> {
+fn run_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App, rx: mpsc::Receiver<Msg>) -> anyhow::Result<()> {
     let mut dirty = true;
     let mut drawn_now_col = i64::MIN;
     loop {
@@ -1116,7 +1118,6 @@ mod tests {
         std::fs::remove_dir_all(&state_dir).unwrap();
     }
 
-
     #[test]
     fn search_reveals_collapsed_matches_wraps_and_preserves_last_success() {
         let root = std::env::temp_dir().join(format!("antty-main-test-search-{}", std::process::id()));
@@ -1128,7 +1129,9 @@ mod tests {
         }
         std::fs::write(root.join("top.txt"), "").unwrap();
         let mut app = test_app(&root, &state_dir);
-        let key = |app: &mut App, code| { app.handle_key(KeyEvent::new(code, KeyModifiers::NONE)); };
+        let key = |app: &mut App, code| {
+            app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+        };
         key(&mut app, KeyCode::Char('/'));
         for c in "needle".chars() {
             key(&mut app, KeyCode::Char(c));

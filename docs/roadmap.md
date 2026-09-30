@@ -38,7 +38,7 @@ Each item is one commit.
   that guesses from timing and says so. Note that `docs/demo.tape` replays
   the author's own omp sessions, so it can't be re-recorded as-is. Add
   `src/editor.rs` to the `AGENTS.md` module map.
-- [ ] Formatting, lints and CI: run `cargo fmt` once (add a `rustfmt.toml`
+- [x] Formatting, lints and CI: run `cargo fmt` once (add a `rustfmt.toml`
   first if longer lines are preferred) and fix the two clippy warnings
   (`let...else` → `?`, `sort_by` → `sort_by_key`). Then add a GitHub Actions
   workflow on Linux and macOS running build, test, `cargo fmt --check` and

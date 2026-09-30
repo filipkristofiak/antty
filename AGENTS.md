@@ -15,7 +15,8 @@ Plain `cargo` works wherever it's already on `PATH`.
 
 ## Module map
 
-- `src/main.rs` — event loop, key handling, `App` state, startup wiring.
+- `src/main.rs` — event loop, `App` state and actions, startup wiring.
+- `src/keys.rs` — per-mode key dispatch and Normal-mode vim grammar.
 - `src/cli.rs` — `RawArgs`/`Args`: flag parsing, tilde expansion, defaults.
 - `src/cmdline.rs` — `:`/`/` line editing and in-memory history.
 - `src/delta.rs` — unified patch for an event and the optional `delta` invocation.

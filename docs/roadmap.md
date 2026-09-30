@@ -28,26 +28,7 @@ aider, avante.nvim or codecompanion.nvim, so antty shows them nothing.
   jumps, panning, zoom and time labels must stay accurate and not imply
   adjacent events were simultaneous.
 
-## 3. Public release polish
-
-Each item is one commit.
-
-- [ ] Docs: add a "Why / design principles" section to the README: the
-  problem (seeing what agents touched, and when), the false-friend rule
-  above, reading session logs without talking to the agent, and a watcher
-  that guesses from timing and says so. Note that `docs/demo.tape` replays
-  the author's own omp sessions, so it can't be re-recorded as-is. Add
-  `src/editor.rs` to the `AGENTS.md` module map.
-- [x] Formatting, lints and CI: run `cargo fmt` once (add a `rustfmt.toml`
-  first if longer lines are preferred) and fix the two clippy warnings
-  (`let...else` → `?`, `sort_by` → `sort_by_key`). Then add a GitHub Actions
-  workflow on Linux and macOS running build, test, `cargo fmt --check` and
-  `cargo clippy --all-targets -- -D warnings`, so both stay clean.
-- [ ] Move key handling out of `src/main.rs` (1,207 lines) into its own
-  module, so the vim grammar (counts, prefixes, modifier guard) reads in one
-  place. Do it after the formatting commit to keep the diff reviewable.
-
-## 4. Packaging
+## 3. Packaging
 
 - [ ] Publish to crates.io, after filling in `Cargo.toml`: `description`
   (required), `repository`, `readme`, `keywords`, `categories` and
@@ -56,7 +37,7 @@ Each item is one commit.
 - [ ] Shell completions (`clap_complete`) and a man page.
 - [ ] AUR package and Nix flake.
 
-## 5. Git branches and file moves (major)
+## 4. Git branches and file moves (major)
 
 FILES already lists more than the files on disk: it is a disk walk plus
 every project file an event touched, and files no longer on disk show as
@@ -81,7 +62,7 @@ and leave the default view unchanged.
   - rebuild the tree as of the cursor time from events, snapshots or git;
   - handle a checkout that changes the tree under a live session.
 
-## 6. More mouse support (consideration)
+## 5. More mouse support (consideration)
 
 - [ ] Consider horizontal timeline scrolling with a carefully chosen modifier,
   plus context-sensitive right-click/back-button actions for Enter, q, and
@@ -112,3 +93,7 @@ and leave the default view unchanged.
 - External diffs: `D` in Detail/Diff pipes the selected event's diff to
   `delta --paging always`; delta uses its configured pager.
 - Keys: `ZZ`/`ZQ` quit; `Ctrl-z` suspends and `fg` restores the TUI; `?` opens help from any view and returns there.
+- Formatting, lints and CI: `rustfmt.toml` sets the style; code is formatted,
+  clippy warnings are fixed, and Linux/macOS CI runs fmt, clippy, build and tests.
+- Key handling lives in `src/keys.rs`, with per-mode dispatch and the Normal-mode
+  vim grammar (counts, prefixes and modifier guard) together.

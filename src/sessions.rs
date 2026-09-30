@@ -14,6 +14,7 @@ use crate::watch::RawFs;
 pub enum Harness {
     Omp,
     Claude,
+    Codex,
 }
 
 impl Harness {
@@ -21,13 +22,15 @@ impl Harness {
         match self {
             Harness::Omp => discover_omp_project_dir(root, project_root),
             Harness::Claude => crate::claude::discover_project_dir(root, project_root),
+            Harness::Codex => crate::codex::discover_project_dir(root, project_root),
         }
     }
 
-    fn scan_files(self, project_dir: &Path) -> Vec<PathBuf> {
+    fn scan_files(self, project_dir: &Path, project_root: &Path) -> Vec<PathBuf> {
         match self {
             Harness::Omp => scan_jsonl_files(project_dir),
             Harness::Claude => crate::claude::scan_files(project_dir),
+            Harness::Codex => crate::codex::scan_files(project_dir, project_root),
         }
     }
 
@@ -36,14 +39,24 @@ impl Harness {
         match self {
             Harness::Omp => ensure_omp_participant(model, file, project_dir),
             Harness::Claude => crate::claude::ensure_participant(model, file, project_dir),
+            Harness::Codex => crate::codex::ensure_participant(model, file, project_dir),
         }
     }
 
-    /// Ingest one parsed jsonl line from `who`'s session file. `idle_gap` is omp-only.
-    pub fn ingest(self, model: &mut Model, who: ParticipantId, v: &serde_json::Value, idle_gap: i64) {
+    /// Ingest one parsed jsonl line from `who`'s session file.
+    /// `project_dir` is Codex-only (title index lookup); `idle_gap` is omp-only.
+    pub fn ingest(
+        self,
+        model: &mut Model,
+        who: ParticipantId,
+        v: &serde_json::Value,
+        project_dir: &Path,
+        idle_gap: i64,
+    ) {
         match self {
             Harness::Omp => crate::parse::ingest(model, who, v, idle_gap),
             Harness::Claude => crate::claude::ingest(model, who, v),
+            Harness::Codex => crate::codex::ingest(model, who, v, project_dir),
         }
     }
 }
@@ -194,8 +207,8 @@ fn scan_jsonl_files_rec(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Collect every non-dotfile `*.jsonl` under omp's `project_dir`, recursively.
-fn scan_jsonl_files(project_dir: &Path) -> Vec<PathBuf> {
+/// Collect every non-dotfile `*.jsonl` under a harness root, recursively.
+pub(crate) fn scan_jsonl_files(project_dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     scan_jsonl_files_rec(project_dir, &mut out);
     out
@@ -252,7 +265,7 @@ pub fn load_initial(
     let project_dir = harness.discover_project_dir(root, project_root);
     let mut states = HashMap::new();
     if let Some(dir) = &project_dir {
-        for f in harness.scan_files(dir) {
+        for f in harness.scan_files(dir, project_root) {
             let Ok(bytes) = fs::read(&f) else { continue };
             let (lines, partial) = split_lines(Vec::new(), &bytes);
             // `offset` stops right before any dangling (incomplete) trailing line; we do NOT
@@ -265,7 +278,7 @@ pub fn load_initial(
             let who = harness.ensure_participant(model, &f, dir);
             for line in &lines {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-                    harness.ingest(model, who, &v, idle_gap);
+                    harness.ingest(model, who, &v, dir, idle_gap);
                 }
             }
             states.insert(f, TailState { offset: consumed, partial: Vec::new() });
@@ -287,7 +300,7 @@ pub fn spawn_tailer(project_root: PathBuf, mut sources: Vec<TailSource>, tx: Sen
                     src.project_dir = src.harness.discover_project_dir(&src.root, &project_root);
                 }
                 let Some(dir) = &src.project_dir else { continue };
-                for f in src.harness.scan_files(dir) {
+                for f in src.harness.scan_files(dir, &project_root) {
                     let size = match fs::metadata(&f) {
                         Ok(m) => m.len(),
                         Err(_) => continue,

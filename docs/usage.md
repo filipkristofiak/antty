@@ -11,6 +11,7 @@ antty [OPTIONS]
 | `--project <PROJECT>` | Project root to show sessions for. Defaults to the current directory. |
 | `--omp-dir <OMP_DIR>` | Root directory of omp's session jsonl files (default: `~/.omp/agent/sessions`). |
 | `--claude-dir <CLAUDE_DIR>` | Claude Code projects directory holding its session jsonl files (default: `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects`). |
+| `--codex-dir <CODEX_DIR>` | Codex sessions directory holding rollout jsonl files (default: `$CODEX_HOME/sessions`, else `~/.codex/sessions`). |
 | `--state-dir <STATE_DIR>` | Directory used to persist watcher-observed filesystem changes (default: `$XDG_STATE_HOME/antty`, else `~/.local/state/antty`). |
 | `--no-watch` | Disable the live filesystem watcher. |
 | `--no-collapse-gaps` | Keep the timeline linear instead of collapsing idle stretches into `~` breaks. |

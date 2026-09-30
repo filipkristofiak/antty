@@ -2,26 +2,33 @@
 
 ## Session discovery
 
-Each harness (`sessions::Harness`: omp, Claude Code) has its own session
-root (`--omp-dir`, `--claude-dir`). Per root, `discover_project_dir` finds the
-direct child whose most-recent top-level session file records a `cwd` equal
-to the project root (omp: the header line; Claude Code: the first record
-carrying `cwd`, in `claude.rs`); matching the logged cwd is authoritative, so
-neither harness's directory-name encoding is reimplemented. Session files are
-tailed live: `load_initial` reads every jsonl file of each root once at
-startup, and `spawn_tailer` polls every root's project dir and each file once
-per second afterward, resuming exactly where the initial read left off.
+Each harness (`sessions::Harness`: omp, Claude Code, Codex CLI) has its own
+root (`--omp-dir`, `--claude-dir`, `--codex-dir`). For omp and Claude Code,
+`discover_project_dir` finds the project directory by matching the logged
+launch `cwd` (omp's header, Claude Code's first `cwd`) to the project root;
+neither harness's directory-name encoding is reimplemented. Codex has no
+project directories: `codex.rs` scans dated rollout files under
+`$CODEX_HOME/sessions` (or `~/.codex/sessions`) and selects files whose
+first-line `session_meta.cwd` matches the project root. Subagents are linked
+by `parent_thread_id`; titles come from the adjacent `session_index.jsonl`.
+Session files are tailed live: `load_initial` reads selected jsonl files
+at startup, and `spawn_tailer` polls for new files and lines once per second.
 
 ## Parsing tool calls into file events
 
-`parse.rs` (omp) and `claude.rs` (Claude Code) ingest one jsonl line at a
-time (`ingest`), tolerant of schema drift — unrecognized types/shapes are
-no-ops. Both normalize tool-arg path strings into project-relative or
-external/session/web scopes (`normalize`, `locate`), turn read/write/edit tool
-results into `FileEvent`s with before/after content snapshots, and accumulate
-per-participant raw activity intervals that later get merged into spans.
+`parse.rs` (omp), `claude.rs` (Claude Code), and `codex.rs` (Codex CLI) ingest
+one jsonl line at a time, tolerant of schema drift — unrecognized types/shapes
+are no-ops. They resolve touched paths into project-relative or
+external/session/web scopes, turn tool results into `FileEvent`s and content
+snapshots, and accumulate per-participant activity intervals merged into spans.
 Claude Code logs no per-message completion time, so the gap between an
 assistant record and the previous user/assistant record counts as activity.
+Codex uses turn start/end and intervening rollout records for activity;
+`history_mode: "paginated"` rollouts use `item_completed` for prompts, file
+changes, command reads and web events; older `"legacy"` rollouts use separate
+events. A declared mode selects one format when both appear; older rollouts
+without a mode accept either record shape. Shell call/output pairs delimit
+windows used for watcher attribution.
 
 ## Filesystem watcher
 

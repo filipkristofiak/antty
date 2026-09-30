@@ -10,14 +10,16 @@ that does nothing (dead key), which is worse than a missing nicety.
 
 ## 1. More harnesses
 
-omp and Claude Code logs are read today. Many Neovim users run Codex CLI,
-aider, avante.nvim or codecompanion.nvim, so antty shows them nothing.
+omp, Claude Code and Codex CLI logs are read today. Readers for aider,
+avante.nvim and codecompanion.nvim remain.
 
 - [x] Read Claude Code session logs (`$CLAUDE_CONFIG_DIR/projects`, else
   `~/.claude/projects`) alongside omp's: sessions, subagents, titles, prompts,
   file reads/writes/edits, web fetch/search, bash windows.
 - [x] `--sessions-dir` becomes `--omp-dir`; add `--claude-dir`.
-- [ ] Codex CLI, aider, avante.nvim, codecompanion.nvim readers.
+- [x] Read Codex CLI rollouts (`$CODEX_HOME/sessions`, else `~/.codex/sessions`)
+  alongside omp and Claude Code; add `--codex-dir`.
+- [ ] aider, avante.nvim, codecompanion.nvim readers.
 
 ## 2. Packaging
 

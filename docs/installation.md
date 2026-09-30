@@ -33,5 +33,5 @@ cargo uninstall antty
 
 ## Files read and written
 
-- Reads `~/.omp/agent/sessions` (omp) and `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects` (Claude Code)
+- Reads `~/.omp/agent/sessions` (omp); `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects` (Claude Code); and `$CODEX_HOME/sessions`, else `~/.codex/sessions` (Codex CLI). Codex session titles come from `session_index.jsonl` next to the sessions directory.
 - Writes `$XDG_STATE_HOME/antty/<project path with / replaced by _>.jsonl` (default `~/.local/state/antty/<project path with / replaced by _>.jsonl`)

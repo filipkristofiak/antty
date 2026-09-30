@@ -19,6 +19,10 @@ pub struct RawArgs {
     #[arg(long)]
     pub claude_dir: Option<PathBuf>,
 
+    /// Codex sessions directory holding its rollout jsonl files (default: $CODEX_HOME/sessions, else ~/.codex/sessions).
+    #[arg(long)]
+    pub codex_dir: Option<PathBuf>,
+
     /// Directory used to persist watcher-observed filesystem changes (default: $XDG_STATE_HOME/antty, else ~/.local/state/antty).
     #[arg(long)]
     pub state_dir: Option<PathBuf>,
@@ -41,6 +45,7 @@ pub struct Args {
     pub project: PathBuf,
     pub omp_dir: PathBuf,
     pub claude_dir: PathBuf,
+    pub codex_dir: PathBuf,
     pub state_dir: PathBuf,
     pub no_watch: bool,
     pub no_collapse_gaps: bool,
@@ -75,6 +80,13 @@ fn default_claude_dir(claude_config_dir: Option<OsString>, home: &str) -> PathBu
     }
 }
 
+fn default_codex_dir(codex_home: Option<OsString>, home: &str) -> PathBuf {
+    match codex_home.filter(|v| !v.is_empty()) {
+        Some(v) => expand_tilde(Path::new(&v)).join("sessions"),
+        None => Path::new(home).join(".codex/sessions"),
+    }
+}
+
 impl Args {
     pub fn parse() -> Result<Self> {
         let raw = RawArgs::parse();
@@ -97,6 +109,10 @@ impl Args {
             .claude_dir
             .map(|p| expand_tilde(&p))
             .unwrap_or_else(|| default_claude_dir(std::env::var_os("CLAUDE_CONFIG_DIR"), &home));
+        let codex_dir = raw
+            .codex_dir
+            .map(|p| expand_tilde(&p))
+            .unwrap_or_else(|| default_codex_dir(std::env::var_os("CODEX_HOME"), &home));
 
         let state_dir = match raw.state_dir {
             Some(p) => expand_tilde(&p),
@@ -106,6 +122,7 @@ impl Args {
             project,
             omp_dir,
             claude_dir,
+            codex_dir,
             state_dir,
             no_watch: raw.no_watch,
             no_collapse_gaps: raw.no_collapse_gaps,
@@ -119,7 +136,7 @@ mod tests {
     use std::ffi::OsString;
     use std::path::PathBuf;
 
-    use super::{default_claude_dir, default_state_dir};
+    use super::{default_claude_dir, default_codex_dir, default_state_dir};
 
     #[test]
     fn default_state_dir_uses_absolute_xdg_or_home() {
@@ -143,6 +160,13 @@ mod tests {
         assert_eq!(default_claude_dir(Some(OsString::from("/cfg")), "/home/t"), PathBuf::from("/cfg/projects"));
         for unset in [Some(OsString::new()), None] {
             assert_eq!(default_claude_dir(unset, "/home/t"), PathBuf::from("/home/t/.claude/projects"));
+        }
+    }
+    #[test]
+    fn default_codex_dir_prefers_codex_home() {
+        assert_eq!(default_codex_dir(Some(OsString::from("/c")), "/home/t"), PathBuf::from("/c/sessions"));
+        for unset in [Some(OsString::new()), None] {
+            assert_eq!(default_codex_dir(unset, "/home/t"), PathBuf::from("/home/t/.codex/sessions"));
         }
     }
 }

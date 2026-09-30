@@ -61,6 +61,13 @@ and leave the default view unchanged.
   - rebuild the tree as of the cursor time from events, snapshots or git;
   - handle a checkout that changes the tree under a live session.
 
+## 5. More mouse support (consideration)
+
+- [ ] Consider horizontal timeline scrolling with a carefully chosen modifier,
+  plus context-sensitive right-click/back-button actions for Enter, q, and
+  Space toggles. Decide the exact gesture mappings only after checking for
+  terminal conflicts; no new mouse bindings are committed yet.
+
 ## Done
 
 - Modifier guard: plain-letter bindings ignore Ctrl chords; `Ctrl-f`/`Ctrl-b`/

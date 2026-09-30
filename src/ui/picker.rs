@@ -39,9 +39,8 @@ fn end_label(s: &Session, now: Ts) -> String {
 
 pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
     f.render_widget(Clear, area);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title("Sessions  (Space toggle · a all · Enter apply · q/Esc cancel)");
+    let block =
+        Block::default().borders(Borders::ALL).title("Sessions  (Space toggle · a all · Enter apply · q/Esc cancel)");
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -58,7 +57,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
                 .iter()
                 .filter(|p| p.session == Some(i) && p.kind == ParticipantKind::Subagent)
                 .count();
-            let text = format!("[{checked}] {}  {}–{}  {n_sub} subagents", s.title, local(s.start).format("%m-%d %H:%M"), end);
+            let text =
+                format!("[{checked}] {}  {}–{}  {n_sub} subagents", s.title, local(s.start).format("%m-%d %H:%M"), end);
             ListItem::new(Line::from(text))
         })
         .collect();

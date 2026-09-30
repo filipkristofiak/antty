@@ -277,14 +277,7 @@ impl Model {
         }
         let color_idx = self.next_color_idx();
         let id = ParticipantId(self.participants.len());
-        self.participants.push(Participant {
-            kind,
-            label,
-            session,
-            parent,
-            color_idx,
-            file: Some(file.to_path_buf()),
-        });
+        self.participants.push(Participant { kind, label, session, parent, color_idx, file: Some(file.to_path_buf()) });
         self.file_participant.insert(file.to_path_buf(), id);
         id
     }
@@ -325,7 +318,12 @@ impl Model {
     pub fn snapshot_before_with_ts(&self, rel: &Path, at: Ts) -> Option<(Ts, &str)> {
         let v = self.snapshots.get(rel)?;
         let idx = v.partition_point(|(t, _)| *t < at);
-        if idx == 0 { None } else { let (t, s) = &v[idx - 1]; Some((*t, s.as_str())) }
+        if idx == 0 {
+            None
+        } else {
+            let (t, s) = &v[idx - 1];
+            Some((*t, s.as_str()))
+        }
     }
 
     /// The latest known snapshot strictly earlier than `at`.

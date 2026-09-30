@@ -6,7 +6,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span as TSpan};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
-use crate::model::{EventDetail, FileEvent, Model, ParticipantKind, Scope, Ts, TouchSource};
+use crate::model::{EventDetail, FileEvent, Model, ParticipantKind, Scope, TouchSource, Ts};
 use crate::tree::Row;
 
 use super::{AppRef, DetailItem, HIGHLIGHT_FG, SELECTED_BG};
@@ -70,13 +70,14 @@ pub fn resolve_items(app: &AppRef) -> Vec<DetailItem> {
                 .collect();
             let p = &app.model.participants[pid.0];
             if p.kind == ParticipantKind::Main
-                && let Some(sidx) = p.session {
-                    for pr in &app.model.prompts {
-                        if pr.session == sidx {
-                            v.push((pr.at, DetailItem::Prompt { at: pr.at }));
-                        }
+                && let Some(sidx) = p.session
+            {
+                for pr in &app.model.prompts {
+                    if pr.session == sidx {
+                        v.push((pr.at, DetailItem::Prompt { at: pr.at }));
                     }
                 }
+            }
             v
         }
         Row::Section(_) => Vec::new(),
@@ -187,9 +188,7 @@ pub fn detail_lines(app: &AppRef, item: &DetailItem) -> Vec<Line<'static>> {
                     lines.push(Line::from(format!("fs {change:?}").to_lowercase()));
                     match diff {
                         Some(d) => lines.extend(diff_lines(d)),
-                        None => lines.push(Line::from(
-                            "no diff (no earlier snapshot, binary, or larger than 1 MiB)",
-                        )),
+                        None => lines.push(Line::from("no diff (no earlier snapshot, binary, or larger than 1 MiB)")),
                     }
                 }
                 EventDetail::Moved { to } => lines.push(Line::from(format!("moved to {}", to.display()))),

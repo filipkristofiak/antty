@@ -65,9 +65,7 @@ impl GitignoreSet {
                 any = true;
             }
         }
-        if any
-            && let Ok(matcher) = builder.build()
-        {
+        if any && let Ok(matcher) = builder.build() {
             layers.push(IgnoreLayer { base: dir.to_path_buf(), matcher });
         }
 
@@ -260,7 +258,9 @@ fn start(root: PathBuf, tx: Sender<Msg>, per_dir: bool) -> notify::Result<()> {
                         }
                         handle_event(&gitignore, event, &tx);
                     }
-                    Err(e) => { let _ = tx.send(Msg::WatchError(e.to_string())); }
+                    Err(e) => {
+                        let _ = tx.send(Msg::WatchError(e.to_string()));
+                    }
                 }
             }
         })
@@ -325,8 +325,10 @@ mod tests {
         assert!(dirs.contains(&root));
         assert!(dirs.contains(&root.join("src")));
         assert!(dirs.contains(&root.join("src/a")));
-        assert!(dirs.iter().position(|dir| dir == &root.join("src")).unwrap()
-            < dirs.iter().position(|dir| dir == &root.join("src/a")).unwrap());
+        assert!(
+            dirs.iter().position(|dir| dir == &root.join("src")).unwrap()
+                < dirs.iter().position(|dir| dir == &root.join("src/a")).unwrap()
+        );
         for excluded in ["target", "target/debug", ".git", "link", "cycle"] {
             assert!(!dirs.contains(&root.join(excluded)), "{excluded}");
         }

@@ -4,7 +4,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders};
 
-use crate::model::{Model, ParticipantId, ParticipantKind, Ts, TouchKind};
+use crate::model::{Model, ParticipantId, ParticipantKind, TouchKind, Ts};
 use crate::tree::Row;
 
 use super::{AppRef, CURSOR_BG, HIGHLIGHT_FG, SELECTED_BG, color_for, palette_color};
@@ -81,7 +81,12 @@ fn render_header(f: &mut Frame, area: Rect, app: &AppRef) {
             let x = area.x + col as u16;
             if x < area.x + area.width {
                 let max = (area.x + area.width - x) as usize;
-                buf.set_string(x, area.y, label.chars().take(max).collect::<String>(), Style::default().fg(Color::Gray));
+                buf.set_string(
+                    x,
+                    area.y,
+                    label.chars().take(max).collect::<String>(),
+                    Style::default().fg(Color::Gray),
+                );
                 next_free = col + label.chars().count() as i64 + 1;
             }
         }
@@ -115,11 +120,8 @@ fn glyph_for_row(app: &AppRef, row: Row, bs: Ts, be: Ts) -> (char, Option<Color>
 
 fn glyph_for_participant(app: &AppRef, pid: ParticipantId, bs: Ts, be: Ts) -> (char, Option<Color>) {
     if pid == Model::YOU {
-        let has_prompt = app
-            .model
-            .prompts
-            .iter()
-            .any(|p| p.at >= bs && p.at < be && app.model.session_visible(p.session));
+        let has_prompt =
+            app.model.prompts.iter().any(|p| p.at >= bs && p.at < be && app.model.session_visible(p.session));
         if has_prompt {
             return ('●', Some(palette_color(0)));
         }
@@ -136,14 +138,15 @@ fn glyph_for_participant(app: &AppRef, pid: ParticipantId, bs: Ts, be: Ts) -> (c
     let p = &app.model.participants[pid.0];
     if p.kind == ParticipantKind::Main
         && let Some(sidx) = p.session
-            && !app.ui.expand.expanded_sessions.contains(&sidx) {
-                let child_hit = app.model.spans.iter().any(|s| {
-                    s.who != pid && s.start < be && s.end >= bs && app.model.participants[s.who.0].session == Some(sidx)
-                });
-                if child_hit {
-                    return ('▓', Some(Color::DarkGray));
-                }
-            }
+        && !app.ui.expand.expanded_sessions.contains(&sidx)
+    {
+        let child_hit = app.model.spans.iter().any(|s| {
+            s.who != pid && s.start < be && s.end >= bs && app.model.participants[s.who.0].session == Some(sidx)
+        });
+        if child_hit {
+            return ('▓', Some(Color::DarkGray));
+        }
+    }
     (' ', None)
 }
 

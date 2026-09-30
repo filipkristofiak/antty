@@ -51,21 +51,22 @@ fn numbered_hunks(diff: &str) -> Option<String> {
         if number < 1 {
             return None;
         }
-        let contiguous = current.as_ref().is_some_and(|hunk| {
-            number == if mark == '+' { hunk.new_next } else { hunk.old_next }
-        });
+        let contiguous =
+            current.as_ref().is_some_and(|hunk| number == if mark == '+' { hunk.new_next } else { hunk.old_next });
         if current.is_some() && !contiguous {
             offset = finish(current.take().unwrap(), &mut out);
         }
         let hunk = current.get_or_insert_with(|| {
-            let (old, new) = if mark == '+' {
-                (number - offset, number)
-            } else {
-                (number, number + offset)
-            };
+            let (old, new) = if mark == '+' { (number - offset, number) } else { (number, number + offset) };
             Hunk {
-                old_start: old, new_start: new, old_next: old, new_next: new,
-                old_count: 0, new_count: 0, changed: false, body: String::new(),
+                old_start: old,
+                new_start: new,
+                old_next: old,
+                new_next: new,
+                old_count: 0,
+                new_count: 0,
+                changed: false,
+                body: String::new(),
             }
         });
         if hunk.old_next < 1 || hunk.new_next < 1 {
@@ -100,8 +101,11 @@ pub fn event_patch(model: &Model, e: &FileEvent) -> Result<String, &'static str>
         EventDetail::Fs { diff: Some(d), .. } => d.clone(),
         EventDetail::Diff(d) if d.lines().any(|line| line.starts_with("@@")) => d.clone(),
         EventDetail::Diff(d) => numbered_hunks(d).ok_or("no unified diff for this event")?,
-        EventDetail::Fs { diff: None, .. } | EventDetail::Moved { .. } | EventDetail::Removed
-        | EventDetail::Search { .. } | EventDetail::None => return Err("no diff for this event"),
+        EventDetail::Fs { diff: None, .. }
+        | EventDetail::Moved { .. }
+        | EventDetail::Removed
+        | EventDetail::Search { .. }
+        | EventDetail::None => return Err("no diff for this event"),
     };
     if hunks.is_empty() {
         return Err("no changes to show");
@@ -158,12 +162,16 @@ mod tests {
     fn numbered_edit_matches_live_omp_insertion() {
         let model = Model::new(PathBuf::from("/tmp/x"));
         let e = event(EventDetail::Diff(
-            " 3|mod cli;\n 4|mod cmdline;\n+5|mod delta;\n 5|mod editor;\n 6|mod model;".into()
+            " 3|mod cli;\n 4|mod cmdline;\n+5|mod delta;\n 5|mod editor;\n 6|mod model;".into(),
         ));
-        assert_eq!(event_patch(&model, &e), Ok(concat!(
-            "--- a.rs\n+++ a.rs\n@@ -3,4 +3,5 @@\n",
-            " mod cli;\n mod cmdline;\n+mod delta;\n mod editor;\n mod model;\n"
-        ).into()));
+        assert_eq!(
+            event_patch(&model, &e),
+            Ok(concat!(
+                "--- a.rs\n+++ a.rs\n@@ -3,4 +3,5 @@\n",
+                " mod cli;\n mod cmdline;\n+mod delta;\n mod editor;\n mod model;\n"
+            )
+            .into())
+        );
     }
 
     #[test]
@@ -172,18 +180,28 @@ mod tests {
         let e = event(EventDetail::Diff(
             " 261|old context\n\n 274|before\n 275|near\n+276|first\n+277|second\n 276|after\n\n 299|far\n-300|old\n+302|replacement\n".into()
         ));
-        assert_eq!(event_patch(&model, &e), Ok(concat!(
-            "--- a.rs\n+++ a.rs\n",
-            "@@ -274,3 +274,5 @@\n before\n near\n+first\n+second\n after\n",
-            "@@ -299,2 +301,2 @@\n far\n-old\n+replacement\n"
-        ).into()));
+        assert_eq!(
+            event_patch(&model, &e),
+            Ok(concat!(
+                "--- a.rs\n+++ a.rs\n",
+                "@@ -274,3 +274,5 @@\n before\n near\n+first\n+second\n after\n",
+                "@@ -299,2 +301,2 @@\n far\n-old\n+replacement\n"
+            )
+            .into())
+        );
     }
 
     #[test]
     fn malformed_numbered_edit_has_no_unified_diff() {
         let model = Model::new(PathBuf::from("/tmp/x"));
-        assert_eq!(event_patch(&model, &event(EventDetail::Diff("not a numbered diff".into()))), Err("no unified diff for this event"));
-        assert_eq!(event_patch(&model, &event(EventDetail::Diff("… truncated\n".into()))), Err("no unified diff for this event"));
+        assert_eq!(
+            event_patch(&model, &event(EventDetail::Diff("not a numbered diff".into()))),
+            Err("no unified diff for this event")
+        );
+        assert_eq!(
+            event_patch(&model, &event(EventDetail::Diff("… truncated\n".into()))),
+            Err("no unified diff for this event")
+        );
     }
 
     #[test]
@@ -199,8 +217,14 @@ mod tests {
         let e = event(EventDetail::Fs { change: FsChange::Modified, diff: Some("@@ -1 +1 @@\n-a\n+b\n".into()) });
         assert_eq!(event_patch(&model, &e), Ok("--- a.rs\n+++ a.rs\n@@ -1 +1 @@\n-a\n+b\n".into()));
         assert_eq!(event_patch(&model, &event(EventDetail::Removed)), Err("no diff for this event"));
-        assert_eq!(event_patch(&model, &event(EventDetail::Fs { change: FsChange::Modified, diff: None })), Err("no diff for this event"));
+        assert_eq!(
+            event_patch(&model, &event(EventDetail::Fs { change: FsChange::Modified, diff: None })),
+            Err("no diff for this event")
+        );
         assert_eq!(event_patch(&model, &event(EventDetail::Diff(String::new()))), Err("no changes to show"));
-        assert_eq!(event_patch(&model, &event(EventDetail::Fs { change: FsChange::Modified, diff: Some(String::new()) })), Err("no changes to show"));
+        assert_eq!(
+            event_patch(&model, &event(EventDetail::Fs { change: FsChange::Modified, diff: Some(String::new()) })),
+            Err("no changes to show")
+        );
     }
 }

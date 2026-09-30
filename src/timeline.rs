@@ -134,7 +134,6 @@ impl View {
             }
         }
     }
-
 }
 
 #[cfg(test)]

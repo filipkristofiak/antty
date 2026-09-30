@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::model::{
-    EventDetail, FileEvent, Model, ParticipantId, ParticipantKind, Pending, Prompt, Scope, Session, ToolWindow, Ts,
-    TouchKind, TouchSource,
+    EventDetail, FileEvent, Model, ParticipantId, ParticipantKind, Pending, Prompt, Scope, Session, ToolWindow,
+    TouchKind, TouchSource, Ts,
 };
 use crate::parse::{locate, parse_ts_iso, push_raw_interval};
 use crate::sessions::{is_dotfile, is_jsonl};
@@ -33,10 +33,7 @@ fn read_first_cwd(path: &Path) -> Option<PathBuf> {
 /// Top-level non-dotfile `*.jsonl` files directly inside `dir`.
 fn top_level_jsonl(dir: &Path) -> Vec<PathBuf> {
     let Ok(rd) = fs::read_dir(dir) else { return Vec::new() };
-    rd.flatten()
-        .map(|e| e.path())
-        .filter(|p| p.is_file() && is_jsonl(p) && !is_dotfile(p))
-        .collect()
+    rd.flatten().map(|e| e.path()).filter(|p| p.is_file() && is_jsonl(p) && !is_dotfile(p)).collect()
 }
 
 /// Find the direct child of `root` whose most-recently-modified session file was launched in
@@ -53,7 +50,7 @@ pub fn discover_project_dir(root: &Path, project_root: &Path) -> Option<PathBuf>
             .into_iter()
             .filter_map(|p| Some((fs::metadata(&p).ok()?.modified().ok()?, p)))
             .collect();
-        files.sort_by(|a, b| b.0.cmp(&a.0));
+        files.sort_by_key(|a| std::cmp::Reverse(a.0));
         let Some(cwd) = files.iter().find_map(|(_, p)| read_first_cwd(p)) else { continue };
         if cwd.canonicalize().unwrap_or(cwd) == project_root {
             return Some(dir);
@@ -80,15 +77,10 @@ pub fn scan_files(project_dir: &Path) -> Vec<PathBuf> {
 /// Subagent label from its sibling `agent-<id>.meta.json`: `description`, else `agentType`,
 /// else the file stem.
 fn subagent_label(file: &Path) -> String {
-    let meta: Option<Value> = fs::read_to_string(file.with_extension("meta.json"))
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok());
+    let meta: Option<Value> =
+        fs::read_to_string(file.with_extension("meta.json")).ok().and_then(|s| serde_json::from_str(&s).ok());
     let field = |k: &str| {
-        meta.as_ref()
-            .and_then(|m| m.get(k))
-            .and_then(|x| x.as_str())
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
+        meta.as_ref().and_then(|m| m.get(k)).and_then(|x| x.as_str()).filter(|s| !s.is_empty()).map(str::to_string)
     };
     field("description")
         .or_else(|| field("agentType"))
@@ -110,7 +102,13 @@ pub fn ensure_participant(model: &mut Model, file: &Path, project_dir: &Path) ->
         let main_file = project_dir.join(format!("{session_id}.jsonl"));
         let main = ensure_participant(model, &main_file, project_dir);
         let session = model.participants[main.0].session;
-        return model.get_or_create_participant(file, ParticipantKind::Subagent, subagent_label(file), session, Some(main));
+        return model.get_or_create_participant(
+            file,
+            ParticipantKind::Subagent,
+            subagent_label(file),
+            session,
+            Some(main),
+        );
     }
     let id = model.get_or_create_participant(file, ParticipantKind::Main, "main".to_string(), None, None);
     let idx = model.sessions.len();
@@ -240,11 +238,7 @@ fn ingest_user(model: &mut Model, who: ParticipantId, v: &Value, ts: Ts) {
     if v.get("isMeta").and_then(|x| x.as_bool()) == Some(true) {
         return;
     }
-    if v.get("origin")
-        .and_then(|o| o.get("kind"))
-        .and_then(|k| k.as_str())
-        .is_some_and(|k| k != "human")
-    {
+    if v.get("origin").and_then(|o| o.get("kind")).and_then(|k| k.as_str()).is_some_and(|k| k != "human") {
         return;
     }
     let text = match content {
@@ -270,13 +264,7 @@ fn patch_text(sp: Option<&Value>) -> String {
     let mut out = String::new();
     for hunk in sp.and_then(|x| x.as_array()).into_iter().flatten() {
         let n = |k: &str| hunk.get(k).and_then(|x| x.as_i64()).unwrap_or(0);
-        out.push_str(&format!(
-            "@@ -{},{} +{},{} @@\n",
-            n("oldStart"),
-            n("oldLines"),
-            n("newStart"),
-            n("newLines")
-        ));
+        out.push_str(&format!("@@ -{},{} +{},{} @@\n", n("oldStart"), n("oldLines"), n("newStart"), n("newLines")));
         for line in hunk.get("lines").and_then(|x| x.as_array()).into_iter().flatten() {
             if let Some(l) = line.as_str() {
                 out.push_str(l);
@@ -314,11 +302,8 @@ fn ingest_tool_result(model: &mut Model, who: ParticipantId, block: &Value, tur:
     let Some(id) = block.get("tool_use_id").and_then(|x| x.as_str()) else { return };
     let Some(pending) = model.pending_tools.remove(&(who.0, id.to_string())) else { return };
     push_raw_interval(model, who, pending.start, end);
-    if let Some(w) = model
-        .tool_windows
-        .iter_mut()
-        .rev()
-        .find(|w| w.who == who && w.tool_call_id == id && w.end.is_none())
+    if let Some(w) =
+        model.tool_windows.iter_mut().rev().find(|w| w.who == who && w.tool_call_id == id && w.end.is_none())
     {
         w.end = Some(end);
     }
@@ -459,9 +444,19 @@ mod tests {
             json!({"type":"user","timestamp":ts("00.500"),"isMeta":true,
                 "message":{"role":"user","content":"<local-command-caveat>x</local-command-caveat>"}}),
             json!({"type":"ai-title","aiTitle":"AI"}),
-            tool_use("05.000", "e1", "Edit", json!({"file_path":a_rs,"old_string":"old","new_string":"new","replace_all":false})),
-            tool_result("06.000", "e1", false, json!({"filePath":a_rs,"originalFile":"old\n",
-                "structuredPatch":[{"oldStart":1,"oldLines":1,"newStart":1,"newLines":1,"lines":["-old","+new"]}]})),
+            tool_use(
+                "05.000",
+                "e1",
+                "Edit",
+                json!({"file_path":a_rs,"old_string":"old","new_string":"new","replace_all":false}),
+            ),
+            tool_result(
+                "06.000",
+                "e1",
+                false,
+                json!({"filePath":a_rs,"originalFile":"old\n",
+                "structuredPatch":[{"oldStart":1,"oldLines":1,"newStart":1,"newLines":1,"lines":["-old","+new"]}]}),
+            ),
             tool_use("07.000", "b1", "Bash", json!({"command":"ls"})),
             tool_result("09.000", "b1", false, json!({"stdout":""})),
             tool_use("10.000", "r1", "Read", json!({"file_path":missing})),
@@ -517,8 +512,10 @@ mod tests {
         fs::create_dir_all(dir_a.join("s1/tool-results")).unwrap();
         fs::create_dir_all(root.join("-decoy")).unwrap();
 
-        let user = |cwd: &Path| json!({"type":"user","timestamp":"2026-01-01T00:00:00.000Z","cwd":cwd,
-            "message":{"role":"user","content":"hi"}});
+        let user = |cwd: &Path| {
+            json!({"type":"user","timestamp":"2026-01-01T00:00:00.000Z","cwd":cwd,
+            "message":{"role":"user","content":"hi"}})
+        };
         fs::write(dir_a.join("s1.jsonl"), format!("{}\n{}\n", json!({"type":"mode"}), user(&project))).unwrap();
         fs::write(root.join("-decoy/s2.jsonl"), format!("{}\n", user(Path::new("/elsewhere")))).unwrap();
         let agent = subagents.join("agent-x.jsonl");

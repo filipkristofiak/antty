@@ -47,9 +47,12 @@ impl CmdLine {
         self.text.truncate(self.text.trim_end_matches(char::is_whitespace).len());
         let Some(last) = self.text.chars().last() else { return };
         let keyword = last.is_alphanumeric() || last == '_';
-        while self.text.chars().last().is_some_and(|c| {
-            !c.is_whitespace() && (c.is_alphanumeric() || c == '_') == keyword
-        }) {
+        while self
+            .text
+            .chars()
+            .last()
+            .is_some_and(|c| !c.is_whitespace() && (c.is_alphanumeric() || c == '_') == keyword)
+        {
             self.text.pop();
         }
     }

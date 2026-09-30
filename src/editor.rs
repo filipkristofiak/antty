@@ -19,9 +19,7 @@ pub fn first_changed_line(diff: &str) -> Option<usize> {
         let mut cur = None;
         for line in diff.lines() {
             if line.starts_with("@@") {
-                cur = line.split_once(" +").and_then(|(_, rest)| {
-                    rest.split([',', ' ']).next()?.parse::<usize>().ok()
-                });
+                cur = line.split_once(" +").and_then(|(_, rest)| rest.split([',', ' ']).next()?.parse::<usize>().ok());
             } else if let Some(n) = cur.as_mut() {
                 if (line.starts_with('+') && !line.starts_with("+++"))
                     || (line.starts_with('-') && !line.starts_with("---"))
@@ -99,9 +97,9 @@ pub fn invocation(
 /// Run `inv`; returns a flash message on failure. Suspending invocations hand the terminal to
 /// the child and restore the TUI afterwards.
 pub fn run(terminal: &mut ratatui::DefaultTerminal, inv: &Invocation) -> std::io::Result<Option<String>> {
-    use std::io::{stdout, Write};
-    use std::process::{Command, Stdio};
     use crossterm::event::{self, Event, KeyEventKind};
+    use std::io::{Write, stdout};
+    use std::process::{Command, Stdio};
 
     let program = inv.program.to_string_lossy();
     if !inv.suspend {
@@ -123,13 +121,14 @@ pub fn run(terminal: &mut ratatui::DefaultTerminal, inv: &Invocation) -> std::io
     leave_tui()?;
     let result = match &inv.stdin {
         None => Command::new(&inv.program).args(&inv.args).status(),
-        Some(input) => Command::new(&inv.program).args(&inv.args).stdin(Stdio::piped()).spawn()
-            .and_then(|mut child| {
+        Some(input) => {
+            Command::new(&inv.program).args(&inv.args).stdin(Stdio::piped()).spawn().and_then(|mut child| {
                 if let Some(mut pipe) = child.stdin.take() {
                     let _ = pipe.write_all(input.as_bytes());
                 }
                 child.wait()
-            }),
+            })
+        }
     };
     crossterm::terminal::enable_raw_mode()?;
     // A pager may exit without waiting (less -F, cat, etc.). Keep its output on the
@@ -204,7 +203,10 @@ mod tests {
         let path = Path::new("/p/it's.rs");
         let remote = invocation(path, Some(7), Some("/tmp/s".into()), None).unwrap();
         assert_eq!(remote.program, "nvim");
-        assert_eq!(remote.args, ["--server", "/tmp/s", "--remote-expr", "execute('drop +7 ' .. fnameescape('/p/it''s.rs'))"]);
+        assert_eq!(
+            remote.args,
+            ["--server", "/tmp/s", "--remote-expr", "execute('drop +7 ' .. fnameescape('/p/it''s.rs'))"]
+        );
         assert!(!remote.suspend);
         let local = invocation(path, Some(3), None, Some("code -w".into())).unwrap();
         assert_eq!(local.program, "code");
@@ -215,6 +217,9 @@ mod tests {
         let remote_no_line = invocation(path, None, Some("/tmp/s".into()), None).unwrap();
         assert_eq!(remote_no_line.args[3], "execute('drop ' .. fnameescape('/p/it''s.rs'))");
         assert!(invocation(path, None, None, None).is_err_and(|e| e == "$EDITOR is not set"));
-        assert!(invocation(path, None, Some(OsString::new()), Some(OsString::new())).is_err_and(|e| e == "$EDITOR is not set"));
+        assert!(
+            invocation(path, None, Some(OsString::new()), Some(OsString::new()))
+                .is_err_and(|e| e == "$EDITOR is not set")
+        );
     }
 }

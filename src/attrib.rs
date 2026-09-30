@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::model::{EventDetail, FileEvent, FsChange, Model, ParticipantId, Scope, Ts, TouchKind, TouchSource};
+use crate::model::{EventDetail, FileEvent, FsChange, Model, ParticipantId, Scope, TouchKind, TouchSource, Ts};
 use crate::watch::{FsKind, RawFs};
 
 const CLASSIFY_DELAY_SECS: i64 = 5;
@@ -122,11 +122,8 @@ impl Attributor {
         // Diff against the last known content, from session-log-derived snapshots or an
         // earlier watcher read. Recorded regardless of whether this event is later dropped as
         // a tool-write echo below, so the content baseline stays current either way.
-        let current = if raw.kind == FsKind::Removed {
-            Some(String::new())
-        } else {
-            crate::snapshot::read_text(&raw.path)
-        };
+        let current =
+            if raw.kind == FsKind::Removed { Some(String::new()) } else { crate::snapshot::read_text(&raw.path) };
         let prev = model.snapshot_before(&rel, raw.at).map(str::to_string);
         let diff = if let (Some(p), Some(c)) = (&prev, &current) {
             Some(crate::snapshot::unified(p, c))
@@ -251,11 +248,8 @@ pub fn replay(model: &mut Model, state_dir: &Path, root: &Path) -> Option<String
                 let Some(&pid) = model.file_participant.get(Path::new(file_str)) else {
                     continue;
                 };
-                let tcid = o
-                    .get("toolCallId")
-                    .and_then(|x| x.as_str())
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string());
+                let tcid =
+                    o.get("toolCallId").and_then(|x| x.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
                 (pid, tcid)
             }
             _ => continue,
@@ -396,7 +390,11 @@ mod tests {
         let line: Value = serde_json::from_str(persisted.lines().next().unwrap()).unwrap();
         let logged_t = line.get("t").and_then(|v| v.as_str()).unwrap();
         let logged_ts = chrono::DateTime::parse_from_rfc3339(logged_t).unwrap();
-        assert_eq!(logged_ts.timestamp(), at.timestamp(), "persisted t must be raw.at, not the classification wall clock");
+        assert_eq!(
+            logged_ts.timestamp(),
+            at.timestamp(),
+            "persisted t must be raw.at, not the classification wall clock"
+        );
     }
 
     #[test]

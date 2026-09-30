@@ -50,12 +50,7 @@ impl Harness {
 
 /// Messages sent from background threads (tailer, fs watcher) to the main event loop.
 pub enum Msg {
-    Lines {
-        harness: Harness,
-        project_dir: PathBuf,
-        participant_file: PathBuf,
-        lines: Vec<String>,
-    },
+    Lines { harness: Harness, project_dir: PathBuf, participant_file: PathBuf, lines: Vec<String> },
     Reset(PathBuf),
     Fs(RawFs),
     Tick,
@@ -84,28 +79,12 @@ fn classify_file(path: &Path, project_dir: &Path) -> FileRole {
     let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
     let parent_file = parent_file_of(path, project_dir);
     if file_name == "__advisor.jsonl" {
-        FileRole {
-            kind: ParticipantKind::Advisor,
-            label: "advisor".to_string(),
-            parent_file,
-        }
+        FileRole { kind: ParticipantKind::Advisor, label: "advisor".to_string(), parent_file }
     } else if parent_file.is_none() {
-        FileRole {
-            kind: ParticipantKind::Main,
-            label: "main".to_string(),
-            parent_file: None,
-        }
+        FileRole { kind: ParticipantKind::Main, label: "main".to_string(), parent_file: None }
     } else {
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or(file_name)
-            .to_string();
-        FileRole {
-            kind: ParticipantKind::Subagent,
-            label: stem,
-            parent_file,
-        }
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or(file_name).to_string();
+        FileRole { kind: ParticipantKind::Subagent, label: stem, parent_file }
     }
 }
 
@@ -167,10 +146,7 @@ pub(crate) fn is_jsonl(path: &Path) -> bool {
 }
 
 pub(crate) fn is_dotfile(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|n| n.to_str())
-        .map(|n| n.starts_with('.'))
-        .unwrap_or(true)
+    path.file_name().and_then(|n| n.to_str()).map(|n| n.starts_with('.')).unwrap_or(true)
 }
 
 /// Find the direct child of omp's `sessions_root` whose most-recent top-level session file has
@@ -187,11 +163,8 @@ fn discover_omp_project_dir(sessions_root: &Path, project_root: &Path) -> Option
             Ok(r) => r,
             Err(_) => continue,
         };
-        let mut top: Vec<PathBuf> = inner
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.is_file() && is_jsonl(p) && !is_dotfile(p))
-            .collect();
+        let mut top: Vec<PathBuf> =
+            inner.flatten().map(|e| e.path()).filter(|p| p.is_file() && is_jsonl(p) && !is_dotfile(p)).collect();
         top.sort();
         let Some(last) = top.last() else { continue };
         let Some(cwd) = read_header_cwd(last) else { continue };
@@ -239,9 +212,10 @@ fn split_lines(mut partial: Vec<u8>, new_bytes: &[u8]) -> (Vec<String>, Vec<u8>)
     for (i, b) in partial.iter().enumerate() {
         if *b == b'\n' {
             if let Ok(s) = std::str::from_utf8(&partial[start..i])
-                && !s.is_empty() {
-                    lines.push(s.to_string());
-                }
+                && !s.is_empty()
+            {
+                lines.push(s.to_string());
+            }
             start = i + 1;
         }
     }
@@ -326,27 +300,28 @@ pub fn spawn_tailer(project_root: PathBuf, mut sources: Vec<TailSource>, tx: Sen
                     }
                     if size > state.offset
                         && let Ok(mut file) = fs::File::open(&f)
-                            && file.seek(SeekFrom::Start(state.offset)).is_ok() {
-                                let mut buf = Vec::new();
-                                if let Ok(n) = file.read_to_end(&mut buf) {
-                                    let old_partial = std::mem::take(&mut state.partial);
-                                    let (lines, new_partial) = split_lines(old_partial, &buf);
-                                    // Advance by bytes actually read, not the pre-read `size`
-                                    // stat: the file may have grown further between the two.
-                                    // Using `size` here would under-count on a live file and
-                                    // cause the next tick to re-read (and re-ingest) the tail.
-                                    state.offset += n as u64;
-                                    state.partial = new_partial;
-                                    if !lines.is_empty() {
-                                        let _ = tx.send(Msg::Lines {
-                                            harness: src.harness,
-                                            project_dir: dir.clone(),
-                                            participant_file: f.clone(),
-                                            lines,
-                                        });
-                                    }
-                                }
+                        && file.seek(SeekFrom::Start(state.offset)).is_ok()
+                    {
+                        let mut buf = Vec::new();
+                        if let Ok(n) = file.read_to_end(&mut buf) {
+                            let old_partial = std::mem::take(&mut state.partial);
+                            let (lines, new_partial) = split_lines(old_partial, &buf);
+                            // Advance by bytes actually read, not the pre-read `size`
+                            // stat: the file may have grown further between the two.
+                            // Using `size` here would under-count on a live file and
+                            // cause the next tick to re-read (and re-ingest) the tail.
+                            state.offset += n as u64;
+                            state.partial = new_partial;
+                            if !lines.is_empty() {
+                                let _ = tx.send(Msg::Lines {
+                                    harness: src.harness,
+                                    project_dir: dir.clone(),
+                                    participant_file: f.clone(),
+                                    lines,
+                                });
                             }
+                        }
+                    }
                 }
             }
             let _ = tx.send(Msg::Tick);

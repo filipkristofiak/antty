@@ -22,11 +22,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
     }
     let hints = "Nav (j/k/h/l) | Zoom (+/-) | Now (t) | Fit (f) | Detail (⏎) | Sessions (s) | Help (?) | Quit (:q)";
     let mut right = format!(
-        "{} · {} sessions · watch:{} · follow:{}",
+        "{} · {} sessions · watch:{} · follow:{} · gaps:{}",
         app.view.zoom_label(),
         app.model.sessions.len(),
         if app.ui.watch_on { "on" } else { "off" },
-        if app.ui.expand.auto_follow { "on" } else { "off" }
+        if app.ui.expand.auto_follow { "on" } else { "off" },
+        if app.view.collapse_gaps() { "on" } else { "off" }
     );
     if let Some(err) = &app.ui.status_extra {
         right = format!("{right} · {err}");

@@ -27,6 +27,10 @@ pub struct RawArgs {
     #[arg(long)]
     pub no_watch: bool,
 
+    /// Keep the timeline linear instead of collapsing idle stretches into ~ breaks.
+    #[arg(long)]
+    pub no_collapse_gaps: bool,
+
     /// Idle gap (seconds) used to merge raw activity intervals into spans.
     #[arg(long, default_value_t = 30)]
     pub idle_gap: i64,
@@ -39,6 +43,7 @@ pub struct Args {
     pub claude_dir: PathBuf,
     pub state_dir: PathBuf,
     pub no_watch: bool,
+    pub no_collapse_gaps: bool,
     pub idle_gap: i64,
 }
 
@@ -97,7 +102,15 @@ impl Args {
             Some(p) => expand_tilde(&p),
             None => default_state_dir(std::env::var_os("XDG_STATE_HOME"), std::env::var_os("HOME"))?,
         };
-        Ok(Args { project, omp_dir, claude_dir, state_dir, no_watch: raw.no_watch, idle_gap: raw.idle_gap })
+        Ok(Args {
+            project,
+            omp_dir,
+            claude_dir,
+            state_dir,
+            no_watch: raw.no_watch,
+            no_collapse_gaps: raw.no_collapse_gaps,
+            idle_gap: raw.idle_gap,
+        })
     }
 }
 

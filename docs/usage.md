@@ -13,6 +13,7 @@ antty [OPTIONS]
 | `--claude-dir <CLAUDE_DIR>` | Claude Code projects directory holding its session jsonl files (default: `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects`). |
 | `--state-dir <STATE_DIR>` | Directory used to persist watcher-observed filesystem changes (default: `$XDG_STATE_HOME/antty`, else `~/.local/state/antty`). |
 | `--no-watch` | Disable the live filesystem watcher. |
+| `--no-collapse-gaps` | Keep the timeline linear instead of collapsing idle stretches into `~` breaks. |
 | `--idle-gap <IDLE_GAP>` | Idle gap (seconds) used to merge raw activity intervals into spans. Default: 30. |
 
 ## Screen layout
@@ -25,8 +26,9 @@ Left pane, top to bottom:
 - `WEB` — search queries and fetched URLs
 
 Right pane: the Gantt timeline, one lane per participant.
+Runs of six or more columns idle across all visible sessions collapse into three display columns (` ~ `) by default, with the marker centered between two blank columns. The header shows `~<duration>` when it fits; closely spaced breaks retain a bare `~` rather than a truncated duration. Press `c` to toggle collapsing without moving the time cursor.
 
-Bottom: a status bar with key hints and current zoom/session/watch state.
+Bottom: a status bar with key hints and current zoom/session/watch/gap-collapse state.
 
 ## Overlays
 
@@ -53,6 +55,7 @@ Bottom: a status bar with key hints and current zoom/session/watch state.
 | `+/-` | zoom in/out |
 | `t` | cursor to now, pinned near the right edge |
 | `f` | fit all activity, latest near the right edge |
+| `c` | collapse idle stretches into ` ~ ` breaks on/off |
 | `/` | search row names (smartcase); Enter jumps to the next match |
 | `n/N` | next/prev search match; no search: next/prev activity on the row |
 | `Space/za` | toggle dir/session; on a file: collapse its dir |
@@ -83,3 +86,4 @@ In Normal mode, letter keys act only when typed without Ctrl/Alt; unlisted Ctrl 
 
 - `-` zooms out (paired with `+`); it does not open the parent directory as in oil.nvim/vim-vinegar. On a file, `zc` closes and selects its parent dir.
 - `H`/`L` pan the timeline by half the pane width; they do not jump to the top/bottom visible row. Use `zt`/`zb` to place the selected row instead.
+- `c` toggles gap collapsing; it is not vim's change operator.

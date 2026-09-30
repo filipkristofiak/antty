@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 use chrono::Timelike;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -5,6 +7,7 @@ use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders};
 
 use crate::model::{Model, ParticipantId, ParticipantKind, TouchKind, Ts};
+use crate::timeline::Column;
 use crate::tree::Row;
 
 use super::{AppRef, CURSOR_BG, HIGHLIGHT_FG, SELECTED_BG, color_for, palette_color};
@@ -44,10 +47,36 @@ fn tick_char(local: chrono::DateTime<chrono::Local>, secs: i64, day_boundary: bo
     }
 }
 
+fn fmt_span(d: chrono::Duration) -> String {
+    let mut seconds = d.num_seconds().max(0);
+    let mut parts = String::new();
+    let mut written = 0;
+    for (unit, suffix) in [(86400, "d"), (3600, "h"), (60, "m"), (1, "s")] {
+        let count = seconds / unit;
+        if count > 0 {
+            write!(parts, "{count}{suffix}").expect("writing to a String cannot fail");
+            seconds %= unit;
+            written += 1;
+            if written == 2 {
+                break;
+            }
+        }
+    }
+    if written == 0 { "0s".to_string() } else { parts }
+}
+
+/// Omit a duration entirely rather than showing a clipped or overwritten number.
+fn break_label(duration: chrono::Duration, col: i64, next_break: Option<i64>, width: i64) -> String {
+    let label = format!("~{}", fmt_span(duration));
+    let end = col + label.len() as i64;
+    if end <= width && next_break.is_none_or(|next| end < next) { label } else { "~".to_string() }
+}
+
 fn render_header(f: &mut Frame, area: Rect, app: &AppRef) {
     let width = area.width as i64;
     let secs = app.view.col_secs();
     let cursor_col = app.view.col_for(app.view.cursor);
+    let cols: Vec<Column> = (0..width).map(|c| app.view.column(c)).collect();
     let buf = f.buffer_mut();
 
     // At col_secs < 3600 (every such level divides 3600), `origin` (a multiple of col_secs) is
@@ -64,44 +93,80 @@ fn render_header(f: &mut Frame, area: Rect, app: &AppRef) {
         }
     };
 
+    let breaks: Vec<_> = cols
+        .iter()
+        .enumerate()
+        .filter_map(|(col, column)| match column {
+            Column::Break { start, end } => Some((col as i64, *start, *end)),
+            Column::Time { .. } | Column::GapPad { .. } => None,
+        })
+        .collect();
+    let mut reserved = Vec::with_capacity(breaks.len());
+    for (i, &(col, start, end)) in breaks.iter().enumerate() {
+        let next_break = breaks.get(i + 1).map(|b| b.0);
+        let shown = break_label(end - start, col, next_break, width);
+        buf.set_string(area.x + col as u16, area.y, &shown, Style::default().fg(Color::DarkGray));
+        // Protect both blank flanks and a space after the label so it cannot read as a time.
+        reserved.push((col - 1, col + shown.len() as i64));
+    }
+
     let mut next_free = 0i64;
-    for col in 0..width {
-        let (start, end) = app.view.bucket(col);
+    let mut force = true;
+    let mut break_start: Option<Ts> = None;
+    for (col, &column) in cols.iter().enumerate() {
+        let (start, end) = match column {
+            Column::Time { start, end } => (start, end),
+            Column::Break { start, .. } => {
+                force = true;
+                break_start = Some(start);
+                continue;
+            }
+            Column::GapPad { .. } => continue,
+        };
+        let col = col as i64;
         let local = label_instant(start, end);
-        let boundary = col == 0 || is_boundary(start, end, secs);
-        if boundary && col >= next_free {
+        if (force || is_boundary(start, end, secs)) && col >= next_free {
             let is_month_start = local.format("%d").to_string() == "01";
             let label = if secs < 3600 {
-                local.format("%H:%M").to_string()
-            } else if col == 0 || is_month_start {
+                if force
+                    && break_start.is_some_and(|b| b.with_timezone(&chrono::Local).date_naive() != local.date_naive())
+                {
+                    local.format("%a %H:%M").to_string()
+                } else {
+                    local.format("%H:%M").to_string()
+                }
+            } else if force || is_month_start {
                 local.format("%b %d").to_string()
             } else {
                 local.format("%d").to_string()
             };
-            let x = area.x + col as u16;
-            if x < area.x + area.width {
-                let max = (area.x + area.width - x) as usize;
-                buf.set_string(
-                    x,
-                    area.y,
-                    label.chars().take(max).collect::<String>(),
-                    Style::default().fg(Color::Gray),
-                );
-                next_free = col + label.chars().count() as i64 + 1;
+            let len = label.chars().count() as i64;
+            if reserved.iter().any(|&(rs, re)| col <= re && rs <= col + len) {
+                continue;
             }
+            let x = area.x + col as u16;
+            let max = (area.x + area.width - x) as usize;
+            buf.set_string(x, area.y, label.chars().take(max).collect::<String>(), Style::default().fg(Color::Gray));
+            next_free = col + len + 1;
+            force = false;
         }
     }
 
-    for col in 0..width {
-        let (start, end) = app.view.bucket(col);
-        let local = label_instant(start, end);
-        // At day zoom, show the weekday letter. At minute zoom, show the last minute digit;
-        // at 30m/1h zoom, show the last hour digit. Between 1h and 1d only mark local day
-        // boundaries. At 5m/10m/15m the minute's last digit only alternates 0/5 or stays 0,
-        // so show the tens digit instead (5m: 001122…, 15m: 0134).
-        let ch = tick_char(local, secs, secs > 3600 && secs < 86400 && is_boundary(start, end, secs));
+    for (col, &column) in cols.iter().enumerate() {
+        let ch = match column {
+            Column::Break { .. } => '~',
+            Column::GapPad { .. } => ' ',
+            Column::Time { start, end } => {
+                let local = label_instant(start, end);
+                // At day zoom, show the weekday letter. At minute zoom, show the last minute digit;
+                // at 30m/1h zoom, show the last hour digit. Between 1h and 1d only mark local day
+                // boundaries. At 5m/10m/15m the minute's last digit only alternates 0/5 or stays 0,
+                // so show the tens digit instead (5m: 001122…, 15m: 0134).
+                tick_char(local, secs, secs > 3600 && secs < 86400 && is_boundary(start, end, secs))
+            }
+        };
         let mut style = Style::default().fg(Color::DarkGray);
-        if col == cursor_col {
+        if col as i64 == cursor_col {
             style = style.bg(CURSOR_BG).fg(HIGHLIGHT_FG);
         }
         let x = area.x + col as u16;
@@ -185,6 +250,7 @@ fn glyph_for_node(app: &AppRef, idx: usize, bs: Ts, be: Ts) -> (char, Option<Col
 
 fn render_body(f: &mut Frame, area: Rect, app: &AppRef) {
     let width = area.width as i64;
+    let cols: Vec<Column> = (0..width).map(|c| app.view.column(c)).collect();
     let cursor_col = app.view.col_for(app.view.cursor);
     let now = chrono::Utc::now();
     let now_col = app.view.col_for(now);
@@ -198,9 +264,13 @@ fn render_body(f: &mut Frame, area: Rect, app: &AppRef) {
         let row = app.rows[row_idx];
         let is_selected = row_idx == app.ui.selected;
         let y = area.y + r;
-        for col in 0..width {
-            let (bs, be) = app.view.bucket(col);
-            let (ch, color) = glyph_for_row(app, row, bs, be);
+        for (col, &column) in cols.iter().enumerate() {
+            let col = col as i64;
+            let (ch, color) = match column {
+                Column::Break { .. } => ('~', Some(Color::DarkGray)),
+                Column::GapPad { .. } => (' ', None),
+                Column::Time { start, end } => glyph_for_row(app, row, start, end),
+            };
             let mut style = Style::default();
             if let Some(c) = color {
                 style = style.fg(c);
@@ -211,7 +281,12 @@ fn render_body(f: &mut Frame, area: Rect, app: &AppRef) {
                 style = style.bg(CURSOR_BG);
             }
             let x = area.x + col as u16;
-            let out = if ch == ' ' && col == now_col && !is_selected && col != cursor_col {
+            let out = if matches!(column, Column::Time { .. })
+                && ch == ' '
+                && col == now_col
+                && !is_selected
+                && col != cursor_col
+            {
                 style = style.fg(Color::LightBlue);
                 '│'
             } else {
@@ -224,9 +299,9 @@ fn render_body(f: &mut Frame, area: Rect, app: &AppRef) {
 
 #[cfg(test)]
 mod tests {
-    use chrono::{Local, TimeZone};
+    use chrono::{Duration, Local, TimeZone};
 
-    use super::tick_char;
+    use super::{break_label, fmt_span, tick_char};
 
     #[test]
     fn minute_ticks_show_changing_digits() {
@@ -237,5 +312,20 @@ mod tests {
         assert_eq!(tick_char(at(5), 300, false), '0');
         assert_eq!(tick_char(at(55), 300, false), '5');
         assert_eq!(tick_char(at(7), 60, false), '7');
+    }
+    #[test]
+    fn fmt_span_uses_two_largest_units() {
+        for (secs, label) in [(100_800, "1d4h"), (12_000, "3h20m"), (7_200, "2h"), (2_700, "45m"), (30, "30s")] {
+            assert_eq!(fmt_span(Duration::seconds(secs)), label);
+        }
+        assert_eq!(fmt_span(Duration::seconds(0)), "0s");
+    }
+    #[test]
+    fn break_labels_never_show_partial_durations() {
+        let duration = Duration::hours(14) + Duration::minutes(50);
+        assert_eq!(break_label(duration, 10, Some(20), 40), "~14h50m");
+        assert_eq!(break_label(duration, 10, Some(17), 40), "~");
+        assert_eq!(break_label(duration, 10, None, 16), "~");
+        assert_eq!(break_label(duration, 10, None, 17), "~14h50m");
     }
 }

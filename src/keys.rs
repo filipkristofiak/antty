@@ -359,7 +359,7 @@ mod tests {
     use ratatui::layout::Rect;
 
     fn test_app(root: &std::path::Path, state_dir: &std::path::Path) -> App {
-        let model = Model::new(root.to_path_buf());
+        let model = Model::new(vec![root.to_path_buf()]);
         let tree = Tree::build(&model);
         let ui = UiState::new(false);
         let rows = tree::build_rows(&model, &tree, &ui.expand);
@@ -373,7 +373,7 @@ mod tests {
             rows,
             view,
             ui,
-            attributor: Attributor::new(state_dir, root),
+            attributor: Attributor::new(state_dir, &[root.to_path_buf()]),
             idle_gap: 30,
             layout,
             launch: None,

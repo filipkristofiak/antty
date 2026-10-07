@@ -30,13 +30,12 @@ fn tilde_display(p: &Path) -> String {
     p.display().to_string()
 }
 
-/// Human-readable rendering of a `FileEvent`'s target, honoring its `scope`: a project-relative
-/// path as-is, an external/session-temp absolute path `~`-abbreviated under `$HOME`, a session's
-/// own file shown as `local://…`, a search query prefixed with `search:`, and a mount/fetched
-/// URL verbatim.
+/// Human-readable rendering of a `FileEvent` target, including its checkout when multiple
+/// roots are shown; external/session-temp paths are abbreviated under `$HOME`.
 pub fn display_target(model: &Model, e: &FileEvent) -> String {
     match e.scope {
-        Scope::Project | Scope::Remote | Scope::WebFetch => e.rel.display().to_string(),
+        Scope::Project(i) => model.project_display(i, &e.rel),
+        Scope::Remote | Scope::WebFetch => e.rel.display().to_string(),
         Scope::External => tilde_display(&e.rel),
         Scope::WebSearch => format!("search: {}", e.rel.display()),
         Scope::Session(_) => match model.session_dir_split(&e.rel) {
@@ -170,7 +169,7 @@ pub fn detail_lines(app: &AppRef, item: &DetailItem) -> Vec<Line<'static>> {
                 EventDetail::Diff(d) => lines.extend(diff_lines(d)),
                 EventDetail::Written { content } => {
                     lines.push(Line::from(format!("wrote {} bytes", content.len())));
-                    match app.model.snapshot_before_with_ts(&e.rel, e.start) {
+                    match app.model.snapshot_before_with_ts(e.scope, &e.rel, e.start) {
                         Some((t, prev)) => {
                             lines.push(Line::from(format!(
                                 "diff vs earlier content from {}",

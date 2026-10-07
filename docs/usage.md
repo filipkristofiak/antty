@@ -9,6 +9,7 @@ antty [OPTIONS]
 | Flag | Doc |
 | --- | --- |
 | `--project <PROJECT>` | Project root to show sessions for. Defaults to the current directory. |
+| `--no-worktrees` | Show only `--project` itself, not the other Git worktrees of its repository. |
 | `--omp-dir <OMP_DIR>` | Root directory of omp's session jsonl files (default: `~/.omp/agent/sessions`). |
 | `--claude-dir <CLAUDE_DIR>` | Claude Code projects directory holding its session jsonl files (default: `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects`). |
 | `--codex-dir <CODEX_DIR>` | Codex sessions directory holding rollout jsonl files (default: `$CODEX_HOME/sessions`, else `~/.codex/sessions`). |
@@ -17,12 +18,17 @@ antty [OPTIONS]
 | `--no-collapse-gaps` | Keep the timeline linear instead of collapsing idle stretches into `~` breaks. |
 | `--idle-gap <IDLE_GAP>` | Idle gap (seconds) used to merge raw activity intervals into spans. Default: 30. |
 
+By default, a Git checkout includes its main and linked worktrees: sessions, file changes, and
+history from each appear together, with FILES grouped by checkout. Worktrees are discovered at
+startup; restart antty after adding one. `--no-worktrees` restores the single-checkout view.
+Non-Git directories retain the single-root view.
+
 ## Screen layout
 
 Left pane, top to bottom:
 
 - `PARTICIPANTS` — you, plus each session (and its subagents)
-- `FILES` — the project's file tree
+- `FILES` — the project's file tree, grouped by checkout when multiple Git worktrees are found at startup
 - `MOUNTS` — external/remote paths touched outside the project
 - `WEB` — search queries and fetched URLs
 

@@ -303,7 +303,7 @@ fn file_cwd(model: &Model, who: ParticipantId) -> PathBuf {
         .session
         .map(|s| model.sessions[s].cwd.clone())
         .filter(|cwd| !cwd.as_os_str().is_empty())
-        .unwrap_or_else(|| model.root.clone())
+        .unwrap_or_else(|| model.roots[0].path.clone())
 }
 
 struct EventCtx<'a> {
@@ -383,12 +383,12 @@ fn file_changes(model: &mut Model, who: ParticipantId, changes: &Value, id: Opti
         let (tool, detail) = match kind {
             "add" => {
                 let content = change.get("content").and_then(Value::as_str).unwrap_or("").to_owned();
-                model.record_snapshot(&rel, end, content.clone());
+                model.record_snapshot(scope, &rel, end, content.clone());
                 ("write", EventDetail::Written { content })
             }
             "delete" => {
                 if let Some(content) = change.get("content").and_then(Value::as_str) {
-                    model.record_snapshot(&rel, start, content.to_owned());
+                    model.record_snapshot(scope, &rel, start, content.to_owned());
                 }
                 ("edit", EventDetail::Removed)
             }
@@ -480,7 +480,7 @@ mod tests {
 
     #[test]
     fn ingest_builds_prompts_events_windows_and_spans() {
-        let mut model = Model::new(PathBuf::from("/Users/x/proj"));
+        let mut model = Model::new(vec![PathBuf::from("/Users/x/proj")]);
         let dir = Path::new("/nonexistent/codex/sessions");
         let who = ensure_participant(&mut model, &dir.join("rollout-p1.jsonl"), dir);
         let mut ingest_at = |sec, ty, payload| ingest(&mut model, who, &record(sec, ty, payload), dir);
@@ -543,7 +543,7 @@ mod tests {
         assert_eq!(model.events.len(), 8);
         let read = &model.events[0];
         assert_eq!(read.rel, Path::new("sub dir/a.rs"));
-        assert_eq!(read.scope, Scope::Project);
+        assert_eq!(read.scope, Scope::Project(0));
         assert_eq!(read.source, TouchSource::Tool("read".into()));
         assert_eq!(read.kind, TouchKind::Read);
         let events = |rel: &str| model.events.iter().filter(|e| e.rel == Path::new(rel)).collect::<Vec<_>>();
@@ -557,7 +557,7 @@ mod tests {
         assert_eq!(events("rust tui")[0].scope, Scope::WebSearch);
         assert!(matches!(&events("rust tui")[0].detail, EventDetail::Search { sources } if sources.is_empty()));
         assert_eq!(events("https://example.com")[0].scope, Scope::WebFetch);
-        assert_eq!(model.snapshot_before(Path::new("new.rs"), t(20)), Some("hi\n"));
+        assert_eq!(model.snapshot_before(Scope::Project(0), Path::new("new.rs"), t(20)), Some("hi\n"));
         assert_eq!(model.tool_windows.len(), 1);
         assert_eq!(model.tool_windows[0].tool, "bash");
         assert_eq!(model.tool_windows[0].start, t(2));
@@ -568,7 +568,7 @@ mod tests {
 
     #[test]
     fn turn_end_closes_open_windows_and_restart_does_not_bridge() {
-        let mut model = Model::new(PathBuf::from("/Users/x/proj"));
+        let mut model = Model::new(vec![PathBuf::from("/Users/x/proj")]);
         let dir = Path::new("/nonexistent/codex/sessions");
         let who = ensure_participant(&mut model, &dir.join("rollout-p2.jsonl"), dir);
         for (sec, ty, payload) in [
@@ -625,7 +625,7 @@ mod tests {
             let file = dir.join(format!("rollout-2026-01-01T00-00-00-{id}.jsonl"));
             fs::write(file, records.iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n").unwrap();
         }
-        let mut model = Model::new(project.clone());
+        let mut model = Model::new(vec![project.clone()]);
         crate::sessions::load_initial(
             &mut model,
             crate::sessions::Harness::Codex,
@@ -689,7 +689,7 @@ mod tests {
         assert_eq!(scan_files(&sessions, &project), vec![main.clone(), child.clone()]);
         File::options().append(true).open(&partial).unwrap().write_all(b"\n").unwrap();
         assert_eq!(scan_files(&sessions, &project), vec![main.clone(), child.clone(), partial]);
-        let mut model = Model::new(project);
+        let mut model = Model::new(vec![project]);
         let p = ensure_participant(&mut model, &main, &sessions);
         let k = ensure_participant(&mut model, &child, &sessions);
         assert_eq!(model.participants[k.0].kind, ParticipantKind::Subagent);

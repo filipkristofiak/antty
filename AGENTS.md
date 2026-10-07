@@ -26,6 +26,7 @@ Plain `cargo` works wherever it's already on `PATH`.
 - `src/claude.rs` — Claude Code reader: project-dir discovery (first-`cwd` matching), transcript scan, participants, ingest.
 - `src/codex.rs` — Codex CLI reader: rollout discovery (header-`cwd` matching), title index, participants, ingest.
 - `src/watch.rs` — recursive filesystem watcher, `.gitignore`-aware (including nested ones).
+- `src/worktree.rs` — Git worktree discovery and common-dir resolution.
 - `src/attrib.rs` — attributes watcher events to tool-call windows; persists/replays the JSONL state log.
 - `src/snapshot.rs` — file content snapshots and unified diffs.
 - `src/timeline.rs` — zoom levels, time↔column mapping, idle-gap span merging.

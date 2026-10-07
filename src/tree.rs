@@ -19,7 +19,7 @@ pub struct Node {
 
 pub struct Tree {
     pub nodes: Vec<Node>,
-    /// FILES forest roots: project tree, from a disk walk plus `Scope::Project` events.
+    /// FILES forest roots: single-root file entries, or one checkout wrapper per project root.
     pub files: Vec<usize>,
     /// MOUNTS forest roots: `Scope::External`/`Scope::Remote` events, path-compacted.
     pub mounts: Vec<usize>,
@@ -28,6 +28,17 @@ pub struct Tree {
     /// Per-session forest roots (a session's own temp files), keyed by session index; rendered
     /// nested under that session's row when expanded.
     pub session_files: HashMap<usize, Vec<usize>>,
+}
+
+/// Prefix for file nodes belonging to a particular checkout.
+pub fn files_key_prefix(root: usize) -> String {
+    format!("f{root}:")
+}
+
+/// Decode a FILES key into its checkout index and root-relative path.
+pub fn parse_files_key(key: &str) -> Option<(usize, &str)> {
+    let (root, rel) = key.strip_prefix('f')?.split_once(':')?;
+    Some((root.parse().ok()?, rel))
 }
 
 // ---------------------------------------------------------------------------
@@ -173,7 +184,7 @@ fn external_style_segments(rel: &Path) -> Vec<String> {
 /// Segment lists a `FileEvent.rel` decomposes into, for the forest its `scope` belongs to.
 fn segments(model: &Model, e: &FileEvent) -> Vec<String> {
     match e.scope {
-        Scope::Project => path_components(&e.rel),
+        Scope::Project(_) => path_components(&e.rel),
         Scope::External => external_style_segments(&e.rel),
         Scope::Remote => {
             let s = e.rel.to_string_lossy();
@@ -206,24 +217,21 @@ impl Tree {
     /// per session index touched by a `Scope::Session` event, path-compacted, rendered at depth
     /// 1 (nested under that session's row). Only FILES does disk I/O.
     pub fn build(model: &Model) -> Tree {
-        let mut files_trie = Trie::default();
+        let mut files_tries: Vec<Trie> = (0..model.roots.len()).map(|_| Trie::default()).collect();
 
-        let walker = ignore::WalkBuilder::new(&model.root)
-            .hidden(false)
-            .git_ignore(true)
-            .filter_entry(|e| e.file_name() != ".git")
-            .build();
-        for entry in walker.flatten() {
-            let path = entry.path();
-            if path == model.root {
-                continue;
+        for (i, root) in model.roots.iter().enumerate() {
+            for entry in crate::snapshot::project_walker(&root.path, model.nested_roots(i)).flatten() {
+                let path = entry.path();
+                if path == root.path {
+                    continue;
+                }
+                let Ok(rel) = path.strip_prefix(&root.path) else { continue };
+                if rel.as_os_str().is_empty() {
+                    continue;
+                }
+                let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                files_tries[i].insert(&path_components(rel), is_dir, false, None);
             }
-            let Ok(rel) = path.strip_prefix(&model.root) else { continue };
-            if rel.as_os_str().is_empty() {
-                continue;
-            }
-            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-            files_trie.insert(&path_components(rel), is_dir, false, None);
         }
 
         let mut mounts_trie = Trie::default();
@@ -232,9 +240,9 @@ impl Tree {
 
         for (i, e) in model.events.iter().enumerate() {
             match e.scope {
-                Scope::Project => {
-                    let deleted = !model.root.join(&e.rel).exists();
-                    files_trie.insert(&path_components(&e.rel), false, deleted, Some(i));
+                Scope::Project(root) => {
+                    let deleted = !model.roots[root].path.join(&e.rel).exists();
+                    files_tries[root].insert(&path_components(&e.rel), false, deleted, Some(i));
                 }
                 Scope::External | Scope::Remote => {
                     mounts_trie.insert(&segments(model, e), false, false, Some(i));
@@ -253,7 +261,35 @@ impl Tree {
         }
 
         let mut nodes = Vec::new();
-        let files = files_trie.emit("f:", "", 0, None, &mut nodes);
+        let files = if files_tries.len() == 1 {
+            files_tries[0].emit(&files_key_prefix(0), "", 0, None, &mut nodes)
+        } else {
+            let mut files = Vec::with_capacity(files_tries.len());
+            for (i, trie) in files_tries.iter().enumerate() {
+                let idx = nodes.len();
+                nodes.push(Node {
+                    name: model.roots[i].label.clone(),
+                    key: files_key_prefix(i),
+                    parent: None,
+                    is_dir: true,
+                    depth: 0,
+                    children: Vec::new(),
+                    events: Vec::new(),
+                    deleted: false,
+                });
+                let children = trie.emit(&files_key_prefix(i), "", 1, Some(idx), &mut nodes);
+                let mut events = Vec::new();
+                for &child in &children {
+                    events.extend_from_slice(&nodes[child].events);
+                }
+                events.sort_unstable();
+                events.dedup();
+                nodes[idx].children = children;
+                nodes[idx].events = events;
+                files.push(idx);
+            }
+            files
+        };
         let mounts = mounts_trie.emit("m:", "", 0, None, &mut nodes);
         let web = web_trie.emit("w:", "", 0, None, &mut nodes);
         let mut session_files = HashMap::new();
@@ -588,7 +624,7 @@ mod tests {
     }
 
     fn model_with_main(root: PathBuf) -> (Model, ParticipantId) {
-        let mut model = Model::new(root.clone());
+        let mut model = Model::new(vec![root.clone()]);
         let file = root.join("session.jsonl");
         let who = model.get_or_create_participant(&file, ParticipantKind::Main, "main".into(), None, None);
         let idx = model.sessions.len();
@@ -643,6 +679,49 @@ mod tests {
     }
 
     #[test]
+    fn separate_worktrees_have_distinct_files_nodes_and_events() {
+        let a = temp_root("worktree-a").canonicalize().unwrap();
+        let b = temp_root("worktree-b").canonicalize().unwrap();
+        let mut model = Model::new(vec![a, b]);
+        push_event(&mut model, Model::YOU, PathBuf::from("src/a.rs"), Scope::Project(0));
+        push_event(&mut model, Model::YOU, PathBuf::from("src/a.rs"), Scope::Project(1));
+
+        let tree = Tree::build(&model);
+        assert_eq!(tree.files.len(), 2);
+        for i in 0..2 {
+            let wrapper = &tree.nodes[tree.files[i]];
+            assert_eq!(wrapper.name, model.roots[i].label);
+            assert_eq!(wrapper.key, files_key_prefix(i));
+            assert_eq!(wrapper.depth, 0);
+            assert_eq!(wrapper.parent, None);
+            assert_eq!(wrapper.events, vec![i]);
+            let key = format!("f{i}:src/a.rs");
+            assert_eq!(parse_files_key(&key), Some((i, "src/a.rs")));
+            assert_eq!(parse_files_key(&wrapper.key), Some((i, "")));
+            let file = &tree.nodes[tree.find_by_key(&key).unwrap()];
+            assert_eq!(file.name, "a.rs");
+            assert_eq!(file.events, vec![i]);
+        }
+        assert_eq!(parse_files_key("m:src/a.rs"), None);
+    }
+
+    #[test]
+    fn nested_worktree_is_walked_only_under_its_own_root() {
+        let outer = temp_root("nested-outer").canonicalize().unwrap();
+        let inner = outer.join("nested");
+        fs::create_dir_all(inner.join("src")).unwrap();
+        fs::write(inner.join("src/a.rs"), "inner").unwrap();
+        let model = Model::new(vec![outer, inner.canonicalize().unwrap()]);
+
+        let tree = Tree::build(&model);
+        assert_eq!(tree.files.len(), 2);
+        assert!(tree.find_by_key("f0:nested").is_none());
+        assert!(tree.find_by_key("f0:nested/src/a.rs").is_none());
+        assert!(tree.find_by_key("f0:src/a.rs").is_some());
+        assert!(tree.find_by_key("f1:src/a.rs").is_some());
+    }
+
+    #[test]
     fn mounts_section_only_appears_with_events_and_compacts_common_prefix() {
         let root = temp_root("mounts");
         let (mut model, who) = model_with_main(root);
@@ -665,7 +744,7 @@ mod tests {
     fn auto_open_expands_dirs_touched_by_the_focused_row_only() {
         let root = temp_root("autoopen");
         let (mut model, who) = model_with_main(root);
-        push_event(&mut model, who, PathBuf::from("src/ui/b.rs"), Scope::Project);
+        push_event(&mut model, who, PathBuf::from("src/ui/b.rs"), Scope::Project(0));
         let tree = Tree::build(&model);
 
         let main_row = Row::Participant(model.sessions[0].main, 0);
@@ -686,7 +765,7 @@ mod tests {
         // otherwise Space on an auto-opened dir is a no-op (or takes two presses).
         let root = temp_root("override-beats-autoopen");
         let (mut model, who) = model_with_main(root);
-        push_event(&mut model, who, PathBuf::from("src/ui/b.rs"), Scope::Project);
+        push_event(&mut model, who, PathBuf::from("src/ui/b.rs"), Scope::Project(0));
         let tree = Tree::build(&model);
 
         let focus = focus_of(&model, Row::Participant(model.sessions[0].main, 0));
@@ -708,7 +787,7 @@ mod tests {
         // around it plus row-list bookkeeping that isn't unit-testable without a real Tree/Model).
         let root = temp_root("refocus-sticky");
         let (mut model, who) = model_with_main(root);
-        push_event(&mut model, who, PathBuf::from("src/ui/b.rs"), Scope::Project);
+        push_event(&mut model, who, PathBuf::from("src/ui/b.rs"), Scope::Project(0));
         let tree = Tree::build(&model);
         let mut state = ExpandState::default();
 
@@ -741,7 +820,7 @@ mod tests {
         // calls, as opposed to `refocus`) must not resurrect a cleared `auto_focus`.
         let root = temp_root("zm-clears-focus");
         let (mut model, who) = model_with_main(root);
-        push_event(&mut model, who, PathBuf::from("src/ui/b.rs"), Scope::Project);
+        push_event(&mut model, who, PathBuf::from("src/ui/b.rs"), Scope::Project(0));
         let tree = Tree::build(&model);
         let mut state = ExpandState::default();
 
@@ -762,7 +841,7 @@ mod tests {
     fn expand_all_and_collapse_all_toggle_every_dir() {
         let root = temp_root("expandall");
         let (mut model, who) = model_with_main(root);
-        push_event(&mut model, who, PathBuf::from("src/ui/b.rs"), Scope::Project);
+        push_event(&mut model, who, PathBuf::from("src/ui/b.rs"), Scope::Project(0));
         let tree = Tree::build(&model);
 
         let mut state = ExpandState::default();

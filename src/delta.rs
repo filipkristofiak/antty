@@ -95,7 +95,7 @@ fn numbered_hunks(diff: &str) -> Option<String> {
 pub fn event_patch(model: &Model, e: &FileEvent) -> Result<String, &'static str> {
     let hunks = match &e.detail {
         EventDetail::Written { content } => {
-            let prev = model.snapshot_before_with_ts(&e.rel, e.start).map_or("", |(_, s)| s);
+            let prev = model.snapshot_before_with_ts(e.scope, &e.rel, e.start).map_or("", |(_, s)| s);
             snapshot::unified(prev, content)
         }
         EventDetail::Fs { diff: Some(d), .. } => d.clone(),
@@ -110,7 +110,10 @@ pub fn event_patch(model: &Model, e: &FileEvent) -> Result<String, &'static str>
     if hunks.is_empty() {
         return Err("no changes to show");
     }
-    let label = e.rel.to_string_lossy();
+    let label = match e.scope {
+        crate::model::Scope::Project(i) => model.project_display(i, &e.rel),
+        _ => e.rel.to_string_lossy().into_owned(),
+    };
     Ok(format!("--- {label}\n+++ {label}\n{hunks}"))
 }
 
@@ -134,7 +137,7 @@ mod tests {
         FileEvent {
             who: ParticipantId(0),
             rel: PathBuf::from("a.rs"),
-            scope: Scope::Project,
+            scope: Scope::Project(0),
             kind: TouchKind::Write,
             source: TouchSource::Tool("edit".into()),
             start,
@@ -146,21 +149,21 @@ mod tests {
 
     #[test]
     fn claude_hunks_keep_their_original_content() {
-        let model = Model::new(PathBuf::from("/tmp/x"));
+        let model = Model::new(vec![PathBuf::from("/tmp/x")]);
         let e = event(EventDetail::Diff("@@ -1,1 +1,1 @@\n-old\n+new\n".into()));
         assert_eq!(event_patch(&model, &e), Ok("--- a.rs\n+++ a.rs\n@@ -1,1 +1,1 @@\n-old\n+new\n".into()));
     }
 
     #[test]
     fn numbered_edit_renders_without_snapshots() {
-        let model = Model::new(PathBuf::from("/tmp/x"));
+        let model = Model::new(vec![PathBuf::from("/tmp/x")]);
         let e = event(EventDetail::Diff("-1|old\n+1|new\n".into()));
         assert_eq!(event_patch(&model, &e), Ok("--- a.rs\n+++ a.rs\n@@ -1,1 +1,1 @@\n-old\n+new\n".into()));
     }
 
     #[test]
     fn numbered_edit_matches_live_omp_insertion() {
-        let model = Model::new(PathBuf::from("/tmp/x"));
+        let model = Model::new(vec![PathBuf::from("/tmp/x")]);
         let e = event(EventDetail::Diff(
             " 3|mod cli;\n 4|mod cmdline;\n+5|mod delta;\n 5|mod editor;\n 6|mod model;".into(),
         ));
@@ -176,7 +179,7 @@ mod tests {
 
     #[test]
     fn numbered_edit_keeps_disjoint_hunks_and_adjusts_new_line_numbers() {
-        let model = Model::new(PathBuf::from("/tmp/x"));
+        let model = Model::new(vec![PathBuf::from("/tmp/x")]);
         let e = event(EventDetail::Diff(
             " 261|old context\n\n 274|before\n 275|near\n+276|first\n+277|second\n 276|after\n\n 299|far\n-300|old\n+302|replacement\n".into()
         ));
@@ -193,7 +196,7 @@ mod tests {
 
     #[test]
     fn malformed_numbered_edit_has_no_unified_diff() {
-        let model = Model::new(PathBuf::from("/tmp/x"));
+        let model = Model::new(vec![PathBuf::from("/tmp/x")]);
         assert_eq!(
             event_patch(&model, &event(EventDetail::Diff("not a numbered diff".into()))),
             Err("no unified diff for this event")
@@ -206,14 +209,14 @@ mod tests {
 
     #[test]
     fn written_file_without_prior_snapshot_is_an_addition() {
-        let model = Model::new(PathBuf::from("/tmp/x"));
+        let model = Model::new(vec![PathBuf::from("/tmp/x")]);
         let e = event(EventDetail::Written { content: "x\n".into() });
         assert!(event_patch(&model, &e).unwrap().contains("+x"));
     }
 
     #[test]
     fn fs_diff_is_used_and_events_without_diffs_are_rejected() {
-        let model = Model::new(PathBuf::from("/tmp/x"));
+        let model = Model::new(vec![PathBuf::from("/tmp/x")]);
         let e = event(EventDetail::Fs { change: FsChange::Modified, diff: Some("@@ -1 +1 @@\n-a\n+b\n".into()) });
         assert_eq!(event_patch(&model, &e), Ok("--- a.rs\n+++ a.rs\n@@ -1 +1 @@\n-a\n+b\n".into()));
         assert_eq!(event_patch(&model, &event(EventDetail::Removed)), Err("no diff for this event"));

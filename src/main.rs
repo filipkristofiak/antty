@@ -15,6 +15,7 @@ mod timeline;
 mod tree;
 mod ui;
 mod watch;
+mod worktree;
 
 use std::sync::mpsc;
 use std::time::Duration;
@@ -266,8 +267,8 @@ impl App {
         if node.is_dir {
             return Err("not a file");
         }
-        let path = if let Some(rel) = node.key.strip_prefix("f:") {
-            self.model.root.join(rel)
+        let path = if let Some((root, rel)) = tree::parse_files_key(&node.key) {
+            self.model.roots[root].path.join(rel)
         } else if let Some(&idx) = node.events.first() {
             editor::event_path(&self.model, &self.model.events[idx]).ok_or("not a local file")?
         } else {
@@ -503,24 +504,32 @@ impl App {
 fn main() -> anyhow::Result<()> {
     let args = Args::parse()?;
 
-    let mut model = Model::new(args.project.clone());
+    let roots = if args.no_worktrees { vec![args.project.clone()] } else { worktree::discover(&args.project) };
+    let mut model = Model::new(roots.clone());
     model.session_roots = vec![args.omp_dir.clone(), args.claude_dir.clone()];
-    let sources: Vec<sessions::TailSource> =
-        [(Harness::Omp, &args.omp_dir), (Harness::Claude, &args.claude_dir), (Harness::Codex, &args.codex_dir)]
-            .into_iter()
-            .map(|(harness, root)| sessions::load_initial(&mut model, harness, root, &args.project, args.idle_gap))
-            .collect();
+    let mut sources = Vec::new();
+    for root in &roots {
+        for (harness, dir) in
+            [(Harness::Omp, &args.omp_dir), (Harness::Claude, &args.claude_dir), (Harness::Codex, &args.codex_dir)]
+        {
+            sources.push(sessions::load_initial(&mut model, harness, dir, root, args.idle_gap));
+        }
+    }
 
     let mut status_extra = None;
     if sources.iter().all(|s| s.project_dir.is_none()) {
-        status_extra = Some(format!("no agent sessions for {}", args.project.display()));
+        status_extra = Some(if roots.len() == 1 {
+            format!("no agent sessions for {}", args.project.display())
+        } else {
+            format!("no agent sessions for {} or its {} other worktrees", args.project.display(), roots.len() - 1)
+        });
     }
 
-    let attributor = Attributor::new(&args.state_dir, &args.project);
+    let attributor = Attributor::new(&args.state_dir, &roots);
     if let Some(e) = &attributor.persist_error {
         status_extra = Some(e.clone());
     }
-    if let Some(e) = attrib::replay(&mut model, &args.state_dir, &args.project) {
+    if let Some(e) = attrib::replay(&mut model, &args.state_dir) {
         status_extra = Some(e);
     }
     if !args.no_watch {
@@ -528,19 +537,26 @@ fn main() -> anyhow::Result<()> {
     }
 
     let (tx, rx) = mpsc::channel::<Msg>();
-    let _tailer = sessions::spawn_tailer(args.project.clone(), sources, tx.clone());
+    let _tailer = sessions::spawn_tailer(sources, tx.clone());
 
     let mut watch_on = false;
     if !args.no_watch {
-        match watch::spawn_watcher(args.project.clone(), tx.clone()) {
-            Ok(()) => watch_on = true,
-            Err(e) => status_extra = Some(format!("watch: {e}")),
+        for (i, root) in roots.iter().enumerate() {
+            match watch::spawn_watcher(root.clone(), model.nested_roots(i), tx.clone()) {
+                Ok(()) => watch_on = true,
+                Err(e) => status_extra = Some(format!("watch: {e}")),
+            }
         }
     }
 
     let mut ui_state = UiState::new(watch_on);
     ui_state.status_extra = status_extra;
     ui_state.no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
+    if roots.len() > 1 {
+        for i in 0..roots.len() {
+            ui_state.expand.dir_overrides.insert(tree::files_key_prefix(i), true);
+        }
+    }
 
     let mut terminal = ratatui::init();
     let size = terminal.size()?;

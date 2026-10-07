@@ -13,13 +13,15 @@ pub struct Node {
     pub children: Vec<usize>,
     /// indices into Model.events; for dirs this is the union of every descendant's events.
     pub events: Vec<usize>,
+    /// Root indices whose checkout has this path on disk, ascending; filled only in the merged multi-root view.
+    pub present_in: Vec<usize>,
     /// true for a file that shows up only through history (edited/read) but is absent on disk.
     pub deleted: bool,
 }
 
 pub struct Tree {
     pub nodes: Vec<Node>,
-    /// FILES forest roots: single-root file entries, or one checkout wrapper per project root.
+    /// FILES forest roots: file entries (merged or single-root), or one wrapper per checkout.
     pub files: Vec<usize>,
     /// MOUNTS forest roots: `Scope::External`/`Scope::Remote` events, path-compacted.
     pub mounts: Vec<usize>,
@@ -34,6 +36,16 @@ pub struct Tree {
 pub fn files_key_prefix(root: usize) -> String {
     format!("f{root}:")
 }
+
+/// How FILES presents multiple project roots; irrelevant with a single root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilesView {
+    Merged,
+    Separate,
+}
+
+/// Key prefix for merged-view FILES nodes, which belong to no single checkout.
+pub const MERGED_FILES_PREFIX: &str = "f*:";
 
 /// Decode a FILES key into its checkout index and root-relative path.
 pub fn parse_files_key(key: &str) -> Option<(usize, &str)> {
@@ -51,6 +63,7 @@ struct Trie {
     is_dir: bool,
     deleted: bool,
     events: Vec<usize>,
+    present: Vec<usize>,
 }
 
 fn effective_is_dir(t: &Trie) -> bool {
@@ -75,6 +88,16 @@ impl Trie {
             child.is_dir = true;
             child.insert(rest, is_dir, deleted, event);
         }
+    }
+
+    /// Record that `root` has every path prefix of `segs` on disk; keep indices sorted and unique.
+    fn mark_present(&mut self, segs: &[String], root: usize) {
+        let Some((head, rest)) = segs.split_first() else { return };
+        let child = self.children.entry(head.clone()).or_default();
+        if let Err(pos) = child.present.binary_search(&root) {
+            child.present.insert(pos, root);
+        }
+        child.mark_present(rest, root);
     }
 
     /// Neotree-style path compaction: while a dir has exactly one child and that child is
@@ -134,6 +157,7 @@ impl Trie {
                 children: Vec::new(),
                 events: Vec::new(),
                 deleted: trie.deleted,
+                present_in: trie.present.clone(),
             });
             idxs.push(idx);
             let mut agg = trie.events.clone();
@@ -212,12 +236,15 @@ fn segments(model: &Model, e: &FileEvent) -> Vec<String> {
 
 impl Tree {
     /// FILES = a gitignore-respecting disk walk plus every `Scope::Project` event (historical/
-    /// deleted/gitignored files still appear); not path-compacted. MOUNTS = `External`/`Remote`
-    /// events, path-compacted. WEB = `WebSearch`/`WebFetch` events, not compacted. One forest
-    /// per session index touched by a `Scope::Session` event, path-compacted, rendered at depth
-    /// 1 (nested under that session's row). Only FILES does disk I/O.
-    pub fn build(model: &Model) -> Tree {
-        let mut files_tries: Vec<Trie> = (0..model.roots.len()).map(|_| Trie::default()).collect();
+    /// deleted/gitignored files still appear); not path-compacted. Multiple roots use either
+    /// one merged trie or one checkout wrapper per root. MOUNTS = `External`/`Remote` events,
+    /// path-compacted. WEB = `WebSearch`/`WebFetch` events, not compacted. One forest per session
+    /// index touched by a `Scope::Session` event, path-compacted, rendered at depth 1 (nested
+    /// under that session's row). Only FILES does disk I/O.
+    pub fn build(model: &Model, view: FilesView) -> Tree {
+        let merged = model.roots.len() > 1 && view == FilesView::Merged;
+        let mut files_tries: Vec<Trie> =
+            (0..if merged { 1 } else { model.roots.len() }).map(|_| Trie::default()).collect();
 
         for (i, root) in model.roots.iter().enumerate() {
             for entry in crate::snapshot::project_walker(&root.path, model.nested_roots(i)).flatten() {
@@ -230,19 +257,40 @@ impl Tree {
                     continue;
                 }
                 let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-                files_tries[i].insert(&path_components(rel), is_dir, false, None);
+                let segs = path_components(rel);
+                let trie = &mut files_tries[if merged { 0 } else { i }];
+                trie.insert(&segs, is_dir, false, None);
+                if merged {
+                    trie.mark_present(&segs, i);
+                }
             }
         }
-
         let mut mounts_trie = Trie::default();
         let mut web_trie = Trie::default();
         let mut session_tries: HashMap<usize, Trie> = HashMap::new();
 
+        let mut presence: HashMap<&Path, Vec<usize>> = HashMap::new();
         for (i, e) in model.events.iter().enumerate() {
             match e.scope {
                 Scope::Project(root) => {
-                    let deleted = !model.roots[root].path.join(&e.rel).exists();
-                    files_tries[root].insert(&path_components(&e.rel), false, deleted, Some(i));
+                    if merged {
+                        let present = presence.entry(&e.rel).or_insert_with(|| {
+                            model
+                                .roots
+                                .iter()
+                                .enumerate()
+                                .filter_map(|(r, root)| root.path.join(&e.rel).exists().then_some(r))
+                                .collect()
+                        });
+                        let segs = path_components(&e.rel);
+                        files_tries[0].insert(&segs, false, present.is_empty(), Some(i));
+                        for &r in present.iter() {
+                            files_tries[0].mark_present(&segs, r);
+                        }
+                    } else {
+                        let deleted = !model.roots[root].path.join(&e.rel).exists();
+                        files_tries[root].insert(&path_components(&e.rel), false, deleted, Some(i));
+                    }
                 }
                 Scope::External | Scope::Remote => {
                     mounts_trie.insert(&segments(model, e), false, false, Some(i));
@@ -261,7 +309,9 @@ impl Tree {
         }
 
         let mut nodes = Vec::new();
-        let files = if files_tries.len() == 1 {
+        let files = if merged {
+            files_tries[0].emit(MERGED_FILES_PREFIX, "", 0, None, &mut nodes)
+        } else if files_tries.len() == 1 {
             files_tries[0].emit(&files_key_prefix(0), "", 0, None, &mut nodes)
         } else {
             let mut files = Vec::with_capacity(files_tries.len());
@@ -276,6 +326,7 @@ impl Tree {
                     children: Vec::new(),
                     events: Vec::new(),
                     deleted: false,
+                    present_in: Vec::new(),
                 });
                 let children = trie.emit(&files_key_prefix(i), "", 1, Some(idx), &mut nodes);
                 let mut events = Vec::new();
@@ -306,6 +357,18 @@ impl Tree {
     /// rebuild that reassigns every index.
     pub fn find_by_key(&self, key: &str) -> Option<usize> {
         self.nodes.iter().position(|n| n.key == key)
+    }
+}
+
+/// Find the node showing the same FILES path in the other view. Merged keys map to the
+/// first checkout that has the path; wrapper keys have no equivalent.
+pub fn equivalent_node(tree: &Tree, roots: usize, key: &str) -> Option<usize> {
+    if let Some(rel) = key.strip_prefix(MERGED_FILES_PREFIX) {
+        (0..roots).find_map(|i| tree.find_by_key(&format!("{}{rel}", files_key_prefix(i))))
+    } else if let Some((_, rel)) = parse_files_key(key) {
+        (!rel.is_empty()).then(|| tree.find_by_key(&format!("{MERGED_FILES_PREFIX}{rel}"))).flatten()
+    } else {
+        tree.find_by_key(key)
     }
 }
 
@@ -670,7 +733,7 @@ mod tests {
     fn default_rows_show_only_top_level_files_entries() {
         let root = temp_root("default");
         let (model, _) = model_with_main(root);
-        let tree = Tree::build(&model);
+        let tree = Tree::build(&model, FilesView::Merged);
         let rows = build_rows(&model, &tree, &ExpandState::default());
         let names = node_names(&tree, &rows);
         assert!(names.contains(&"src".to_string()));
@@ -686,7 +749,7 @@ mod tests {
         push_event(&mut model, Model::YOU, PathBuf::from("src/a.rs"), Scope::Project(0));
         push_event(&mut model, Model::YOU, PathBuf::from("src/a.rs"), Scope::Project(1));
 
-        let tree = Tree::build(&model);
+        let tree = Tree::build(&model, FilesView::Separate);
         assert_eq!(tree.files.len(), 2);
         for i in 0..2 {
             let wrapper = &tree.nodes[tree.files[i]];
@@ -706,6 +769,37 @@ mod tests {
     }
 
     #[test]
+    fn merged_worktrees_share_rows_and_mark_partial_presence() {
+        let a = temp_root("merged-a").canonicalize().unwrap();
+        let b = temp_root("merged-b").canonicalize().unwrap();
+        fs::write(b.join("only_b.rs"), "").unwrap();
+        let mut model = Model::new(vec![a, b]);
+        push_event(&mut model, Model::YOU, PathBuf::from("src/a.rs"), Scope::Project(0));
+        push_event(&mut model, Model::YOU, PathBuf::from("src/a.rs"), Scope::Project(1));
+        push_event(&mut model, Model::YOU, PathBuf::from("gone.rs"), Scope::Project(0));
+
+        let merged = Tree::build(&model, FilesView::Merged);
+        let shared = &merged.nodes[merged.find_by_key("f*:src/a.rs").unwrap()];
+        assert_eq!(shared.events, vec![0, 1]);
+        assert_eq!(shared.present_in, vec![0, 1]);
+        let only_b = &merged.nodes[merged.find_by_key("f*:only_b.rs").unwrap()];
+        assert_eq!(only_b.present_in, vec![1]);
+        assert!(!only_b.deleted);
+        let gone = &merged.nodes[merged.find_by_key("f*:gone.rs").unwrap()];
+        assert!(gone.deleted);
+        assert!(gone.present_in.is_empty());
+        assert!(merged.nodes.iter().all(|n| model.roots.iter().all(|r| n.name != r.label)));
+
+        let separate = Tree::build(&model, FilesView::Separate);
+        let idx = equivalent_node(&separate, 2, "f*:only_b.rs").unwrap();
+        assert_eq!(separate.nodes[idx].key, "f1:only_b.rs");
+        let idx = equivalent_node(&merged, 2, "f0:src/a.rs").unwrap();
+        assert_eq!(merged.nodes[idx].key, "f*:src/a.rs");
+        assert_eq!(equivalent_node(&merged, 2, "f0:"), None);
+        assert_eq!(parse_files_key("f*:src/a.rs"), None);
+    }
+
+    #[test]
     fn nested_worktree_is_walked_only_under_its_own_root() {
         let outer = temp_root("nested-outer").canonicalize().unwrap();
         let inner = outer.join("nested");
@@ -713,7 +807,7 @@ mod tests {
         fs::write(inner.join("src/a.rs"), "inner").unwrap();
         let model = Model::new(vec![outer, inner.canonicalize().unwrap()]);
 
-        let tree = Tree::build(&model);
+        let tree = Tree::build(&model, FilesView::Separate);
         assert_eq!(tree.files.len(), 2);
         assert!(tree.find_by_key("f0:nested").is_none());
         assert!(tree.find_by_key("f0:nested/src/a.rs").is_none());
@@ -725,14 +819,14 @@ mod tests {
     fn mounts_section_only_appears_with_events_and_compacts_common_prefix() {
         let root = temp_root("mounts");
         let (mut model, who) = model_with_main(root);
-        let tree_empty = Tree::build(&model);
+        let tree_empty = Tree::build(&model, FilesView::Merged);
         let rows_empty = build_rows(&model, &tree_empty, &ExpandState::default());
         assert!(!rows_empty.iter().any(|r| matches!(r, Row::Section("mounts"))));
 
         let home = PathBuf::from(std::env::var("HOME").unwrap());
         push_event(&mut model, who, home.join("x/y/one.txt"), Scope::External);
         push_event(&mut model, who, home.join("x/y/two.txt"), Scope::External);
-        let tree = Tree::build(&model);
+        let tree = Tree::build(&model, FilesView::Merged);
         let rows = build_rows(&model, &tree, &ExpandState::default());
         assert!(rows.iter().any(|r| matches!(r, Row::Section("mounts"))));
         assert_eq!(tree.mounts.len(), 1);
@@ -745,7 +839,7 @@ mod tests {
         let root = temp_root("autoopen");
         let (mut model, who) = model_with_main(root);
         push_event(&mut model, who, PathBuf::from("src/ui/b.rs"), Scope::Project(0));
-        let tree = Tree::build(&model);
+        let tree = Tree::build(&model, FilesView::Merged);
 
         let main_row = Row::Participant(model.sessions[0].main, 0);
         let focus = focus_of(&model, main_row);
@@ -766,7 +860,7 @@ mod tests {
         let root = temp_root("override-beats-autoopen");
         let (mut model, who) = model_with_main(root);
         push_event(&mut model, who, PathBuf::from("src/ui/b.rs"), Scope::Project(0));
-        let tree = Tree::build(&model);
+        let tree = Tree::build(&model, FilesView::Merged);
 
         let focus = focus_of(&model, Row::Participant(model.sessions[0].main, 0));
         let mut state = ExpandState { auto_open: auto_open_nodes(&model, &tree, &focus), ..ExpandState::default() };
@@ -788,7 +882,7 @@ mod tests {
         let root = temp_root("refocus-sticky");
         let (mut model, who) = model_with_main(root);
         push_event(&mut model, who, PathBuf::from("src/ui/b.rs"), Scope::Project(0));
-        let tree = Tree::build(&model);
+        let tree = Tree::build(&model, FilesView::Merged);
         let mut state = ExpandState::default();
 
         let main_row = Row::Participant(model.sessions[0].main, 0);
@@ -821,7 +915,7 @@ mod tests {
         let root = temp_root("zm-clears-focus");
         let (mut model, who) = model_with_main(root);
         push_event(&mut model, who, PathBuf::from("src/ui/b.rs"), Scope::Project(0));
-        let tree = Tree::build(&model);
+        let tree = Tree::build(&model, FilesView::Merged);
         let mut state = ExpandState::default();
 
         state.refocus(&model, &tree, Some(Row::Participant(model.sessions[0].main, 0)));
@@ -842,7 +936,7 @@ mod tests {
         let root = temp_root("expandall");
         let (mut model, who) = model_with_main(root);
         push_event(&mut model, who, PathBuf::from("src/ui/b.rs"), Scope::Project(0));
-        let tree = Tree::build(&model);
+        let tree = Tree::build(&model, FilesView::Merged);
 
         let mut state = ExpandState::default();
         state.expand_all();
@@ -858,7 +952,7 @@ mod tests {
     fn zc_on_file_closes_parent_and_returns_it() {
         let root = temp_root("zc-file");
         let (model, _) = model_with_main(root);
-        let tree = Tree::build(&model);
+        let tree = Tree::build(&model, FilesView::Merged);
         let src = tree.nodes.iter().position(|n| n.name == "src" && n.is_dir).unwrap();
         let a_rs = tree.nodes.iter().position(|n| n.name == "a.rs").unwrap();
         let mut state = ExpandState::default();
@@ -872,7 +966,7 @@ mod tests {
     fn zc_on_collapsed_dir_escalates_to_parent() {
         let root = temp_root("zc-dir");
         let (model, _) = model_with_main(root);
-        let tree = Tree::build(&model);
+        let tree = Tree::build(&model, FilesView::Merged);
         let src = tree.nodes.iter().position(|n| n.name == "src" && n.is_dir).unwrap();
         let ui = tree.nodes.iter().position(|n| n.name == "ui" && n.is_dir).unwrap();
         let mut state = ExpandState::default();
@@ -888,7 +982,7 @@ mod tests {
     fn zc_recursive_then_zo_reopens_one_level_only() {
         let root = temp_root("zc-recursive");
         let (model, _) = model_with_main(root);
-        let tree = Tree::build(&model);
+        let tree = Tree::build(&model, FilesView::Merged);
         let src = tree.nodes.iter().position(|n| n.name == "src" && n.is_dir).unwrap();
         let mut state = ExpandState::default();
         state.expand_all();
@@ -905,7 +999,7 @@ mod tests {
     fn zo_recursive_opens_every_descendant() {
         let root = temp_root("zo-recursive");
         let (model, _) = model_with_main(root);
-        let tree = Tree::build(&model);
+        let tree = Tree::build(&model, FilesView::Merged);
         let src = tree.nodes.iter().position(|n| n.name == "src" && n.is_dir).unwrap();
         let mut state = ExpandState::default();
         state.fold(&model, &tree, Row::Node(src), true, true);
@@ -925,7 +1019,7 @@ mod tests {
             None,
         );
         model.participants[sub.0].session = Some(0);
-        let tree = Tree::build(&model);
+        let tree = Tree::build(&model, FilesView::Merged);
         let mut state = ExpandState::default();
         state.expanded_sessions.insert(0);
 

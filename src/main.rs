@@ -113,7 +113,7 @@ impl App {
             Some(Row::Node(idx)) => Some(self.tree.nodes[idx].key.clone()),
             _ => None,
         };
-        self.tree = Tree::build(&self.model);
+        self.tree = Tree::build(&self.model, self.ui.files_view);
         self.view.set_activity(timeline::visible_activity(&self.model));
         // A background data refresh, not a cursor movement: recompute `auto_open` from the
         // *existing* `auto_focus` (see `refresh_rows`) rather than re-deriving it from `row` —
@@ -125,6 +125,29 @@ impl App {
             other => other,
         };
         self.finish_row_update(relocated_row);
+    }
+
+    fn toggle_files_view(&mut self) {
+        if self.model.roots.len() < 2 {
+            self.ui.flash = Some("no other worktrees".into());
+            return;
+        }
+        let other = self.selected_row();
+        let key = match other {
+            Some(Row::Node(idx)) => Some(self.tree.nodes[idx].key.clone()),
+            _ => None,
+        };
+        self.ui.files_view = match self.ui.files_view {
+            tree::FilesView::Merged => tree::FilesView::Separate,
+            tree::FilesView::Separate => tree::FilesView::Merged,
+        };
+        self.tree = Tree::build(&self.model, self.ui.files_view);
+        self.ui.expand.refresh_auto_open(&self.model, &self.tree);
+        if let Some(idx) = key.as_deref().and_then(|k| tree::equivalent_node(&self.tree, self.model.roots.len(), k)) {
+            self.reveal(Row::Node(idx));
+        } else {
+            self.finish_row_update(if key.is_some() { None } else { other });
+        }
     }
 
     /// Rebuild the row list in place (no disk walk, tree node indices unchanged) from the
@@ -267,15 +290,24 @@ impl App {
         if node.is_dir {
             return Err("not a file");
         }
-        let path = if let Some((root, rel)) = tree::parse_files_key(&node.key) {
-            self.model.roots[root].path.join(rel)
+        let (path, project_root) = if let Some(rel) = node.key.strip_prefix(tree::MERGED_FILES_PREFIX) {
+            let root = (0..self.model.roots.len()).find(|&i| self.model.roots[i].path.join(rel).exists()).unwrap_or(0);
+            (self.model.roots[root].path.join(rel), Some(root))
+        } else if let Some((root, rel)) = tree::parse_files_key(&node.key) {
+            (self.model.roots[root].path.join(rel), None)
         } else if let Some(&idx) = node.events.first() {
-            editor::event_path(&self.model, &self.model.events[idx]).ok_or("not a local file")?
+            (editor::event_path(&self.model, &self.model.events[idx]).ok_or("not a local file")?, None)
         } else {
             return Err("not a file");
         };
-        let mut events: Vec<_> =
-            node.events.iter().map(|&idx| &self.model.events[idx]).filter(|e| self.model.visible(e.who)).collect();
+        let mut events: Vec<_> = node
+            .events
+            .iter()
+            .map(|&idx| &self.model.events[idx])
+            .filter(|e| {
+                self.model.visible(e.who) && project_root.is_none_or(|root| e.scope == model::Scope::Project(root))
+            })
+            .collect();
         events.sort_by_key(|e| std::cmp::Reverse(e.end));
         let line = events.into_iter().find_map(|e| editor::event_line(&self.model, e));
         Ok((path, line))
@@ -550,6 +582,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     let mut ui_state = UiState::new(watch_on);
+    ui_state.files_view = if args.separate_worktrees { tree::FilesView::Separate } else { tree::FilesView::Merged };
     ui_state.status_extra = status_extra;
     ui_state.no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
     if roots.len() > 1 {
@@ -563,7 +596,7 @@ fn main() -> anyhow::Result<()> {
     let root_rect = Rect::new(0, 0, size.width, size.height);
     let layout = ui::compute_layout(root_rect, ui_state.view_mode());
 
-    let tree = Tree::build(&model);
+    let tree = Tree::build(&model, ui_state.files_view);
     let rows = tree::build_rows(&model, &tree, &ui_state.expand);
     let mut app = App {
         model,

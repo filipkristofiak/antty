@@ -10,6 +10,7 @@ antty [OPTIONS]
 | --- | --- |
 | `--project <PROJECT>` | Project root to show sessions for. Defaults to the current directory. |
 | `--no-worktrees` | Show only `--project` itself, not the other Git worktrees of its repository. |
+| `--separate-worktrees` | Start with a FILES group per Git worktree instead of the merged tree; toggle with `w`. |
 | `--omp-dir <OMP_DIR>` | Root directory of omp's session jsonl files (default: `~/.omp/agent/sessions`). |
 | `--claude-dir <CLAUDE_DIR>` | Claude Code projects directory holding its session jsonl files (default: `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects`). |
 | `--codex-dir <CODEX_DIR>` | Codex sessions directory holding rollout jsonl files (default: `$CODEX_HOME/sessions`, else `~/.codex/sessions`). |
@@ -19,23 +20,26 @@ antty [OPTIONS]
 | `--idle-gap <IDLE_GAP>` | Idle gap (seconds) used to merge raw activity intervals into spans. Default: 30. |
 
 By default, a Git checkout includes its main and linked worktrees: sessions, file changes, and
-history from each appear together, with FILES grouped by checkout. Worktrees are discovered at
-startup; restart antty after adding one. `--no-worktrees` restores the single-checkout view.
-Non-Git directories retain the single-root view.
+history from each appear together. FILES merges them by repository-relative path, with `⎇`
+and checkout labels on paths present in only some worktrees (not for content differences).
+Press `w` to switch between the merged tree and separate checkout groups; use
+`--separate-worktrees` to start in separate mode. Worktrees are discovered at startup; restart
+antty after adding one. `--no-worktrees` restores the single-checkout view. Non-Git directories
+retain the single-root view.
 
 ## Screen layout
 
 Left pane, top to bottom:
 
 - `PARTICIPANTS` — you, plus each session (and its subagents)
-- `FILES` — the project's file tree, grouped by checkout when multiple Git worktrees are found at startup
+- `FILES` — the project's file tree, merged across worktrees by default, or grouped by checkout with `w`
 - `MOUNTS` — external/remote paths touched outside the project
 - `WEB` — search queries and fetched URLs
 
 Right pane: the Gantt timeline, one lane per participant.
 Runs of six or more columns idle across all visible sessions collapse into three display columns (` ~ `) by default, with the marker centered between two blank columns. The header shows `~<duration>` when it fits; closely spaced breaks retain a bare `~` rather than a truncated duration. Press `c` to toggle collapsing without moving the time cursor.
 
-Bottom: a status bar with key hints and current zoom/session/watch/gap-collapse state.
+Bottom: a status bar with key hints and current zoom/session/watch/gap-collapse state, plus the worktree view when multiple roots are shown.
 
 ## Overlays
 
@@ -75,6 +79,7 @@ Bottom: a status bar with key hints and current zoom/session/watch/gap-collapse 
 | `e` | open file in `$EDITOR`, or the parent Neovim when `$NVIM` is set (file rows, Detail, Diff) |
 | `D` | diff of selected event in delta (Detail, Diff); needs delta on PATH |
 | `T` | touched-only |
+| `w` | worktrees: merged/separate FILES view |
 | `s` | session picker |
 | `?` | this help, from any view; closing returns there |
 | `:q⏎, ZZ/ZQ` | quit |

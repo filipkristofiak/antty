@@ -30,6 +30,7 @@ const KEYS: &[(&str, &str)] = &[
     ("e", "open file in $EDITOR, or the parent Neovim when $NVIM is set (file rows, Detail, Diff)"),
     ("D", "diff of selected event in delta (Detail, Diff); needs delta on PATH"),
     ("T", "touched-only"),
+    ("w", "worktrees: merged/separate FILES view"),
     ("s", "session picker"),
     ("?", "this help, from any view; closing returns there"),
     (":q⏎, ZZ/ZQ", "quit"),

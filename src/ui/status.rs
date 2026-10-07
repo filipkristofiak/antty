@@ -29,6 +29,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
         if app.ui.expand.auto_follow { "on" } else { "off" },
         if app.view.collapse_gaps() { "on" } else { "off" }
     );
+    if app.model.roots.len() > 1 {
+        right.push_str(match app.ui.files_view {
+            crate::tree::FilesView::Merged => " · worktrees:merged",
+            crate::tree::FilesView::Separate => " · worktrees:separate",
+        });
+    }
     if let Some(err) = &app.ui.status_extra {
         right = format!("{right} · {err}");
     }

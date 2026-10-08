@@ -241,11 +241,13 @@ pub struct TailState {
     pub partial: Vec<u8>,
 }
 
-/// One harness's session root being tailed for the current project.
+/// One harness's session root being tailed for one checkout.
 pub struct TailSource {
     pub harness: Harness,
     pub root: PathBuf,
-    /// the project's dir under `root`, once discovered.
+    /// Canonical checkout whose sessions this source tails.
+    pub project_root: PathBuf,
+    /// The checkout's dir under the harness session root, once discovered.
     pub project_dir: Option<PathBuf>,
     pub states: HashMap<PathBuf, TailState>,
 }
@@ -285,22 +287,22 @@ pub fn load_initial(
         }
     }
     crate::parse::flush_dirty_spans(model, idle_gap);
-    TailSource { harness, root: root.to_path_buf(), project_dir, states }
+    TailSource { harness, root: root.to_path_buf(), project_root: project_root.to_path_buf(), project_dir, states }
 }
 
 /// Background thread: for every source, rediscovers the project's session dir and tails every
 /// jsonl file in it once per second, forwarding complete lines to the main thread. Each source's
 /// `states` seeds file offsets from `load_initial`; `partial` starts empty in every seeded entry,
 /// so any line still incomplete at startup is read fresh on the first tick.
-pub fn spawn_tailer(project_root: PathBuf, mut sources: Vec<TailSource>, tx: Sender<Msg>) -> thread::JoinHandle<()> {
+pub fn spawn_tailer(mut sources: Vec<TailSource>, tx: Sender<Msg>) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         loop {
             for src in sources.iter_mut() {
                 if src.project_dir.is_none() {
-                    src.project_dir = src.harness.discover_project_dir(&src.root, &project_root);
+                    src.project_dir = src.harness.discover_project_dir(&src.root, &src.project_root);
                 }
                 let Some(dir) = &src.project_dir else { continue };
-                for f in src.harness.scan_files(dir, &project_root) {
+                for f in src.harness.scan_files(dir, &src.project_root) {
                     let size = match fs::metadata(&f) {
                         Ok(m) => m.len(),
                         Err(_) => continue,
@@ -372,7 +374,7 @@ mod tests {
         let half_written = "{\"type\":\"title_change\"".to_string();
         fs::write(&file, format!("{title_line}{header_line}{half_written}")).unwrap();
 
-        let mut model = Model::new(project_root.clone());
+        let mut model = Model::new(vec![project_root.clone()]);
         let src = load_initial(&mut model, Harness::Omp, &sessions_root, &project_root, 30);
         assert_eq!(src.project_dir, Some(project_dir));
         let state = src.states.get(&file).expect("tail state seeded for the file");

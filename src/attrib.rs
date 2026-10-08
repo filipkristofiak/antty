@@ -41,34 +41,45 @@ struct Pending {
 
 pub struct Attributor {
     pending: Vec<Pending>,
-    persist_file: Option<File>,
+    persist_files: Vec<Option<File>>,
     pub persist_error: Option<String>,
     delay_secs: i64,
 }
 
 impl Attributor {
-    pub fn new(state_dir: &Path, root: &Path) -> Self {
-        let path = persist_path_for(state_dir, root);
+    pub fn new(state_dir: &Path, roots: &[PathBuf]) -> Self {
         let mut persist_error = None;
-        let persist_file = match fs::create_dir_all(state_dir) {
-            Ok(()) => match OpenOptions::new().create(true).append(true).open(&path) {
-                Ok(f) => Some(f),
-                Err(e) => {
-                    persist_error = Some(format!("watch events not persisted: {e}"));
-                    None
-                }
-            },
+        let persist_files = match fs::create_dir_all(state_dir) {
+            Ok(()) => roots
+                .iter()
+                .map(|root| {
+                    match OpenOptions::new().create(true).append(true).open(persist_path_for(state_dir, root)) {
+                        Ok(file) => Some(file),
+                        Err(e) => {
+                            if persist_error.is_none() {
+                                persist_error = Some(format!("watch events not persisted: {e}"));
+                            }
+                            None
+                        }
+                    }
+                })
+                .collect(),
             Err(e) => {
                 persist_error = Some(format!("watch events not persisted: {e}"));
-                None
+                (0..roots.len()).map(|_| None).collect()
             }
         };
-        Attributor { pending: Vec::new(), persist_file, persist_error, delay_secs: CLASSIFY_DELAY_SECS }
+        Attributor { pending: Vec::new(), persist_files, persist_error, delay_secs: CLASSIFY_DELAY_SECS }
     }
 
     #[cfg(test)]
     fn disabled() -> Self {
-        Attributor { pending: Vec::new(), persist_file: None, persist_error: None, delay_secs: CLASSIFY_DELAY_SECS }
+        Attributor {
+            pending: Vec::new(),
+            persist_files: Vec::new(),
+            persist_error: None,
+            delay_secs: CLASSIFY_DELAY_SECS,
+        }
     }
 
     /// Coalesce a raw fs event by path: keep the latest timestamp and the strongest kind
@@ -115,7 +126,7 @@ impl Attributor {
         if matches!(raw.kind, FsKind::Created | FsKind::Modified) && !raw.path.exists() {
             return false;
         }
-        let Some(rel) = raw.path.strip_prefix(&model.root).ok().map(|p| p.to_path_buf()) else {
+        let Some((root, rel)) = model.project_rel(&raw.path) else {
             return false;
         };
 
@@ -124,7 +135,7 @@ impl Attributor {
         // a tool-write echo below, so the content baseline stays current either way.
         let current =
             if raw.kind == FsKind::Removed { Some(String::new()) } else { crate::snapshot::read_text(&raw.path) };
-        let prev = model.snapshot_before(&rel, raw.at).map(str::to_string);
+        let prev = model.snapshot_before(Scope::Project(root), &rel, raw.at).map(str::to_string);
         let diff = if let (Some(p), Some(c)) = (&prev, &current) {
             Some(crate::snapshot::unified(p, c))
         } else if raw.kind == FsKind::Created && prev.is_none() {
@@ -134,7 +145,7 @@ impl Attributor {
         }
         .filter(|d| !d.is_empty());
         if let Some(c) = current {
-            model.record_snapshot(&rel, raw.at, c);
+            model.record_snapshot(Scope::Project(root), &rel, raw.at, c);
         }
 
         // FSEvents only reports *late*, never early: a tool's own write can finish up to
@@ -142,6 +153,7 @@ impl Attributor {
         // for the same reason.
         let already = model.events.iter().any(|e| {
             e.kind == TouchKind::Write
+                && e.scope == Scope::Project(root)
                 && e.rel == rel
                 && matches!(e.source, TouchSource::Tool(_))
                 && e.end >= raw.at - chrono::Duration::seconds(DEDUP_TOOL_BEFORE_SECS)
@@ -153,6 +165,16 @@ impl Attributor {
 
         let mut best: Option<(ParticipantId, String, Ts)> = None;
         for w in &model.tool_windows {
+            // A shell running in a different checkout cannot have caused this file change.
+            if model.participants[w.who.0]
+                .session
+                .and_then(|i| model.sessions.get(i))
+                .filter(|session| !session.cwd.as_os_str().is_empty())
+                .and_then(|session| model.project_rel(&session.cwd))
+                .is_some_and(|(window_root, _)| window_root != root)
+            {
+                continue;
+            }
             let start_ok = raw.at >= w.start - chrono::Duration::seconds(WINDOW_START_SLACK_SECS);
             let end_ok = raw.at <= w.end.unwrap_or(now) + chrono::Duration::seconds(WINDOW_END_SLACK_SECS);
             if start_ok && end_ok && best.as_ref().map(|(_, _, s)| w.start > *s).unwrap_or(true) {
@@ -168,7 +190,7 @@ impl Attributor {
         model.events.push(FileEvent {
             who,
             rel: rel.clone(),
-            scope: Scope::Project,
+            scope: Scope::Project(root),
             kind: TouchKind::Write,
             source,
             start: raw.at,
@@ -176,13 +198,14 @@ impl Attributor {
             tool_call_id: tool_call_id.clone(),
             detail: EventDetail::Fs { change: fs_kind_to_change(raw.kind), diff: diff.clone() },
         });
-        self.persist(model, &rel, raw.kind, who, tool_call_id, raw.at, diff.as_deref());
+        self.persist(root, model, &rel, raw.kind, who, tool_call_id, raw.at, diff.as_deref());
         true
     }
 
     #[allow(clippy::too_many_arguments)]
     fn persist(
         &mut self,
+        root: usize,
         model: &Model,
         rel: &Path,
         kind: FsKind,
@@ -191,7 +214,7 @@ impl Attributor {
         at: Ts,
         diff: Option<&str>,
     ) {
-        let Some(file) = self.persist_file.as_mut() else { return };
+        let Some(file) = self.persist_files.get_mut(root).and_then(Option::as_mut) else { return };
         let change = match kind {
             FsKind::Created => "created",
             FsKind::Modified => "modified",
@@ -216,70 +239,80 @@ impl Attributor {
     }
 }
 
-/// Replay a previously persisted watch-event log into `model`. Called once at startup, after
-/// the initial historical session load so `who.file` participants are resolvable. Lines whose
-/// participant can't be resolved, or that fail to parse, are skipped. Returns an error string
-/// (for the status bar) only when the log exists but can't be read at all.
-pub fn replay(model: &mut Model, state_dir: &Path, root: &Path) -> Option<String> {
-    let path = persist_path_for(state_dir, root);
-    let content = match fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
-        Err(e) => return Some(format!("failed reading persisted watch events: {e}")),
-    };
-    for line in content.lines() {
-        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
-        let Some(path_str) = v.get("path").and_then(|x| x.as_str()) else { continue };
-        let Some(change) = v.get("change").and_then(|x| x.as_str()) else { continue };
-        let Some(t) = v
-            .get("t")
-            .and_then(|x| x.as_str())
-            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-            .map(|d| d.with_timezone(&chrono::Utc))
-        else {
-            continue;
-        };
-        let (who, tool_call_id) = match v.get("who").cloned().unwrap_or(Value::Null) {
-            Value::String(s) if s == "you" => (Model::YOU, None),
-            Value::Object(o) => {
-                let Some(file_str) = o.get("file").and_then(|x| x.as_str()) else {
-                    continue;
-                };
-                let Some(&pid) = model.file_participant.get(Path::new(file_str)) else {
-                    continue;
-                };
-                let tcid =
-                    o.get("toolCallId").and_then(|x| x.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
-                (pid, tcid)
+/// Replay each checkout's persisted watch-event log into `model`, after session loading so
+/// `who.file` participants are resolvable. Malformed lines and unresolved participants are
+/// skipped. Report the first unreadable log without preventing the others from loading.
+pub fn replay(model: &mut Model, state_dir: &Path) -> Option<String> {
+    let roots: Vec<_> = model.roots.iter().map(|root| root.path.clone()).collect();
+    let mut first_error = None;
+    for (i, root) in roots.iter().enumerate() {
+        let path = persist_path_for(state_dir, root);
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                if first_error.is_none() {
+                    first_error = Some(format!("failed reading persisted watch events: {e}"));
+                }
+                continue;
             }
-            _ => continue,
         };
-        let fs_change = match change {
-            "created" => FsChange::Created,
-            "modified" => FsChange::Modified,
-            "removed" => FsChange::Removed,
-            _ => continue,
-        };
-        let diff = v.get("diff").and_then(|x| x.as_str()).map(str::to_string);
-        model.events.push(FileEvent {
-            who,
-            rel: PathBuf::from(path_str),
-            scope: Scope::Project,
-            kind: TouchKind::Write,
-            source: if tool_call_id.is_some() { TouchSource::Bash } else { TouchSource::Watcher },
-            start: t,
-            end: t,
-            tool_call_id,
-            detail: EventDetail::Fs { change: fs_change, diff },
-        });
+        for line in content.lines() {
+            let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+            let Some(path_str) = v.get("path").and_then(|x| x.as_str()) else { continue };
+            let Some(change) = v.get("change").and_then(|x| x.as_str()) else { continue };
+            let Some(t) = v
+                .get("t")
+                .and_then(|x| x.as_str())
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|d| d.with_timezone(&chrono::Utc))
+            else {
+                continue;
+            };
+            let (who, tool_call_id) = match v.get("who").cloned().unwrap_or(Value::Null) {
+                Value::String(s) if s == "you" => (Model::YOU, None),
+                Value::Object(o) => {
+                    let Some(file_str) = o.get("file").and_then(|x| x.as_str()) else {
+                        continue;
+                    };
+                    let Some(&pid) = model.file_participant.get(Path::new(file_str)) else {
+                        continue;
+                    };
+                    let tcid =
+                        o.get("toolCallId").and_then(|x| x.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
+                    (pid, tcid)
+                }
+                _ => continue,
+            };
+            let fs_change = match change {
+                "created" => FsChange::Created,
+                "modified" => FsChange::Modified,
+                "removed" => FsChange::Removed,
+                _ => continue,
+            };
+            let diff = v.get("diff").and_then(|x| x.as_str()).map(str::to_string);
+            let (event_root, rel) =
+                model.project_rel(&root.join(path_str)).unwrap_or_else(|| (i, PathBuf::from(path_str)));
+            model.events.push(FileEvent {
+                who,
+                rel,
+                scope: Scope::Project(event_root),
+                kind: TouchKind::Write,
+                source: if tool_call_id.is_some() { TouchSource::Bash } else { TouchSource::Watcher },
+                start: t,
+                end: t,
+                tool_call_id,
+                detail: EventDetail::Fs { change: fs_change, diff },
+            });
+        }
     }
-    None
+    first_error
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ParticipantKind, ToolWindow};
+    use crate::model::{ParticipantKind, Session, ToolWindow};
     use chrono::Duration;
 
     fn temp_root(name: &str) -> PathBuf {
@@ -294,7 +327,7 @@ mod tests {
         let root = temp_root("bashwin");
         let file = root.join("a.txt");
         fs::write(&file, "x").unwrap();
-        let mut model = Model::new(root.clone());
+        let mut model = Model::new(vec![root.clone()]);
         let sess_file = root.join("session.jsonl");
         let who = model.get_or_create_participant(&sess_file, ParticipantKind::Main, "main".into(), None, None);
         let t0 = chrono::Utc::now() - Duration::seconds(20);
@@ -320,14 +353,14 @@ mod tests {
         let file = root.join("a.txt");
         fs::write(&file, "x").unwrap();
         let rel = PathBuf::from("a.txt");
-        let mut model = Model::new(root.clone());
+        let mut model = Model::new(vec![root.clone()]);
         let sess_file = root.join("session.jsonl");
         let who = model.get_or_create_participant(&sess_file, ParticipantKind::Main, "main".into(), None, None);
         let edit_end = chrono::Utc::now() - Duration::seconds(20);
         model.events.push(FileEvent {
             who,
             rel: rel.clone(),
-            scope: Scope::Project,
+            scope: Scope::Project(0),
             kind: TouchKind::Write,
             source: TouchSource::Tool("edit".into()),
             start: edit_end - Duration::seconds(1),
@@ -351,14 +384,14 @@ mod tests {
         let file = root.join("a.txt");
         fs::write(&file, "x").unwrap();
         let rel = PathBuf::from("a.txt");
-        let mut model = Model::new(root.clone());
+        let mut model = Model::new(vec![root.clone()]);
         let sess_file = root.join("session.jsonl");
         let who = model.get_or_create_participant(&sess_file, ParticipantKind::Main, "main".into(), None, None);
         let edit_end = chrono::Utc::now() - Duration::seconds(20);
         model.events.push(FileEvent {
             who,
             rel: rel.clone(),
-            scope: Scope::Project,
+            scope: Scope::Project(0),
             kind: TouchKind::Write,
             source: TouchSource::Tool("edit".into()),
             start: edit_end - Duration::seconds(1),
@@ -379,8 +412,8 @@ mod tests {
         let root = temp_root("persist-ts-root");
         let file = root.join("a.txt");
         fs::write(&file, "x").unwrap();
-        let mut model = Model::new(root.clone());
-        let mut attributor = Attributor::new(&state_dir, &root);
+        let mut model = Model::new(vec![root.clone()]);
+        let mut attributor = Attributor::new(&state_dir, std::slice::from_ref(&root));
         let at = chrono::Utc::now() - Duration::seconds(20);
         attributor.push(RawFs { path: file, kind: FsKind::Modified, at });
         let now = at + Duration::seconds(30); // classification happens well after `at`
@@ -402,7 +435,7 @@ mod tests {
         let root = temp_root("nowindow");
         let file = root.join("a.txt");
         fs::write(&file, "x").unwrap();
-        let mut model = Model::new(root.clone());
+        let mut model = Model::new(vec![root.clone()]);
         let mut attributor = Attributor::disabled();
         let at = chrono::Utc::now() - Duration::seconds(20);
         attributor.push(RawFs { path: file, kind: FsKind::Modified, at });
@@ -417,7 +450,7 @@ mod tests {
     fn created_path_that_no_longer_exists_is_dropped() {
         let root = temp_root("gone");
         let file = root.join("ghost.txt"); // never created on disk
-        let mut model = Model::new(root.clone());
+        let mut model = Model::new(vec![root.clone()]);
         let mut attributor = Attributor::disabled();
         let at = chrono::Utc::now() - Duration::seconds(20);
         attributor.push(RawFs { path: file, kind: FsKind::Created, at });
@@ -430,7 +463,7 @@ mod tests {
     fn scratch_file_created_then_removed_is_dropped_entirely() {
         let root = temp_root("scratch");
         let file = root.join(".tmpABC123"); // e.g. `sed -i`'s temp file, gone by classify time
-        let mut model = Model::new(root.clone());
+        let mut model = Model::new(vec![root.clone()]);
         let mut attributor = Attributor::disabled();
         let at = chrono::Utc::now() - Duration::seconds(20);
         attributor.push(RawFs { path: file.clone(), kind: FsKind::Created, at });
@@ -446,7 +479,7 @@ mod tests {
         let root = temp_root("count");
         let file = root.join("a.txt");
         fs::write(&file, "x").unwrap();
-        let mut model = Model::new(root.clone());
+        let mut model = Model::new(vec![root.clone()]);
         let mut attributor = Attributor::disabled();
         let at = chrono::Utc::now() - Duration::seconds(20);
         attributor.push(RawFs { path: file, kind: FsKind::Modified, at });
@@ -461,10 +494,10 @@ mod tests {
         let root = temp_root("diff-known");
         let file = root.join("a.txt");
         fs::write(&file, "b\n").unwrap();
-        let mut model = Model::new(root.clone());
+        let mut model = Model::new(vec![root.clone()]);
         let rel = PathBuf::from("a.txt");
         let t0 = chrono::Utc::now() - Duration::seconds(30);
-        model.record_snapshot(&rel, t0, "a\n".to_string());
+        model.record_snapshot(Scope::Project(0), &rel, t0, "a\n".to_string());
         let mut attributor = Attributor::disabled();
         attributor.push(RawFs { path: file, kind: FsKind::Modified, at: t0 + Duration::seconds(2) });
         let now = t0 + Duration::seconds(60);
@@ -485,11 +518,11 @@ mod tests {
         let root = temp_root("diff-persist-root");
         let file = root.join("a.txt");
         fs::write(&file, "b\n").unwrap();
-        let mut model = Model::new(root.clone());
+        let mut model = Model::new(vec![root.clone()]);
         let rel = PathBuf::from("a.txt");
         let t0 = chrono::Utc::now() - Duration::seconds(30);
-        model.record_snapshot(&rel, t0, "a\n".to_string());
-        let mut attributor = Attributor::new(&state_dir, &root);
+        model.record_snapshot(Scope::Project(0), &rel, t0, "a\n".to_string());
+        let mut attributor = Attributor::new(&state_dir, std::slice::from_ref(&root));
         attributor.push(RawFs { path: file, kind: FsKind::Modified, at: t0 + Duration::seconds(2) });
         let now = t0 + Duration::seconds(60);
         attributor.classify_and_apply(&mut model, now);
@@ -499,9 +532,183 @@ mod tests {
         let line: Value = serde_json::from_str(persisted.lines().next().unwrap()).unwrap();
         assert!(line.get("diff").and_then(|v| v.as_str()).is_some(), "persisted line must include a diff field");
 
-        let mut fresh_model = Model::new(root.clone());
-        replay(&mut fresh_model, &state_dir, &root);
+        let mut fresh_model = Model::new(vec![root.clone()]);
+        replay(&mut fresh_model, &state_dir);
         assert_eq!(fresh_model.events.len(), 1);
         assert!(matches!(&fresh_model.events[0].detail, EventDetail::Fs { diff: Some(_), .. }));
+    }
+    #[test]
+    fn same_relative_file_in_two_roots_persists_and_replays_independently() {
+        let base = temp_root("two-roots");
+        let state_dir = base.join("state");
+        let a = base.join("a");
+        let b = base.join("b");
+        fs::create_dir_all(a.join("src")).unwrap();
+        fs::create_dir_all(b.join("src")).unwrap();
+        fs::write(a.join("src/a.rs"), "a\n").unwrap();
+        fs::write(b.join("src/a.rs"), "b\n").unwrap();
+        let roots = vec![a.clone(), b.clone()];
+        let mut model = Model::new(roots.clone());
+        let mut attributor = Attributor::new(&state_dir, &roots);
+        assert!(attributor.persist_error.is_none());
+        let at = chrono::Utc::now() - Duration::seconds(20);
+        let rel = Path::new("src/a.rs");
+        model.record_snapshot(Scope::Project(0), rel, at - Duration::seconds(1), "old-a\n".into());
+        model.record_snapshot(Scope::Project(1), rel, at - Duration::seconds(1), "old-b\n".into());
+        attributor.push(RawFs { path: a.join("src/a.rs"), kind: FsKind::Modified, at });
+        attributor.push(RawFs { path: b.join("src/a.rs"), kind: FsKind::Modified, at });
+        assert_eq!(attributor.classify_and_apply(&mut model, at + Duration::seconds(30)), 2);
+        assert_eq!(model.events[0].scope, Scope::Project(0));
+        assert_eq!(model.events[1].scope, Scope::Project(1));
+        assert_eq!(model.events[0].rel, Path::new("src/a.rs"));
+        assert_eq!(model.events[1].rel, Path::new("src/a.rs"));
+        let diffs: Vec<_> = model
+            .events
+            .iter()
+            .map(|e| match &e.detail {
+                EventDetail::Fs { diff: Some(diff), .. } => diff.as_str(),
+                other => panic!("expected watcher diff, got {other:?}"),
+            })
+            .collect();
+        assert!(diffs[0].contains("-old-a") && !diffs[0].contains("-old-b"));
+        assert!(diffs[1].contains("-old-b") && !diffs[1].contains("-old-a"));
+        drop(attributor);
+
+        for root in &roots {
+            let lines = fs::read_to_string(persist_path_for(&state_dir, root)).unwrap();
+            let entries: Vec<Value> = lines.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0]["path"], "src/a.rs");
+        }
+        let mut restored = Model::new(roots);
+        assert_eq!(replay(&mut restored, &state_dir), None);
+        assert_eq!(restored.events.len(), 2);
+        assert_eq!(restored.events[0].scope, Scope::Project(0));
+        assert_eq!(restored.events[1].scope, Scope::Project(1));
+        assert_eq!(restored.events[0].rel, restored.events[1].rel);
+        assert!(restored.events.iter().all(|e| e.who == Model::YOU && e.source == TouchSource::Watcher));
+    }
+
+    #[test]
+    fn bash_window_in_another_root_cannot_claim_change() {
+        let base = temp_root("cross-root-window");
+        let a = base.join("a");
+        let b = base.join("b");
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        fs::write(a.join("a.txt"), "a").unwrap();
+        fs::write(b.join("b.txt"), "b").unwrap();
+        let mut model = Model::new(vec![a.clone(), b.clone()]);
+        let session_file = a.join("session.jsonl");
+        let who = model.get_or_create_participant(&session_file, ParticipantKind::Main, "main".into(), None, None);
+        let t0 = chrono::Utc::now() - Duration::seconds(30);
+        model.sessions.push(Session {
+            file: session_file,
+            id: "session".into(),
+            title: "session".into(),
+            cwd: a.clone(),
+            start: t0,
+            end: None,
+            last_seen: t0,
+            main: who,
+        });
+        model.participants[who.0].session = Some(0);
+        model.tool_windows.push(ToolWindow {
+            who,
+            tool_call_id: "bash1".into(),
+            tool: "bash".into(),
+            start: t0,
+            end: Some(t0 + Duration::seconds(5)),
+        });
+        let mut attributor = Attributor::disabled();
+        let at = t0 + Duration::seconds(2);
+        attributor.push(RawFs { path: b.join("b.txt"), kind: FsKind::Modified, at });
+        attributor.push(RawFs { path: a.join("a.txt"), kind: FsKind::Modified, at });
+        assert_eq!(attributor.classify_and_apply(&mut model, at + Duration::seconds(30)), 2);
+        assert_eq!(model.events[0].scope, Scope::Project(1));
+        assert_eq!(model.events[0].who, Model::YOU);
+        assert_eq!(model.events[0].source, TouchSource::Watcher);
+        assert_eq!(model.events[1].scope, Scope::Project(0));
+        assert_eq!(model.events[1].who, who);
+        assert_eq!(model.events[1].source, TouchSource::Bash);
+    }
+
+    #[test]
+    fn tool_write_in_other_root_does_not_dedup_watcher_change() {
+        let base = temp_root("cross-root-dedup");
+        let a = base.join("a");
+        let b = base.join("b");
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        fs::write(b.join("same.txt"), "changed").unwrap();
+        let mut model = Model::new(vec![a, b.clone()]);
+        let at = chrono::Utc::now() - Duration::seconds(20);
+        model.events.push(FileEvent {
+            who: Model::YOU,
+            rel: PathBuf::from("same.txt"),
+            scope: Scope::Project(0),
+            kind: TouchKind::Write,
+            source: TouchSource::Tool("write".into()),
+            start: at,
+            end: at,
+            tool_call_id: None,
+            detail: EventDetail::None,
+        });
+        let mut attributor = Attributor::disabled();
+        attributor.push(RawFs { path: b.join("same.txt"), kind: FsKind::Modified, at });
+        assert_eq!(attributor.classify_and_apply(&mut model, at + Duration::seconds(30)), 1);
+        assert_eq!(model.events.len(), 2);
+        assert_eq!(model.events[1].scope, Scope::Project(1));
+        assert_eq!(model.events[1].source, TouchSource::Watcher);
+    }
+
+    #[test]
+    fn replay_rehomes_old_nested_root_paths() {
+        let base = temp_root("nested-history");
+        let state_dir = base.join("state");
+        fs::create_dir_all(&state_dir).unwrap();
+        let inner = base.join("inner");
+        fs::create_dir_all(&inner).unwrap();
+        let roots = vec![base.clone(), inner];
+        let t = chrono::Utc::now().to_rfc3339();
+        fs::write(
+            persist_path_for(&state_dir, &base),
+            format!("{}\n", json!({"t": t, "path": "inner/src/a.rs", "change": "modified", "who": "you"})),
+        )
+        .unwrap();
+        let mut model = Model::new(roots);
+        assert_eq!(replay(&mut model, &state_dir), None);
+        assert_eq!(model.events.len(), 1);
+        assert_eq!(model.events[0].scope, Scope::Project(1));
+        assert_eq!(model.events[0].rel, Path::new("src/a.rs"));
+    }
+
+    #[test]
+    fn unreadable_root_log_does_not_block_other_roots() {
+        let base = temp_root("replay-read-error");
+        let state_dir = base.join("state");
+        fs::create_dir_all(&state_dir).unwrap();
+        let a = base.join("a");
+        let b = base.join("b");
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        fs::create_dir_all(persist_path_for(&state_dir, &a)).unwrap();
+        fs::write(
+            persist_path_for(&state_dir, &b),
+            format!(
+                "{}\n",
+                json!({
+                    "t": chrono::Utc::now().to_rfc3339(),
+                    "path": "src/a.rs",
+                    "change": "modified",
+                    "who": "you"
+                })
+            ),
+        )
+        .unwrap();
+        let mut model = Model::new(vec![a, b]);
+        assert!(replay(&mut model, &state_dir).is_some());
+        assert_eq!(model.events.len(), 1);
+        assert_eq!(model.events[0].scope, Scope::Project(1));
     }
 }

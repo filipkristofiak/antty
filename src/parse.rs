@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::model::{
-    EventDetail, FileEvent, Model, ParticipantId, ParticipantKind, Pending, Prompt, Scope, ToolWindow, TouchKind,
-    TouchSource, Ts,
+    self, EventDetail, FileEvent, Model, ParticipantId, ParticipantKind, Pending, ProjectRoot, Prompt, Scope,
+    ToolWindow, TouchKind, TouchSource, Ts,
 };
 
 // ---------------------------------------------------------------------------
@@ -69,18 +69,9 @@ fn absolutize(raw: &str, file_cwd: &Path) -> Option<PathBuf> {
 }
 
 /// Resolve a tool-arg path string to a project-root-relative path, or None if it
-/// falls outside the project (or is a URL / tool device target).
-pub fn normalize(raw: &str, file_cwd: &Path, root: &Path, aliases: &[PathBuf]) -> Option<PathBuf> {
-    let cleaned = absolutize(raw, file_cwd)?;
-    if let Ok(rel) = cleaned.strip_prefix(root) {
-        return Some(rel.to_path_buf());
-    }
-    for alias in aliases {
-        if let Ok(rel) = cleaned.strip_prefix(alias) {
-            return Some(rel.to_path_buf());
-        }
-    }
-    None
+/// falls outside every project root (or is a URL / tool device target).
+pub fn normalize(raw: &str, file_cwd: &Path, roots: &[ProjectRoot]) -> Option<(usize, PathBuf)> {
+    model::project_rel(roots, &absolutize(raw, file_cwd)?)
 }
 
 /// Absolute roots under which a file is considered "temporary": `/tmp`, `/private/tmp`, the
@@ -124,8 +115,8 @@ pub(crate) fn locate(model: &Model, who: ParticipantId, raw: &str, file_cwd: &Pa
         }
         return Some((Scope::Session(s), model.sessions[s].file.with_extension("").join("local").join(name)));
     }
-    if let Some(rel) = normalize(raw, file_cwd, &model.root, &model.root_aliases) {
-        return Some((Scope::Project, rel));
+    if let Some((root, rel)) = normalize(raw, file_cwd, &model.roots) {
+        return Some((Scope::Project(root), rel));
     }
     let abs = absolutize(raw, file_cwd)?;
     if let Some((s, _)) = model.session_dir_split(&abs) {
@@ -439,7 +430,7 @@ fn ingest_tool_result(model: &mut Model, who: ParticipantId, v: &Value, msg: &Va
     }
 
     let session_idx = model.participants[who.0].session;
-    let file_cwd = session_idx.map(|i| model.sessions[i].cwd.clone()).unwrap_or_else(|| model.root.clone());
+    let file_cwd = session_idx.map(|i| model.sessions[i].cwd.clone()).unwrap_or_else(|| model.roots[0].path.clone());
     let details = msg.get("details").cloned().unwrap_or(Value::Null);
 
     match pending.tool.as_str() {
@@ -497,7 +488,7 @@ fn ingest_tool_result(model: &mut Model, who: ParticipantId, v: &Value, msg: &Va
                 return;
             };
             let content = pending.args.get("content").and_then(|x| x.as_str()).unwrap_or("").to_string();
-            model.record_snapshot(&rel, end_ts, content.clone());
+            model.record_snapshot(scope, &rel, end_ts, content.clone());
             model.events.push(FileEvent {
                 who,
                 rel,
@@ -616,8 +607,8 @@ fn ingest_edit_result(
             if let (Some(old), Some(new)) =
                 (entry.get("oldText").and_then(|x| x.as_str()), entry.get("newText").and_then(|x| x.as_str()))
             {
-                model.record_snapshot(&rel, start, old.to_string());
-                model.record_snapshot(&rel, end, new.to_string());
+                model.record_snapshot(scope, &rel, start, old.to_string());
+                model.record_snapshot(scope, &rel, end, new.to_string());
             }
             let diff = entry.get("diff").and_then(|x| x.as_str()).unwrap_or("").to_string();
             model.events.push(FileEvent {
@@ -639,8 +630,8 @@ fn ingest_edit_result(
             if let (Some(old), Some(new)) =
                 (details.get("oldText").and_then(|x| x.as_str()), details.get("newText").and_then(|x| x.as_str()))
             {
-                model.record_snapshot(&rel, start, old.to_string());
-                model.record_snapshot(&rel, end, new.to_string());
+                model.record_snapshot(scope, &rel, start, old.to_string());
+                model.record_snapshot(scope, &rel, end, new.to_string());
             }
             let diff = details.get("diff").and_then(|x| x.as_str()).unwrap_or("").to_string();
             model.events.push(FileEvent {
@@ -704,28 +695,35 @@ mod tests {
         PathBuf::from("/Users/x/projects/tools/hlit")
     }
 
+    fn roots(r: &Path) -> Vec<ProjectRoot> {
+        Model::new(vec![r.to_path_buf()]).roots
+    }
+
     #[test]
     fn normalize_strips_line_selector() {
         let r = root();
-        assert_eq!(normalize("renderer/effect.js:33-343", &r, &r, &[]), Some(PathBuf::from("renderer/effect.js")));
+        assert_eq!(
+            normalize("renderer/effect.js:33-343", &r, &roots(&r)),
+            Some((0, PathBuf::from("renderer/effect.js")))
+        );
     }
 
     #[test]
     fn normalize_strips_chained_selector_and_raw() {
         let r = root();
-        assert_eq!(normalize("a.md:5-16,960-973:raw", &r, &r, &[]), Some(PathBuf::from("a.md")));
+        assert_eq!(normalize("a.md:5-16,960-973:raw", &r, &roots(&r)), Some((0, PathBuf::from("a.md"))));
     }
 
     #[test]
     fn normalize_rejects_urls() {
         let r = root();
-        assert_eq!(normalize("local://x.md", &r, &r, &[]), None);
+        assert_eq!(normalize("local://x.md", &r, &roots(&r)), None);
     }
 
     #[test]
     fn normalize_rejects_outside_root() {
         let r = root();
-        assert_eq!(normalize("/tmp/x", &r, &r, &[]), None);
+        assert_eq!(normalize("/tmp/x", &r, &roots(&r)), None);
     }
 
     #[test]
@@ -733,14 +731,14 @@ mod tests {
         // normalize() is purely lexical; the directory need not exist on disk.
         let home = std::env::var("HOME").unwrap();
         let root = PathBuf::from(&home).join("projects/x");
-        assert_eq!(normalize("~/projects/x/a.txt", &root, &root, &[]), Some(PathBuf::from("a.txt")));
+        assert_eq!(normalize("~/projects/x/a.txt", &root, &roots(&root)), Some((0, PathBuf::from("a.txt"))));
     }
 
     #[test]
     fn normalize_cleans_dotdot() {
         let r = root();
         let cwd = r.join("renderer");
-        assert_eq!(normalize("../scripts/check.mjs", &cwd, &r, &[]), Some(PathBuf::from("scripts/check.mjs")));
+        assert_eq!(normalize("../scripts/check.mjs", &cwd, &roots(&r)), Some((0, PathBuf::from("scripts/check.mjs"))));
     }
 
     #[test]
@@ -748,8 +746,8 @@ mod tests {
         let r = root();
         let cwd = r.join("docs/demo");
         assert_eq!(
-            normalize("hlit_demo.gif?q=Does this GIF show the current UI?", &cwd, &r, &[]),
-            Some(PathBuf::from("docs/demo/hlit_demo.gif"))
+            normalize("hlit_demo.gif?q=Does this GIF show the current UI?", &cwd, &roots(&r)),
+            Some((0, PathBuf::from("docs/demo/hlit_demo.gif")))
         );
     }
 
@@ -759,11 +757,13 @@ mod tests {
         // cwd and every tool arg still say /tmp/x.
         let root = PathBuf::from("/private/tmp/x");
         let alias = PathBuf::from("/tmp/x");
-        assert_eq!(normalize("a.txt", &alias, &root, std::slice::from_ref(&alias)), Some(PathBuf::from("a.txt")));
+        let mut roots = roots(&root);
+        roots[0].aliases.push(alias.clone());
+        assert_eq!(normalize("a.txt", &alias, &roots), Some((0, PathBuf::from("a.txt"))));
     }
 
     fn model_with_main(root: PathBuf) -> (Model, ParticipantId) {
-        let mut model = Model::new(root.clone());
+        let mut model = Model::new(vec![root.clone()]);
         let file = root.join("session.jsonl");
         let who = model.get_or_create_participant(&file, ParticipantKind::Main, "main".into(), None, None);
         let idx = model.sessions.len();
@@ -779,6 +779,22 @@ mod tests {
         });
         model.participants[who.0].session = Some(idx);
         (model, who)
+    }
+
+    #[test]
+    fn locate_distinguishes_session_worktree_from_absolute_other_worktree() {
+        let a = PathBuf::from("/projects/repo");
+        let b = PathBuf::from("/projects/repo-feature");
+        let (mut model, who) = model_with_main(b.clone());
+        model.roots = Model::new(vec![a.clone(), b.clone()]).roots;
+        assert_eq!(
+            locate(&model, who, "src/a.rs", &model.sessions[0].cwd),
+            Some((Scope::Project(1), PathBuf::from("src/a.rs")))
+        );
+        assert_eq!(
+            locate(&model, who, a.join("src/a.rs").to_str().unwrap(), &model.sessions[0].cwd),
+            Some((Scope::Project(0), PathBuf::from("src/a.rs")))
+        );
     }
 
     #[test]
@@ -837,7 +853,7 @@ mod tests {
         assert_eq!(model.events.len(), 2);
         let rel = Path::new("a.js");
         let second_start = model.events[1].start;
-        assert_eq!(model.snapshot_before(rel, second_start), Some("a\n"));
+        assert_eq!(model.snapshot_before(Scope::Project(0), rel, second_start), Some("a\n"));
         let d = crate::snapshot::unified("a\n", "b\n");
         assert!(d.contains("-a"));
         assert!(d.contains("+b"));
@@ -868,7 +884,7 @@ mod tests {
         assert_eq!(model.events.len(), 1);
         let rel = Path::new("a.js");
         let e = &model.events[0];
-        let snaps = model.snapshots.get(rel).unwrap();
+        let snaps = model.snapshots[0].get(rel).unwrap();
         assert_eq!(snaps.iter().find(|(t, _)| *t == e.start).map(|(_, c)| c.as_str()), Some("old\n"));
         assert_eq!(snaps.iter().find(|(t, _)| *t == e.end).map(|(_, c)| c.as_str()), Some("new\n"));
     }

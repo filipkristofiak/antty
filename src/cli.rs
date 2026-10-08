@@ -30,6 +30,12 @@ pub struct RawArgs {
     /// Disable the live filesystem watcher.
     #[arg(long)]
     pub no_watch: bool,
+    /// Show only --project itself, not the other Git worktrees of its repository.
+    #[arg(long)]
+    pub no_worktrees: bool,
+    /// Start with each Git worktree in its own FILES group instead of one merged tree (toggle with w).
+    #[arg(long)]
+    pub separate_worktrees: bool,
 
     /// Keep the timeline linear instead of collapsing idle stretches into ~ breaks.
     #[arg(long)]
@@ -48,6 +54,8 @@ pub struct Args {
     pub codex_dir: PathBuf,
     pub state_dir: PathBuf,
     pub no_watch: bool,
+    pub no_worktrees: bool,
+    pub separate_worktrees: bool,
     pub no_collapse_gaps: bool,
     pub idle_gap: i64,
 }
@@ -125,6 +133,8 @@ impl Args {
             codex_dir,
             state_dir,
             no_watch: raw.no_watch,
+            no_worktrees: raw.no_worktrees,
+            separate_worktrees: raw.separate_worktrees,
             no_collapse_gaps: raw.no_collapse_gaps,
             idle_gap: raw.idle_gap,
         })

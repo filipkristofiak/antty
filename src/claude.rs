@@ -315,7 +315,7 @@ fn ingest_tool_result(model: &mut Model, who: ParticipantId, block: &Value, tur:
         .session
         .map(|s| model.sessions[s].cwd.clone())
         .filter(|c| !c.as_os_str().is_empty())
-        .unwrap_or_else(|| model.root.clone());
+        .unwrap_or_else(|| model.roots[0].path.clone());
     let input = &pending.args;
     let in_str = |k: &str| input.get(k).and_then(|x| x.as_str());
     let tur_str = |k: &str| tur.and_then(|t| t.get(k)).and_then(|x| x.as_str());
@@ -343,12 +343,12 @@ fn ingest_tool_result(model: &mut Model, who: ParticipantId, block: &Value, tur:
             let Some((scope, rel)) = locate(model, who, path, &file_cwd) else { return };
             let content = in_str("content").or_else(|| tur_str("content")).unwrap_or("").to_string();
             let detail = if let Some(original) = tur_str("originalFile") {
-                model.record_snapshot(&rel, start, original.to_string());
-                model.record_snapshot(&rel, end, content.clone());
+                model.record_snapshot(scope, &rel, start, original.to_string());
+                model.record_snapshot(scope, &rel, end, content.clone());
                 let diff = patch_text(tur.and_then(|t| t.get("structuredPatch")));
                 EventDetail::Diff(if diff.is_empty() { crate::snapshot::unified(original, &content) } else { diff })
             } else {
-                model.record_snapshot(&rel, end, content.clone());
+                model.record_snapshot(scope, &rel, end, content.clone());
                 EventDetail::Written { content }
             };
             model.events.push(event(rel, scope, TouchKind::Write, "write", detail));
@@ -363,8 +363,8 @@ fn ingest_tool_result(model: &mut Model, who: ParticipantId, block: &Value, tur:
             };
             let snapshots = tur_str("originalFile").map(|original| (original, apply_edits(original, &edits)));
             if let Some((original, new)) = &snapshots {
-                model.record_snapshot(&rel, start, original.to_string());
-                model.record_snapshot(&rel, end, new.clone());
+                model.record_snapshot(scope, &rel, start, original.to_string());
+                model.record_snapshot(scope, &rel, end, new.clone());
             }
             let mut diff = patch_text(tur.and_then(|t| t.get("structuredPatch")));
             if diff.is_empty()
@@ -424,7 +424,7 @@ mod tests {
     fn ingest_builds_title_prompts_events_windows_and_spans() {
         let root = PathBuf::from("/Users/x/proj");
         let root_dir = PathBuf::from("/cc");
-        let mut model = Model::new(root.clone());
+        let mut model = Model::new(vec![root.clone()]);
         let who = ensure_participant(&mut model, &root_dir.join("-proj/s1.jsonl"), &root_dir.join("-proj"));
         let a_rs = root.join("a.rs").to_string_lossy().into_owned();
         let missing = root.join("missing.rs").to_string_lossy().into_owned();
@@ -479,14 +479,14 @@ mod tests {
         assert_eq!(model.events.len(), 1);
         let e = &model.events[0];
         assert_eq!(e.rel, PathBuf::from("a.rs"));
-        assert_eq!(e.scope, Scope::Project);
+        assert_eq!(e.scope, Scope::Project(0));
         assert_eq!(e.source, TouchSource::Tool("edit".into()));
         match &e.detail {
             EventDetail::Diff(d) => assert_eq!(d, "@@ -1,1 +1,1 @@\n-old\n+new\n"),
             other => panic!("expected a diff, got {other:?}"),
         }
         assert_eq!(
-            model.snapshots[Path::new("a.rs")],
+            model.snapshots[0][Path::new("a.rs")],
             vec![(t("05.000"), "old\n".to_string()), (t("06.000"), "new\n".to_string())]
         );
 
@@ -534,7 +534,7 @@ mod tests {
         expected.sort();
         assert_eq!(scanned, expected);
 
-        let mut model = Model::new(project.clone());
+        let mut model = Model::new(vec![project.clone()]);
         let sub = ensure_participant(&mut model, &agent, &dir_a);
         let main = model.file_participant[&dir_a.join("s1.jsonl")];
         assert_eq!(model.participants[main.0].kind, ParticipantKind::Main);

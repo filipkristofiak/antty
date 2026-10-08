@@ -16,7 +16,7 @@ use ratatui::widgets::Clear;
 use crate::cmdline::CmdLine;
 use crate::model::{Model, ParticipantId, ParticipantKind};
 use crate::timeline::View;
-use crate::tree::{ExpandState, Row, Tree};
+use crate::tree::{ExpandState, FilesView, Row, Tree};
 
 pub const SELECTED_BG: Color = Color::Rgb(50, 70, 130);
 pub const CURSOR_BG: Color = Color::Rgb(40, 40, 60);
@@ -71,6 +71,8 @@ pub struct UiState {
     pub selected: usize,
     pub scroll: usize,
     pub expand: ExpandState,
+    /// FILES layout for multiple worktrees; `w` toggles.
+    pub files_view: FilesView,
     pub watch_on: bool,
     pub status_extra: Option<String>,
     pub no_color: bool,
@@ -106,6 +108,7 @@ impl UiState {
             selected: 0,
             scroll: 0,
             expand: ExpandState::default(),
+            files_view: FilesView::Merged,
             watch_on,
             status_extra: None,
             no_color: false,

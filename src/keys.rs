@@ -239,6 +239,7 @@ impl App {
                 self.ui.expand.touched_only = !self.ui.expand.touched_only;
                 self.refresh_rows();
             }
+            KeyCode::Char('w') => self.toggle_files_view(),
             KeyCode::Char('s') => self.open_picker(),
             KeyCode::Char('?') => self.open_help(),
             KeyCode::Esc => self.ui.search = None,
@@ -352,15 +353,15 @@ impl App {
 mod tests {
     use super::*;
     use crate::attrib::Attributor;
-    use crate::model::Model;
+    use crate::model::{EventDetail, FileEvent, Model, Scope, TouchKind, TouchSource};
     use crate::timeline::View;
-    use crate::tree::{self, Tree};
+    use crate::tree::{self, FilesView, Tree};
     use crate::ui::UiState;
     use ratatui::layout::Rect;
 
     fn test_app(root: &std::path::Path, state_dir: &std::path::Path) -> App {
-        let model = Model::new(root.to_path_buf());
-        let tree = Tree::build(&model);
+        let model = Model::new(vec![root.to_path_buf()]);
+        let tree = Tree::build(&model, FilesView::Merged);
         let ui = UiState::new(false);
         let rows = tree::build_rows(&model, &tree, &ui.expand);
         let layout = ui::compute_layout(Rect::new(0, 0, 200, 50), Mode::Normal);
@@ -373,7 +374,7 @@ mod tests {
             rows,
             view,
             ui,
-            attributor: Attributor::new(state_dir, root),
+            attributor: Attributor::new(state_dir, &[root.to_path_buf()]),
             idle_gap: 30,
             layout,
             launch: None,
@@ -548,5 +549,42 @@ mod tests {
         drop(app);
         std::fs::remove_dir_all(&root).unwrap();
         std::fs::remove_dir_all(&state_dir).unwrap();
+    }
+    #[test]
+    fn merged_editor_target_uses_existing_checkout_and_its_own_line() {
+        let base = std::env::temp_dir().join(format!("antty-keys-test-merged-editor-{}", std::process::id()));
+        let a = base.join("a");
+        let b = base.join("b");
+        let state_dir = base.join("state");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(b.join("shared.rs"), "b").unwrap();
+        let mut app = test_app(&a, &state_dir);
+        app.model = Model::new(vec![a.clone(), b.clone()]);
+        let now = chrono::Utc::now();
+        for (root, line, end) in [(0, 42, now), (1, 7, now - chrono::Duration::seconds(1))] {
+            app.model.events.push(FileEvent {
+                who: Model::YOU,
+                rel: "shared.rs".into(),
+                scope: Scope::Project(root),
+                kind: TouchKind::Write,
+                source: TouchSource::Tool("edit".into()),
+                start: end,
+                end,
+                tool_call_id: None,
+                detail: EventDetail::Diff(format!("@@ -1,1 +{line},1 @@\n-old\n+new")),
+            });
+        }
+        app.tree = Tree::build(&app.model, FilesView::Merged);
+        app.rows = tree::build_rows(&app.model, &app.tree, &app.ui.expand);
+        let idx = app.tree.find_by_key("f*:shared.rs").unwrap();
+        app.ui.selected = app.rows.iter().position(|&r| r == Row::Node(idx)).unwrap();
+        assert_eq!(app.selected_file_target().unwrap(), (b.join("shared.rs"), Some(7)));
+
+        std::fs::write(a.join("shared.rs"), "a").unwrap();
+        app.rebuild();
+        assert_eq!(app.selected_file_target().unwrap(), (a.join("shared.rs"), Some(42)));
+        drop(app);
+        std::fs::remove_dir_all(base).unwrap();
     }
 }

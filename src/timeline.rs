@@ -410,7 +410,7 @@ mod tests {
 
         let t0 = 1_699_999_980;
         let at = |offset| Utc.timestamp_opt(t0 + offset, 0).unwrap();
-        let mut model = Model::new(std::env::temp_dir().join("antty-timeline-test-visible-activity"));
+        let mut model = Model::new(vec![std::env::temp_dir().join("antty-timeline-test-visible-activity")]);
         let agent = ParticipantId(1);
         model.participants.push(Participant {
             kind: ParticipantKind::Main,
@@ -424,7 +424,7 @@ mod tests {
             model.events.push(FileEvent {
                 who,
                 rel: "file".into(),
-                scope: Scope::Project,
+                scope: Scope::Project(0),
                 kind: TouchKind::Write,
                 source: TouchSource::Watcher,
                 start: at(start),

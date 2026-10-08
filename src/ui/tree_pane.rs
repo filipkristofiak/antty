@@ -40,7 +40,14 @@ fn row_text_and_style(app: &AppRef, row: Row) -> (String, Style) {
             if node.deleted {
                 style = style.fg(Color::DarkGray);
             }
-            (format!("{indent}{arrow}{label}"), style)
+            let suffix = if !node.present_in.is_empty() && node.present_in.len() < app.model.roots.len() {
+                let labels =
+                    node.present_in.iter().map(|&i| app.model.roots[i].label.as_str()).collect::<Vec<_>>().join(",");
+                format!(" ⎇ {labels}")
+            } else {
+                String::new()
+            };
+            (format!("{indent}{arrow}{label}{suffix}"), style)
         }
     };
     if highlighted {

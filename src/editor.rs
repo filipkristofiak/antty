@@ -7,7 +7,7 @@ use crate::snapshot;
 /// On-disk path of an event's target; None for remote/web targets.
 pub fn event_path(model: &Model, e: &FileEvent) -> Option<PathBuf> {
     match e.scope {
-        Scope::Project => Some(model.root.join(&e.rel)),
+        Scope::Project(i) => Some(model.roots[i].path.join(&e.rel)),
         Scope::External | Scope::Session(_) => Some(e.rel.clone()),
         Scope::Remote | Scope::WebSearch | Scope::WebFetch => None,
     }
@@ -49,7 +49,7 @@ pub fn event_line(model: &Model, e: &FileEvent) -> Option<usize> {
     match &e.detail {
         EventDetail::Diff(d) | EventDetail::Fs { diff: Some(d), .. } => first_changed_line(d),
         EventDetail::Written { content } => {
-            let (_, prev) = model.snapshot_before_with_ts(&e.rel, e.start)?;
+            let (_, prev) = model.snapshot_before_with_ts(e.scope, &e.rel, e.start)?;
             first_changed_line(&snapshot::unified(prev, content))
         }
         _ => None,

@@ -25,12 +25,13 @@ Plain `cargo` works wherever it's already on `PATH`.
 - `src/parse.rs` — ingests omp jsonl lines into model events; path normalization and scoping.
 - `src/claude.rs` — Claude Code reader: project-dir discovery (first-`cwd` matching), transcript scan, participants, ingest.
 - `src/codex.rs` — Codex CLI reader: rollout discovery (header-`cwd` matching), title index, participants, ingest.
+- `src/remote.rs` — shell-command parsing for inferred ssh/scp/rsync/docker/kubectl targets.
 - `src/watch.rs` — recursive filesystem watcher, `.gitignore`-aware (including nested ones).
 - `src/worktree.rs` — Git worktree discovery and common-dir resolution.
 - `src/attrib.rs` — attributes watcher events to tool-call windows; persists/replays the JSONL state log.
 - `src/snapshot.rs` — file content snapshots and unified diffs.
 - `src/timeline.rs` — zoom levels, time↔column mapping, idle-gap span merging.
-- `src/tree.rs` — builds the `PARTICIPANTS`/`FILES`/`MOUNTS`/`WEB` row forests.
+- `src/tree.rs` — builds the `PARTICIPANTS`/`FILES`/`MOUNTS`/`WEB`/`MCP` row forests.
 - `src/search.rs` — smartcase full-tree search and wrapped match stepping.
 - `src/ui/mod.rs` — `Mode`, layout math, top-level `draw`.
 - `src/ui/tree_pane.rs` — left pane: sections, participants, file tree rows.

@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::model::{
     self, EventDetail, FileEvent, Model, ParticipantId, ParticipantKind, Pending, ProjectRoot, Prompt, Scope,
-    ToolWindow, TouchKind, TouchSource, Ts,
+    TouchKind, TouchSource, Ts,
 };
 
 // ---------------------------------------------------------------------------
@@ -128,6 +128,38 @@ pub(crate) fn locate(model: &Model, who: ParticipantId, raw: &str, file_cwd: &Pa
         return Some((Scope::Session(s), abs));
     }
     Some((Scope::External, abs))
+}
+
+pub(crate) fn mcp_label(server: &str, tool: &str) -> String {
+    format!("mcp:{server}/{tool}")
+}
+
+pub(crate) fn split_mcp_name(name: &str) -> (String, String) {
+    let rest = name.strip_prefix("mcp__").unwrap_or(name);
+    let (server, tool) = rest.split_once("__").unwrap_or(("mcp", rest));
+    (server.to_string(), tool.to_string())
+}
+
+pub(crate) fn push_mcp_event(
+    model: &mut Model,
+    who: ParticipantId,
+    id: &str,
+    server: &str,
+    tool: &str,
+    start: Ts,
+    end: Ts,
+) {
+    model.events.push(FileEvent {
+        who,
+        rel: PathBuf::from(format!("{server}/{tool}")),
+        scope: Scope::Mcp,
+        kind: TouchKind::Read,
+        source: TouchSource::Tool("mcp".into()),
+        start,
+        end,
+        tool_call_id: Some(id.into()),
+        detail: EventDetail::None,
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -273,6 +305,32 @@ fn ingest_title_change(model: &mut Model, who: ParticipantId, v: &Value) {
     }
 }
 
+fn omp_call_input(tool: &str, args: &Value) -> String {
+    if args.is_null() {
+        return String::new();
+    }
+    let field = match tool {
+        "bash" => "command",
+        "eval" => "code",
+        "write" => "content",
+        _ => return args.to_string(),
+    };
+    args.get(field).and_then(Value::as_str).map(str::to_owned).unwrap_or_else(|| args.to_string())
+}
+
+fn omp_window_label(tool: &str, args: &Value) -> Option<String> {
+    match tool {
+        "bash" | "eval" | "ast_edit" | "lsp" => Some(tool.to_string()),
+        "write" => args
+            .get("path")
+            .and_then(Value::as_str)
+            .and_then(|path| path.strip_prefix("xd://"))
+            .map(|device| device.split(['?', '/']).next().unwrap_or(device).to_string()),
+        name if name.starts_with("mcp__") => Some(name.to_string()),
+        _ => None,
+    }
+}
+
 fn ingest_custom(model: &mut Model, who: ParticipantId, v: &Value) {
     match v.get("customType").and_then(|x| x.as_str()).unwrap_or("") {
         "tool_execution_start" => {
@@ -288,23 +346,16 @@ fn ingest_custom(model: &mut Model, who: ParticipantId, v: &Value) {
                 .or_else(|| v.get("timestamp").and_then(|x| x.as_str()).and_then(parse_ts_iso))
                 .unwrap_or_else(chrono::Utc::now);
             let new_args = data.get("args").cloned().unwrap_or(Value::Null);
-            if tool == "bash" || tool == "eval" {
-                model.tool_windows.push(ToolWindow {
-                    who,
-                    tool_call_id: tool_call_id.to_string(),
-                    tool: tool.clone(),
-                    start: started_at,
-                    end: None,
-                });
-            }
             let key = (who.0, tool_call_id.to_string());
-            // The assistant `toolCall` block (processed separately) may have already inserted
-            // this pending entry with the real `arguments`; `tool_execution_start`'s own `data`
-            // is sometimes missing `args` entirely. Never let a null overwrite real args.
+            // Assistant arguments are authoritative; start records can contain only
+            // partial arguments (or none at all).
             let args = match model.pending_tools.get(&key) {
-                Some(existing) if !existing.args.is_null() && new_args.is_null() => existing.args.clone(),
+                Some(existing) if !existing.args.is_null() => existing.args.clone(),
                 _ => new_args,
             };
+            if let Some(label) = omp_window_label(&tool, &args) {
+                model.open_window(who, tool_call_id, label, started_at, omp_call_input(&tool, &args));
+            }
             model.pending_tools.insert(key, Pending { tool, args, start: started_at });
         }
         "session_exit" => {
@@ -354,7 +405,13 @@ fn ingest_assistant(model: &mut Model, who: ParticipantId, v: &Value, msg: &Valu
             continue;
         };
         let key = (who.0, id.to_string());
-        if model.pending_tools.contains_key(&key) {
+        if let Some(pending) = model.pending_tools.get_mut(&key) {
+            if let Some(args) = block.get("arguments").filter(|args| !args.is_null()) {
+                pending.args = args.clone();
+            }
+            if let Some(call) = model.calls.get_mut(&key) {
+                call.input = omp_call_input(&pending.tool, &pending.args);
+            }
             continue;
         }
         let tool = block.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
@@ -419,19 +476,48 @@ fn ingest_tool_result(model: &mut Model, who: ParticipantId, v: &Value, msg: &Va
         .unwrap_or_else(chrono::Utc::now);
     push_raw_interval(model, who, pending.start, end_ts);
 
-    if let Some(w) =
-        model.tool_windows.iter_mut().rev().find(|w| w.who == who && w.tool_call_id == tool_call_id && w.end.is_none())
+    model.close_window(who, &tool_call_id, end_ts);
+    if let Some(call) = model.calls.get_mut(&key) {
+        call.input = omp_call_input(&pending.tool, &pending.args);
+    }
+    let details = msg.get("details").cloned().unwrap_or(Value::Null);
+    if pending.tool == "write"
+        && details.pointer("/xdev/tool").and_then(Value::as_str) == Some("resolve")
+        && let Some(tool) = details.pointer("/xdev/inner/sourceToolName").and_then(Value::as_str)
     {
-        w.end = Some(end_ts);
+        let input = [
+            details.pointer("/xdev/inner/label").and_then(Value::as_str),
+            details.pointer("/xdev/args/reason").and_then(Value::as_str),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n");
+        model.record_call(who, &tool_call_id, tool.to_string(), input);
+    }
+    if let Some(raw_tool) = pending.tool.strip_prefix("mcp__") {
+        let server = details.get("serverName").and_then(Value::as_str).unwrap_or("mcp");
+        let tool = details.get("mcpToolName").and_then(Value::as_str).unwrap_or(raw_tool);
+        model.record_call(who, &tool_call_id, mcp_label(server, tool), pending.args.to_string());
+    }
+    if pending.tool == "bash"
+        && let Some(script) = pending.args.get("command").and_then(Value::as_str)
+    {
+        crate::remote::push_inferred(model, who, &tool_call_id, script, pending.start, end_ts);
     }
 
     if msg.get("isError").and_then(|x| x.as_bool()).unwrap_or(false) {
         return;
     }
+    if let Some(raw_tool) = pending.tool.strip_prefix("mcp__") {
+        let server = details.get("serverName").and_then(Value::as_str).unwrap_or("mcp");
+        let tool = details.get("mcpToolName").and_then(Value::as_str).unwrap_or(raw_tool);
+        push_mcp_event(model, who, &tool_call_id, server, tool, pending.start, end_ts);
+        return;
+    }
 
     let session_idx = model.participants[who.0].session;
     let file_cwd = session_idx.map(|i| model.sessions[i].cwd.clone()).unwrap_or_else(|| model.roots[0].path.clone());
-    let details = msg.get("details").cloned().unwrap_or(Value::Null);
 
     match pending.tool.as_str() {
         "read" => {
@@ -1028,6 +1114,193 @@ mod tests {
         ingest(&mut model, who, &start_v, 30);
         let pending = model.pending_tools.get(&(who.0, "t1".to_string())).expect("pending entry survives");
         assert_eq!(pending.args.get("input").and_then(|v| v.as_str()), Some("[a.js#0000]\nPUT 1.=1:\n+x"));
+    }
+
+    #[test]
+    fn assistant_arguments_win_over_partial_start_in_either_order() {
+        for assistant_first in [true, false] {
+            for (tool, args, partial, expected) in [
+                ("bash", serde_json::json!({"command":"ssh h ls\npwd"}), Value::Null, "ssh h ls\npwd"),
+                (
+                    "eval",
+                    serde_json::json!({"code":"print('full')\nprint('input')"}),
+                    serde_json::json!({"code":"partial"}),
+                    "print('full')\nprint('input')",
+                ),
+                (
+                    "write",
+                    serde_json::json!({"path":"xd://ast_edit","content":"{\"full\":true}"}),
+                    serde_json::json!({"path":"xd://ast_edit"}),
+                    "{\"full\":true}",
+                ),
+            ] {
+                let (mut model, who) = model_with_main(root());
+                let assistant = serde_json::json!({
+                    "type":"message","timestamp":"2026-01-01T00:00:01.000Z",
+                    "message":{"role":"assistant","content":[
+                        {"type":"toolCall","id":"t1","name":tool,"arguments":args}
+                    ]}
+                });
+                let start = serde_json::json!({
+                    "type":"custom","customType":"tool_execution_start",
+                    "data":{"toolCallId":"t1","toolName":tool,
+                        "startedAt":"2026-01-01T00:00:02.000Z","args":partial}
+                });
+                let records = if assistant_first { [&assistant, &start] } else { [&start, &assistant] };
+                for record in records {
+                    ingest(&mut model, who, record, 30);
+                }
+                let pending = &model.pending_tools[&(who.0, "t1".to_string())];
+                assert_eq!(pending.args, args);
+                assert_eq!(pending.tool, tool);
+                assert_eq!(pending.start, parse_ts_iso("2026-01-01T00:00:02.000Z").unwrap());
+                assert_eq!(omp_call_input(tool, &pending.args), expected);
+                assert_eq!(model.tool_windows.len(), 1);
+                let call = model.call(who, "t1").unwrap();
+                assert_eq!(call.tool, if tool == "write" { "ast_edit" } else { tool });
+                assert_eq!(call.input, expected);
+                // Result-time refresh must happen even for failed calls.
+                model.calls.get_mut(&(who.0, "t1".to_string())).unwrap().input.clear();
+                let result = serde_json::json!({
+                    "type":"message","timestamp":"2026-01-01T00:00:03.000Z",
+                    "message":{"role":"toolResult","toolCallId":"t1","isError":true}
+                });
+                ingest(&mut model, who, &result, 30);
+                assert_eq!(model.call(who, "t1").unwrap().input, expected);
+                assert_eq!(model.tool_windows[0].end, parse_ts_iso("2026-01-01T00:00:03.000Z"));
+                if tool == "bash" {
+                    assert_eq!(model.events.len(), 1);
+                    let event = &model.events[0];
+                    assert_eq!(event.scope, Scope::Remote);
+                    assert_eq!(event.rel, Path::new("ssh://h"));
+                    assert_eq!(event.source, TouchSource::Inferred);
+                    assert_eq!(event.tool_call_id.as_deref(), Some("t1"));
+                    assert_eq!(event.start, parse_ts_iso("2026-01-01T00:00:02.000Z").unwrap());
+                    assert_eq!(event.end, parse_ts_iso("2026-01-01T00:00:03.000Z").unwrap());
+                } else {
+                    assert!(model.events.is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mutating_tool_window_labels_exclude_parent_tasks_and_plain_writes() {
+        for tool in ["bash", "eval", "ast_edit", "lsp", "mcp__github_create_issue"] {
+            assert_eq!(omp_window_label(tool, &Value::Null).as_deref(), Some(tool));
+        }
+        for path in ["xd://ast_edit", "xd://ast_edit?mode=x", "xd://ast_edit/subpath"] {
+            assert_eq!(omp_window_label("write", &serde_json::json!({"path":path})).as_deref(), Some("ast_edit"));
+        }
+        assert_eq!(omp_window_label("task", &Value::Null), None);
+        assert_eq!(omp_window_label("write", &serde_json::json!({"path":"a.txt"})), None);
+        assert_eq!(split_mcp_name("mcp__github__create_issue"), ("github".into(), "create_issue".into()));
+        assert_eq!(split_mcp_name("mcp__create_issue"), ("mcp".into(), "create_issue".into()));
+    }
+
+    #[test]
+    fn resolve_results_relabel_provenance_even_on_errors() {
+        for is_error in [false, true] {
+            let (mut model, who) = model_with_main(root());
+            let start = serde_json::json!({
+                "type":"custom","customType":"tool_execution_start",
+                "data":{"toolCallId":"r1","toolName":"write",
+                    "startedAt":"2026-01-01T00:00:01.000Z",
+                    "args":{"path":"xd://resolve","content":"original"}}
+            });
+            ingest(&mut model, who, &start, 30);
+            assert_eq!(model.call(who, "r1").unwrap().tool, "resolve");
+            let result = serde_json::json!({
+                "type":"message","timestamp":"2026-01-01T00:00:02.000Z",
+                "message":{"role":"toolResult","toolCallId":"r1","isError":is_error,
+                    "details":{"xdev":{"tool":"resolve",
+                        "inner":{"sourceToolName":"ast_edit","label":"change field"},
+                        "args":{"reason":"approved"}}}}
+            });
+            ingest(&mut model, who, &result, 30);
+            let call = model.call(who, "r1").unwrap();
+            assert_eq!(call.tool, "ast_edit");
+            assert_eq!(call.input, "change field\napproved");
+            assert_eq!(model.tool_windows[0].end, parse_ts_iso("2026-01-01T00:00:02.000Z"));
+            assert!(model.events.is_empty());
+        }
+    }
+
+    #[test]
+    fn mcp_results_preserve_provenance_and_emit_only_on_success() {
+        for is_error in [false, true] {
+            let (mut model, who) = model_with_main(root());
+            let start = serde_json::json!({
+                "type":"custom","customType":"tool_execution_start",
+                "data":{"toolCallId":"m1","toolName":"mcp__github_create_issue",
+                    "startedAt":"2026-01-01T00:00:01.000Z","args":{"title":"x"}}
+            });
+            ingest(&mut model, who, &start, 30);
+            assert_eq!(model.call(who, "m1").unwrap().tool, "mcp__github_create_issue");
+            let result = serde_json::json!({
+                "type":"message","timestamp":"2026-01-01T00:00:02.000Z",
+                "message":{"role":"toolResult","toolCallId":"m1","isError":is_error,
+                    "details":{"serverName":"github","mcpToolName":"create_issue"}}
+            });
+            ingest(&mut model, who, &result, 30);
+            let call = model.call(who, "m1").unwrap();
+            assert_eq!(call.tool, "mcp:github/create_issue");
+            assert_eq!(call.input, "{\"title\":\"x\"}");
+            let window = &model.tool_windows[0];
+            let end = parse_ts_iso("2026-01-01T00:00:02.000Z").unwrap();
+            assert_eq!(window.end, Some(end));
+            assert!(model.pending_tools.is_empty());
+            if is_error {
+                assert!(model.events.is_empty());
+            } else {
+                assert_eq!(model.events.len(), 1);
+                let event = &model.events[0];
+                assert_eq!(event.who, who);
+                assert_eq!(event.scope, Scope::Mcp);
+                assert_eq!(event.rel, PathBuf::from("github/create_issue"));
+                assert_eq!(event.kind, TouchKind::Read);
+                assert_eq!(event.source, TouchSource::Tool("mcp".into()));
+                assert_eq!(event.tool_call_id.as_deref(), Some("m1"));
+                assert_eq!((event.start, event.end), (window.start, end));
+                assert!(matches!(event.detail, EventDetail::None));
+            }
+        }
+    }
+
+    #[test]
+    fn mcp_results_fall_back_for_missing_server_and_tool_details() {
+        let cases = [
+            (Value::Null, "mcp/github_create_issue"),
+            (serde_json::json!({"mcpToolName":"create_issue"}), "mcp/create_issue"),
+            (serde_json::json!({"serverName":"github"}), "github/github_create_issue"),
+        ];
+        for (details, target) in cases {
+            let (mut model, who) = model_with_main(root());
+            let start = serde_json::json!({
+                "type":"custom","customType":"tool_execution_start",
+                "data":{"toolCallId":"m1","toolName":"mcp__github_create_issue",
+                    "startedAt":"2026-01-01T00:00:01.000Z","args":{"title":"x"}}
+            });
+            ingest(&mut model, who, &start, 30);
+            let result = serde_json::json!({
+                "type":"message","timestamp":"2026-01-01T00:00:02.000Z",
+                "message":{"role":"toolResult","toolCallId":"m1","details":details}
+            });
+            ingest(&mut model, who, &result, 30);
+            assert_eq!(model.call(who, "m1").unwrap().tool, format!("mcp:{target}"));
+            assert_eq!(model.call(who, "m1").unwrap().input, "{\"title\":\"x\"}");
+            assert_eq!(model.events.len(), 1);
+            assert_eq!(model.events[0].scope, Scope::Mcp);
+            assert_eq!(model.events[0].rel, PathBuf::from(target));
+            assert_eq!(model.events[0].tool_call_id.as_deref(), Some("m1"));
+        }
+    }
+
+    #[test]
+    fn omp_call_input_uses_text_or_compact_arguments() {
+        assert_eq!(omp_call_input("bash", &Value::Null), "");
+        assert_eq!(omp_call_input("bash", &serde_json::json!({"command":12})), "{\"command\":12}");
+        assert_eq!(omp_call_input("other", &serde_json::json!({"x":1})), "{\"x\":1}");
     }
 
     #[test]

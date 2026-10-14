@@ -33,8 +33,9 @@ Left pane, top to bottom:
 
 - `PARTICIPANTS` — you, plus each session (and its subagents)
 - `FILES` — the project's file tree, merged across worktrees by default, or grouped by checkout with `w`
-- `MOUNTS` — external/remote paths touched outside the project
+- `MOUNTS` — external/remote paths touched outside the project, plus inferred ssh/scp/rsync/docker/kubectl targets
 - `WEB` — search queries and fetched URLs
+- `MCP` — tool calls grouped by server, then tool
 
 Right pane: the Gantt timeline, one lane per participant.
 Runs of six or more columns idle across all visible sessions collapse into three display columns (` ~ `) by default, with the marker centered between two blank columns. The header shows `~<duration>` when it fits; closely spaced breaks retain a bare `~` rather than a truncated duration. Press `c` to toggle collapsing without moving the time cursor.
@@ -47,6 +48,18 @@ Bottom: a status bar with key hints and current zoom/session/watch/gap-collapse 
 - **Diff** — full-screen scrollable diff or detail of the selected event (`Enter` again from Detail)
 - **Picker** (`s`) — session list, sorted by start time
 - **Help** (`?` from any view) — the key table below; closing it returns to the view it was opened from
+
+Detail and full-screen Diff show the command/code behind watcher events attributed to
+a tool-call window, and JSON arguments for MCP calls. The watcher state log retains
+up to 4 KiB of command text (plus a truncation marker); live transcripts take precedence.
+
+Inferred MOUNTS events are labelled `inferred` and show the shell command that named
+the target. A host-only target has a `$` leaf. Remote effects are not observed:
+these entries record intent, even if the command failed. Copy sources are reads and
+destinations writes; ssh/docker/kubectl exec targets are read marks with unknown effects.
+Quoted text and heredoc bodies are not treated as commands. Shell `-c` wrappers are
+parsed only to a bounded depth; interactive stdin and subprocess/script indirection
+are not traced.
 
 ## Keys
 

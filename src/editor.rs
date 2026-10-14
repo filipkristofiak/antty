@@ -9,7 +9,7 @@ pub fn event_path(model: &Model, e: &FileEvent) -> Option<PathBuf> {
     match e.scope {
         Scope::Project(i) => Some(model.roots[i].path.join(&e.rel)),
         Scope::External | Scope::Session(_) => Some(e.rel.clone()),
-        Scope::Remote | Scope::WebSearch | Scope::WebFetch => None,
+        Scope::Remote | Scope::WebSearch | Scope::WebFetch | Scope::Mcp => None,
     }
 }
 

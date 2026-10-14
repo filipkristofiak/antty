@@ -11,12 +11,14 @@ use crate::tree::Row;
 
 use super::{AppRef, DetailItem, HIGHLIGHT_FG, SELECTED_BG};
 
-pub fn event_kind_label(e: &FileEvent) -> &'static str {
+pub fn event_kind_label(e: &FileEvent) -> &str {
     match &e.source {
         TouchSource::Tool(t) if t == "web_search" => "search",
         TouchSource::Tool(t) if t == "read" => "read",
+        TouchSource::Tool(t) if t == "mcp" => "mcp",
         TouchSource::Tool(_) => "write",
-        TouchSource::Bash => "bash",
+        TouchSource::Window(t) => t.as_str(),
+        TouchSource::Inferred => "inferred",
         TouchSource::Watcher => "fs",
     }
 }
@@ -38,6 +40,7 @@ pub fn display_target(model: &Model, e: &FileEvent) -> String {
         Scope::Remote | Scope::WebFetch => e.rel.display().to_string(),
         Scope::External => tilde_display(&e.rel),
         Scope::WebSearch => format!("search: {}", e.rel.display()),
+        Scope::Mcp => format!("mcp: {}", e.rel.display()),
         Scope::Session(_) => match model.session_dir_split(&e.rel) {
             Some((_, rest)) if rest.starts_with("local") => {
                 format!("local://{}", rest.strip_prefix("local").unwrap().display())
@@ -165,6 +168,23 @@ pub fn detail_lines(app: &AppRef, item: &DetailItem) -> Vec<Line<'static>> {
                 e.kind,
                 display_target(app.model, e)
             ))];
+            let call = e.tool_call_id.as_deref().and_then(|id| app.model.call(e.who, id));
+            let title = match (&e.source, call) {
+                (TouchSource::Window(tool), Some(_)) => Some(format!("during {tool} call:")),
+                (TouchSource::Inferred, Some(call)) => Some(format!("inferred from {} command:", call.tool)),
+                (_, Some(_)) if e.scope == Scope::Mcp => Some("arguments:".into()),
+                _ => None,
+            };
+            let mut printed_call = false;
+            if let (Some(title), Some(call)) = (title, call) {
+                lines.push(Line::from(title));
+                lines.extend(call.input.lines().map(|line| Line::from(format!("  {line}"))));
+                lines.push(Line::default());
+                printed_call = true;
+            } else if let TouchSource::Window(tool) = &e.source {
+                lines.push(Line::from(format!("during {tool} call (command unknown)")));
+                printed_call = true;
+            }
             match &e.detail {
                 EventDetail::Diff(d) => lines.extend(diff_lines(d)),
                 EventDetail::Written { content } => {
@@ -202,7 +222,8 @@ pub fn detail_lines(app: &AppRef, item: &DetailItem) -> Vec<Line<'static>> {
                         }
                     }
                 }
-                EventDetail::None => lines.push(Line::from("(no additional detail)")),
+                EventDetail::None if !printed_call => lines.push(Line::from("(no additional detail)")),
+                EventDetail::None => {}
             }
             lines
         }

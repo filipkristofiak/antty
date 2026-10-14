@@ -54,7 +54,10 @@ pub enum TouchKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TouchSource {
     Tool(String),
-    Bash,
+    /// Watcher change attributed to a tool-call window.
+    Window(String),
+    /// Target parsed out of a shell command; never observed.
+    Inferred,
     Watcher,
 }
 
@@ -83,7 +86,8 @@ pub enum Scope {
     Project(usize),
     /// `rel` is an absolute local path outside the project and not a session's own file (MOUNTS).
     External,
-    /// `rel` is `ssh://<host>/<path>` verbatim (MOUNTS).
+    /// `rel` is `<scheme>://<host>[/<path>]` — ssh paths from file tools or scp/rsync,
+    /// or host-only ssh/docker/kubectl targets inferred from shell commands (MOUNTS).
     Remote,
     /// `rel` is absolute: inside session `.0`'s own dir, or a temp-dir file that session touched
     /// (nested under the session row).
@@ -92,6 +96,8 @@ pub enum Scope {
     WebSearch,
     /// `rel` is the fetched URL (WEB).
     WebFetch,
+    /// `rel` is `<server>/<tool>` (MCP).
+    Mcp,
 }
 
 #[derive(Debug, Clone)]
@@ -103,8 +109,7 @@ pub struct FileEvent {
     pub source: TouchSource,
     pub start: Ts,
     pub end: Ts,
-    /// correlates this event back to the originating tool call; not yet surfaced in the UI.
-    #[allow(dead_code)]
+    /// Correlates this event back to the originating tool call.
     pub tool_call_id: Option<String>,
     pub detail: EventDetail,
 }
@@ -123,12 +128,17 @@ pub struct Prompt {
 }
 
 #[derive(Debug, Clone)]
+pub struct Call {
+    /// Display label: bash, eval, an omp device name, or mcp:<server>/<tool>.
+    pub tool: String,
+    /// Command, code, or compact JSON arguments, shown verbatim in Detail.
+    pub input: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct ToolWindow {
     pub who: ParticipantId,
     pub tool_call_id: String,
-    /// "bash" or "eval"; not yet surfaced in the UI (both attribute the same way).
-    #[allow(dead_code)]
-    pub tool: String,
     pub start: Ts,
     pub end: Option<Ts>,
 }
@@ -172,6 +182,9 @@ pub struct Model {
     pub spans: Vec<Span>,
     pub prompts: Vec<Prompt>,
     pub tool_windows: Vec<ToolWindow>,
+    /// Tool calls keyed by participant index + call id; never cleared on reset,
+    /// so retained watcher events keep their command.
+    pub calls: HashMap<(usize, String), Call>,
     /// empty = all sessions visible
     pub session_filter: HashSet<usize>,
 
@@ -231,6 +244,7 @@ impl Model {
             spans: Vec::new(),
             prompts: Vec::new(),
             tool_windows: Vec::new(),
+            calls: HashMap::new(),
             session_filter: HashSet::new(),
             file_participant: HashMap::new(),
             pending_tools: HashMap::new(),
@@ -241,6 +255,29 @@ impl Model {
             session_roots: Vec::new(),
             last_entry_ts: HashMap::new(),
         }
+    }
+
+    pub fn record_call(&mut self, who: ParticipantId, id: &str, tool: String, input: String) {
+        self.calls.insert((who.0, id.to_owned()), Call { tool, input });
+    }
+
+    pub fn open_window(&mut self, who: ParticipantId, id: &str, tool: String, start: Ts, input: String) {
+        if !self.tool_windows.iter().any(|w| w.who == who && w.tool_call_id == id) {
+            self.tool_windows.push(ToolWindow { who, tool_call_id: id.to_owned(), start, end: None });
+        }
+        self.record_call(who, id, tool, input);
+    }
+
+    pub fn close_window(&mut self, who: ParticipantId, id: &str, end: Ts) {
+        if let Some(w) =
+            self.tool_windows.iter_mut().rev().find(|w| w.who == who && w.tool_call_id == id && w.end.is_none())
+        {
+            w.end = Some(end);
+        }
+    }
+
+    pub fn call(&self, who: ParticipantId, id: &str) -> Option<&Call> {
+        self.calls.get(&(who.0, id.to_owned()))
     }
 
     /// For `abs` = `<session root>/<any project dir>/<session stem>/<rest>`, the session whose
@@ -338,12 +375,12 @@ impl Model {
     }
 
     /// Drop every *tool-authored* event/span/prompt/tool-window owned by `who`, e.g. before a
-    /// Reset re-ingest of its session file from offset 0. Watcher- and bash-attributed
+    /// Reset re-ingest of its session file from offset 0. Watcher- and window-attributed
     /// `FileEvent`s are deliberately kept: they come from live fs observation, not from the
     /// session file, so re-ingesting the file can never reconstruct them. Wiping them on every
     /// truncation-triggered Reset would permanently erase real history.
     pub fn clear_participant_data(&mut self, who: ParticipantId) {
-        self.events.retain(|e| !(e.who == who && matches!(e.source, TouchSource::Tool(_))));
+        self.events.retain(|e| !(e.who == who && matches!(e.source, TouchSource::Tool(_) | TouchSource::Inferred)));
         self.spans.retain(|s| s.who != who);
         self.tool_windows.retain(|w| w.who != who);
         self.raw_intervals.remove(&who.0);
@@ -404,7 +441,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reset_clears_tool_events_but_keeps_watcher_and_bash_events() {
+    fn reset_clears_transcript_events_but_keeps_watcher_events_and_calls() {
         let root = PathBuf::from("/tmp/x");
         let mut model = Model::new(vec![root.clone()]);
         let file = root.join("session.jsonl");
@@ -427,7 +464,7 @@ mod tests {
             rel: rel.clone(),
             scope: Scope::Project(0),
             kind: TouchKind::Write,
-            source: TouchSource::Bash,
+            source: TouchSource::Window("bash".into()),
             start: now,
             end: now,
             tool_call_id: Some("tc2".into()),
@@ -445,10 +482,24 @@ mod tests {
             detail: EventDetail::None,
         });
 
+        model.events.push(FileEvent {
+            who,
+            rel: PathBuf::from("ssh://h"),
+            scope: Scope::Remote,
+            kind: TouchKind::Read,
+            source: TouchSource::Inferred,
+            start: now,
+            end: now,
+            tool_call_id: Some("tc2".into()),
+            detail: EventDetail::None,
+        });
+        model.record_call(who, "tc2", "bash".into(), "ssh h".into());
+
         model.clear_participant_data(who);
 
-        assert_eq!(model.events.len(), 2, "watcher- and bash-attributed events must survive a Reset");
-        assert!(model.events.iter().all(|e| !matches!(e.source, TouchSource::Tool(_))));
+        assert_eq!(model.events.len(), 2, "observed watcher events must survive a Reset");
+        assert!(model.events.iter().all(|e| !matches!(e.source, TouchSource::Tool(_) | TouchSource::Inferred)));
+        assert_eq!(model.call(who, "tc2").unwrap().input, "ssh h");
     }
 
     #[test]

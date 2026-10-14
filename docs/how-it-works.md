@@ -19,7 +19,7 @@ at startup, and `spawn_tailer` polls for new files and lines once per second.
 `parse.rs` (omp), `claude.rs` (Claude Code), and `codex.rs` (Codex CLI) ingest
 one jsonl line at a time, tolerant of schema drift — unrecognized types/shapes
 are no-ops. They resolve touched paths into project-relative or
-external/session/web scopes, turn tool results into `FileEvent`s and content
+external/session/web/MCP scopes, turn tool results into `FileEvent`s and content
 snapshots, and accumulate per-participant activity intervals merged into spans.
 Claude Code logs no per-message completion time, so the gap between an
 assistant record and the previous user/assistant record counts as activity.
@@ -27,8 +27,9 @@ Codex uses turn start/end and intervening rollout records for activity;
 `history_mode: "paginated"` rollouts use `item_completed` for prompts, file
 changes, command reads and web events; older `"legacy"` rollouts use separate
 events. A declared mode selects one format when both appear; older rollouts
-without a mode accept either record shape. Shell call/output pairs delimit
-windows used for watcher attribution.
+without a mode accept either record shape. Shell, file-mutating device and MCP calls
+delimit windows used for watcher attribution. MCP calls appear under server → tool
+in their own section; successful calls are read marks because their effects are unknown.
 
 ## Filesystem watcher
 
@@ -47,6 +48,19 @@ appended as JSON to a state-log file at `persist_path_for` (state dir + the
 project root path with `/` replaced by `_`, plus `.jsonl`), including a diff
 against the last known snapshot. `replay` reads that log back in at startup,
 after the initial session load, so history survives a restart.
+
+Call labels and command/code text are retained in the model and shown in Detail and
+full-screen Diff. The state log stores a UTF-8-safe 4 KiB input prefix plus a truncation
+marker; replay keeps complete transcript inputs when available.
+
+## Inferred remote targets
+
+`remote.rs` parses shell intent for ssh/scp/rsync/docker exec/kubectl exec and
+bounded shell `-c` wrappers. Inferred targets appear in MOUNTS with an `inferred`
+event label and the originating command; host-only targets use a `$` leaf.
+Copy sources/destinations retain read/write direction. Remote side effects are not
+observed, and failed commands still record targets. Comments, quoted prose and heredoc
+bodies are skipped; interactive stdin, Makefiles and subprocess indirection are not traced.
 
 ## Timeline bucketing and `--idle-gap` span merging
 

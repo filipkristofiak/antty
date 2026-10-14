@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::model::{EventDetail, FileEvent, FsChange, Model, ParticipantId, Scope, TouchKind, TouchSource, Ts};
+use crate::model::{Call, EventDetail, FileEvent, FsChange, Model, ParticipantId, Scope, TouchKind, TouchSource, Ts};
 use crate::watch::{FsKind, RawFs};
 
 const CLASSIFY_DELAY_SECS: i64 = 5;
@@ -12,6 +12,18 @@ const DEDUP_TOOL_BEFORE_SECS: i64 = 10;
 const DEDUP_TOOL_AFTER_SECS: i64 = 1;
 const WINDOW_START_SLACK_SECS: i64 = 1;
 const WINDOW_END_SLACK_SECS: i64 = 8;
+const PERSIST_INPUT_MAX: usize = 4096;
+
+fn cap_input(s: &str) -> String {
+    if s.len() <= PERSIST_INPUT_MAX {
+        return s.to_owned();
+    }
+    let mut end = PERSIST_INPUT_MAX;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n… (truncated)", &s[..end])
+}
 
 fn fs_kind_to_change(k: FsKind) -> FsChange {
     match k {
@@ -183,7 +195,10 @@ impl Attributor {
         }
 
         let (who, source, tool_call_id) = match best {
-            Some((who, tcid, _)) => (who, TouchSource::Bash, Some(tcid)),
+            Some((who, tcid, _)) => {
+                let label = model.call(who, &tcid).map(|c| c.tool.clone()).unwrap_or_else(|| "bash".into());
+                (who, TouchSource::Window(label), Some(tcid))
+            }
             None => (Model::YOU, TouchSource::Watcher, None),
         };
 
@@ -198,7 +213,8 @@ impl Attributor {
             tool_call_id: tool_call_id.clone(),
             detail: EventDetail::Fs { change: fs_kind_to_change(raw.kind), diff: diff.clone() },
         });
-        self.persist(root, model, &rel, raw.kind, who, tool_call_id, raw.at, diff.as_deref());
+        let call = tool_call_id.as_deref().and_then(|id| model.call(who, id));
+        self.persist(root, model, &rel, raw.kind, who, tool_call_id.as_deref(), call, raw.at, diff.as_deref());
         true
     }
 
@@ -210,7 +226,8 @@ impl Attributor {
         rel: &Path,
         kind: FsKind,
         who: ParticipantId,
-        tool_call_id: Option<String>,
+        tool_call_id: Option<&str>,
+        call: Option<&Call>,
         at: Ts,
         diff: Option<&str>,
     ) {
@@ -224,7 +241,15 @@ impl Attributor {
             json!("you")
         } else {
             let file_path = model.participants[who.0].file.clone().unwrap_or_default();
-            json!({"file": file_path.to_string_lossy(), "toolCallId": tool_call_id.unwrap_or_default()})
+            let mut who = json!({
+                "file": file_path.to_string_lossy(),
+                "toolCallId": tool_call_id.unwrap_or_default(),
+                "tool": call.map(|call| call.tool.as_str()).unwrap_or("bash"),
+            });
+            if let Some(call) = call {
+                who["input"] = json!(cap_input(&call.input));
+            }
+            who
         };
         let mut line = json!({
             "t": at.to_rfc3339(),
@@ -269,8 +294,8 @@ pub fn replay(model: &mut Model, state_dir: &Path) -> Option<String> {
             else {
                 continue;
             };
-            let (who, tool_call_id) = match v.get("who").cloned().unwrap_or(Value::Null) {
-                Value::String(s) if s == "you" => (Model::YOU, None),
+            let (who, tool_call_id, tool) = match v.get("who").cloned().unwrap_or(Value::Null) {
+                Value::String(s) if s == "you" => (Model::YOU, None, "bash".to_owned()),
                 Value::Object(o) => {
                     let Some(file_str) = o.get("file").and_then(|x| x.as_str()) else {
                         continue;
@@ -280,7 +305,14 @@ pub fn replay(model: &mut Model, state_dir: &Path) -> Option<String> {
                     };
                     let tcid =
                         o.get("toolCallId").and_then(|x| x.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
-                    (pid, tcid)
+                    let tool = o.get("tool").and_then(Value::as_str).unwrap_or("bash").to_owned();
+                    if let Some(id) = tcid.as_deref()
+                        && model.call(pid, id).is_none()
+                        && let Some(input) = o.get("input").and_then(Value::as_str)
+                    {
+                        model.record_call(pid, id, tool.clone(), input.to_owned());
+                    }
+                    (pid, tcid, tool)
                 }
                 _ => continue,
             };
@@ -298,7 +330,7 @@ pub fn replay(model: &mut Model, state_dir: &Path) -> Option<String> {
                 rel,
                 scope: Scope::Project(event_root),
                 kind: TouchKind::Write,
-                source: if tool_call_id.is_some() { TouchSource::Bash } else { TouchSource::Watcher },
+                source: if tool_call_id.is_some() { TouchSource::Window(tool) } else { TouchSource::Watcher },
                 start: t,
                 end: t,
                 tool_call_id,
@@ -323,6 +355,106 @@ mod tests {
     }
 
     #[test]
+    fn device_call_roundtrip_preserves_transcript_precedence() {
+        let root = temp_root("device-call");
+        let state = root.join("state");
+        let session = root.join("session.jsonl");
+        let mut model = Model::new(vec![root.clone()]);
+        let who = model.get_or_create_participant(&session, ParticipantKind::Main, "main".into(), None, None);
+        let start = chrono::Utc::now() - Duration::seconds(30);
+        model.open_window(who, "tc1", "ast_edit".into(), start, "x".into());
+        model.close_window(who, "tc1", start + Duration::seconds(5));
+        fs::write(root.join("a.txt"), "x").unwrap();
+        let mut attributor = Attributor::new(&state, &[root.clone()]);
+        attributor.push(RawFs { path: root.join("a.txt"), kind: FsKind::Modified, at: start + Duration::seconds(2) });
+        assert_eq!(attributor.classify_and_apply(&mut model, start + Duration::seconds(30)), 1);
+        assert_eq!(model.events[0].source, TouchSource::Window("ast_edit".into()));
+        drop(attributor);
+        let persisted: Value =
+            serde_json::from_str(fs::read_to_string(persist_path_for(&state, &root)).unwrap().trim()).unwrap();
+        assert_eq!(persisted["who"]["toolCallId"], "tc1");
+        assert_eq!(persisted["who"]["tool"], "ast_edit");
+        assert_eq!(persisted["who"]["input"], "x");
+        let mut restored = Model::new(vec![root.clone()]);
+        let pid = restored.get_or_create_participant(&session, ParticipantKind::Main, "main".into(), None, None);
+        assert_eq!(replay(&mut restored, &state), None);
+        assert_eq!(restored.events[0].source, TouchSource::Window("ast_edit".into()));
+        assert_eq!(restored.events[0].tool_call_id.as_deref(), Some("tc1"));
+        assert_eq!(restored.call(pid, "tc1").unwrap().tool, "ast_edit");
+        assert_eq!(restored.call(pid, "tc1").unwrap().input, "x");
+        let mut live = Model::new(vec![root]);
+        let pid = live.get_or_create_participant(&session, ParticipantKind::Main, "main".into(), None, None);
+        live.record_call(pid, "tc1", "ast_edit".into(), "full transcript input".into());
+        assert_eq!(replay(&mut live, &state), None);
+        assert_eq!(live.call(pid, "tc1").unwrap().input, "full transcript input");
+    }
+
+    #[test]
+    fn persisted_call_input_is_capped_without_splitting_utf8() {
+        let root = temp_root("input-cap");
+        let state = root.join("state");
+        let mut model = Model::new(vec![root.clone()]);
+        let who = model.get_or_create_participant(
+            &root.join("session.jsonl"),
+            ParticipantKind::Main,
+            "main".into(),
+            None,
+            None,
+        );
+        let input = "é".repeat(5000);
+        model.record_call(who, "tc1", "eval".into(), input.clone());
+        let mut attributor = Attributor::new(&state, &[root.clone()]);
+        attributor.persist(
+            0,
+            &model,
+            Path::new("a.txt"),
+            FsKind::Modified,
+            who,
+            Some("tc1"),
+            model.call(who, "tc1"),
+            chrono::Utc::now(),
+            None,
+        );
+        drop(attributor);
+        let persisted: Value =
+            serde_json::from_str(fs::read_to_string(persist_path_for(&state, &root)).unwrap().trim()).unwrap();
+        let capped = persisted["who"]["input"].as_str().unwrap();
+        let prefix = capped.strip_suffix("\n… (truncated)").unwrap();
+        assert!(prefix.len() <= PERSIST_INPUT_MAX);
+        assert_eq!(prefix, "é".repeat(2048));
+        assert_eq!(model.call(who, "tc1").unwrap().input, input);
+        let capped = cap_input(&format!("a{}", "é".repeat(5000)));
+        assert_eq!(capped.strip_suffix("\n… (truncated)").unwrap().len(), PERSIST_INPUT_MAX - 1);
+        assert_eq!(cap_input(&"é".repeat(2048)), "é".repeat(2048));
+    }
+
+    #[test]
+    fn old_window_log_defaults_to_bash_without_unknown_call_input() {
+        let root = temp_root("old-call");
+        let state = root.join("state");
+        fs::create_dir_all(&state).unwrap();
+        let session = root.join("session.jsonl");
+        fs::write(
+            persist_path_for(&state, &root),
+            format!(
+                "{}\n",
+                json!({
+                    "t": chrono::Utc::now().to_rfc3339(), "path": "a.txt", "change": "modified",
+                    "who": {"file": session.to_string_lossy(), "toolCallId": "tc1"}
+                })
+            ),
+        )
+        .unwrap();
+        let mut model = Model::new(vec![root]);
+        let who = model.get_or_create_participant(&session, ParticipantKind::Main, "main".into(), None, None);
+        assert_eq!(replay(&mut model, &state), None);
+        assert_eq!(model.events.len(), 1);
+        assert_eq!(model.events[0].source, TouchSource::Window("bash".into()));
+        assert_eq!(model.events[0].tool_call_id.as_deref(), Some("tc1"));
+        assert!(model.call(who, "tc1").is_none());
+    }
+
+    #[test]
     fn change_inside_bash_window_attributes_to_participant() {
         let root = temp_root("bashwin");
         let file = root.join("a.txt");
@@ -334,7 +466,6 @@ mod tests {
         model.tool_windows.push(ToolWindow {
             who,
             tool_call_id: "tc1".into(),
-            tool: "bash".into(),
             start: t0,
             end: Some(t0 + Duration::seconds(5)),
         });
@@ -344,7 +475,7 @@ mod tests {
         attributor.classify_and_apply(&mut model, now);
         assert_eq!(model.events.len(), 1);
         assert_eq!(model.events[0].who, who);
-        assert_eq!(model.events[0].source, TouchSource::Bash);
+        assert_eq!(model.events[0].source, TouchSource::Window("bash".into()));
     }
 
     #[test]
@@ -616,7 +747,6 @@ mod tests {
         model.tool_windows.push(ToolWindow {
             who,
             tool_call_id: "bash1".into(),
-            tool: "bash".into(),
             start: t0,
             end: Some(t0 + Duration::seconds(5)),
         });
@@ -630,7 +760,7 @@ mod tests {
         assert_eq!(model.events[0].source, TouchSource::Watcher);
         assert_eq!(model.events[1].scope, Scope::Project(0));
         assert_eq!(model.events[1].who, who);
-        assert_eq!(model.events[1].source, TouchSource::Bash);
+        assert_eq!(model.events[1].source, TouchSource::Window("bash".into()));
     }
 
     #[test]

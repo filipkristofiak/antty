@@ -8,10 +8,10 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::model::{
-    EventDetail, FileEvent, Model, ParticipantId, ParticipantKind, Pending, Prompt, Scope, Session, ToolWindow,
-    TouchKind, TouchSource, Ts,
+    EventDetail, FileEvent, Model, ParticipantId, ParticipantKind, Pending, Prompt, Scope, Session, TouchKind,
+    TouchSource, Ts,
 };
-use crate::parse::{locate, parse_ts_iso, push_raw_interval};
+use crate::parse::{locate, mcp_label, parse_ts_iso, push_mcp_event, push_raw_interval, split_mcp_name};
 use crate::sessions::{is_dotfile, is_jsonl};
 
 /// The launch `cwd` appears within the first few lines; bound the scan so a file without one
@@ -199,16 +199,14 @@ fn ingest_assistant(model: &mut Model, who: ParticipantId, v: &Value, ts: Ts) {
             continue;
         }
         let tool = block.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
-        if tool == "Bash" {
-            model.tool_windows.push(ToolWindow {
-                who,
-                tool_call_id: id.to_string(),
-                tool: "bash".into(),
-                start: ts,
-                end: None,
-            });
-        }
         let args = block.get("input").cloned().unwrap_or(Value::Null);
+        if tool == "Bash" {
+            let input = args.get("command").and_then(Value::as_str).unwrap_or("").to_string();
+            model.open_window(who, id, "bash".into(), ts, input);
+        } else if tool.starts_with("mcp__") {
+            let (server, name) = split_mcp_name(&tool);
+            model.open_window(who, id, mcp_label(&server, &name), ts, args.to_string());
+        }
         model.pending_tools.insert(key, Pending { tool, args, start: ts });
     }
 }
@@ -302,12 +300,18 @@ fn ingest_tool_result(model: &mut Model, who: ParticipantId, block: &Value, tur:
     let Some(id) = block.get("tool_use_id").and_then(|x| x.as_str()) else { return };
     let Some(pending) = model.pending_tools.remove(&(who.0, id.to_string())) else { return };
     push_raw_interval(model, who, pending.start, end);
-    if let Some(w) =
-        model.tool_windows.iter_mut().rev().find(|w| w.who == who && w.tool_call_id == id && w.end.is_none())
+    model.close_window(who, id, end);
+    if pending.tool == "Bash"
+        && let Some(script) = pending.args.get("command").and_then(Value::as_str)
     {
-        w.end = Some(end);
+        crate::remote::push_inferred(model, who, id, script, pending.start, end);
     }
     if block.get("is_error").and_then(|x| x.as_bool()) == Some(true) {
+        return;
+    }
+    if pending.tool.starts_with("mcp__") {
+        let (server, tool) = split_mcp_name(&pending.tool);
+        push_mcp_event(model, who, id, &server, &tool, pending.start, end);
         return;
     }
 
@@ -492,10 +496,119 @@ mod tests {
 
         assert_eq!(model.tool_windows.len(), 1);
         let w = &model.tool_windows[0];
-        assert_eq!((w.tool.as_str(), w.start, w.end), ("bash", t("07.000"), Some(t("09.000"))));
+        assert_eq!((w.start, w.end), (t("07.000"), Some(t("09.000"))));
+        assert_eq!(model.call(who, "b1").unwrap().tool, "bash");
+        assert_eq!(model.call(who, "b1").unwrap().input, "ls");
 
         let spans: Vec<(Ts, Ts)> = model.spans.iter().map(|s| (s.start, s.end)).collect();
         assert_eq!(spans, vec![(t("00.500"), t("11.000"))]);
+    }
+
+    #[test]
+    fn mcp_tool_use_opens_labelled_window_with_arguments() {
+        let root_dir = PathBuf::from("/cc");
+        let mut model = Model::new(vec![PathBuf::from("/Users/x/proj")]);
+        let who = ensure_participant(&mut model, &root_dir.join("-proj/mcp.jsonl"), &root_dir.join("-proj"));
+        for (id, name, expected, input) in [
+            ("m1", "mcp__github__create_issue", "mcp:github/create_issue", json!({"title":"x"})),
+            ("m2", "mcp__unknown", "mcp:mcp/unknown", Value::Null),
+        ] {
+            let v = json!({"type":"assistant","timestamp":"2026-01-01T00:00:05Z",
+            "message":{"role":"assistant","content":[
+                {"type":"tool_use","id":id,"name":name,"input":input}
+            ]}});
+            ingest(&mut model, who, &v);
+            ingest(&mut model, who, &v);
+            let call = model.call(who, id).unwrap();
+            assert_eq!(call.tool, expected);
+            assert_eq!(call.input, input.to_string());
+        }
+        assert_eq!(model.tool_windows.len(), 2);
+        assert!(model.tool_windows.iter().all(|w| w.start == t("05") && w.end.is_none()));
+        assert!(model.events.is_empty());
+    }
+
+    #[test]
+    fn mcp_results_emit_successful_calls_and_close_error_windows() {
+        let root_dir = PathBuf::from("/cc");
+        let mut model = Model::new(vec![PathBuf::from("/Users/x/proj")]);
+        let who = ensure_participant(&mut model, &root_dir.join("-proj/mcp-results.jsonl"), &root_dir.join("-proj"));
+        for (id, name, is_error) in [
+            ("success", "mcp__github__create_issue", false),
+            ("fallback", "mcp__unknown", false),
+            ("error", "mcp__github__create_issue", true),
+        ] {
+            ingest(
+                &mut model,
+                who,
+                &json!({"type":"assistant","timestamp":"2026-01-01T00:00:05Z",
+                "message":{"role":"assistant","content":[
+                    {"type":"tool_use","id":id,"name":name,"input":{"title":"x"}}
+                ]}}),
+            );
+            ingest(
+                &mut model,
+                who,
+                &json!({"type":"user","timestamp":"2026-01-01T00:00:09Z",
+                "message":{"role":"user","content":[
+                    {"type":"tool_result","tool_use_id":id,"is_error":is_error,"content":"x"}
+                ]}}),
+            );
+        }
+        assert_eq!(model.events.len(), 2);
+        for (event, id, rel) in
+            [(&model.events[0], "success", "github/create_issue"), (&model.events[1], "fallback", "mcp/unknown")]
+        {
+            assert_eq!(event.who, who);
+            assert_eq!(event.scope, Scope::Mcp);
+            assert_eq!(event.rel, Path::new(rel));
+            assert_eq!(event.kind, TouchKind::Read);
+            assert_eq!(event.source, TouchSource::Tool("mcp".into()));
+            assert_eq!(event.tool_call_id.as_deref(), Some(id));
+            assert_eq!((event.start, event.end), (t("05"), t("09")));
+            assert!(matches!(event.detail, EventDetail::None));
+        }
+        let call = model.call(who, "success").unwrap();
+        assert_eq!(call.tool, "mcp:github/create_issue");
+        assert_eq!(call.input, json!({"title":"x"}).to_string());
+        assert_eq!(model.tool_windows.len(), 3);
+        assert!(model.tool_windows.iter().all(|w| w.start == t("05") && w.end == Some(t("09"))));
+        assert!(model.pending_tools.is_empty());
+    }
+
+    #[test]
+    fn failed_bash_results_still_infer_remote_targets_with_command() {
+        let root_dir = PathBuf::from("/cc");
+        let mut model = Model::new(vec![PathBuf::from("/Users/x/proj")]);
+        let who = ensure_participant(&mut model, &root_dir.join("-proj/bash-remote.jsonl"), &root_dir.join("-proj"));
+        let script = "ssh host -- uptime";
+        ingest(
+            &mut model,
+            who,
+            &json!({"type":"assistant","timestamp":"2026-01-01T00:00:05Z",
+            "message":{"role":"assistant","content":[
+                {"type":"tool_use","id":"b1","name":"Bash","input":{"command":script}}
+            ]}}),
+        );
+        ingest(
+            &mut model,
+            who,
+            &json!({"type":"user","timestamp":"2026-01-01T00:00:09Z",
+            "message":{"role":"user","content":[
+                {"type":"tool_result","tool_use_id":"b1","is_error":true,"content":"failed"}
+            ]}}),
+        );
+        assert_eq!(model.events.len(), 1);
+        let event = &model.events[0];
+        assert_eq!(event.scope, Scope::Remote);
+        assert_eq!(event.rel, Path::new("ssh://host"));
+        assert_eq!(event.source, TouchSource::Inferred);
+        assert_eq!(event.kind, TouchKind::Read);
+        assert_eq!(event.tool_call_id.as_deref(), Some("b1"));
+        assert_eq!((event.start, event.end), (t("05"), t("09")));
+        assert!(matches!(event.detail, EventDetail::None));
+        assert_eq!(model.call(who, "b1").unwrap().input, script);
+        assert_eq!(model.tool_windows[0].end, Some(t("09")));
     }
 
     #[test]

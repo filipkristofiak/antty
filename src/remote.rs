@@ -106,11 +106,11 @@ fn parse_script(script: &str, depth: usize, found: &mut Vec<(String, TouchKind)>
                 quote = Some(ch);
             }
             '\\' => {
-                if let Some(next) = chars.next() {
-                    if next != '\n' {
-                        started = true;
-                        word.push(next);
-                    }
+                if let Some(next) = chars.next()
+                    && next != '\n'
+                {
+                    started = true;
+                    word.push(next);
                 }
             }
             '<' if !started && chars.peek() == Some(&'<') => {
@@ -343,10 +343,10 @@ fn parse_command(words: &[String], depth: usize, found: &mut Vec<(String, TouchK
     let mut operands = Operands::new(&words[1..]);
     match basename(program) {
         "sh" | "bash" | "zsh" if depth < 2 => {
-            if let Some(index) = words.iter().position(|s| matches!(s.as_str(), "-c" | "-lc" | "-ic")) {
-                if let Some(script) = words.get(index + 1) {
-                    parse_script(script, depth + 1, found);
-                }
+            if let Some(index) = words.iter().position(|s| matches!(s.as_str(), "-c" | "-lc" | "-ic"))
+                && let Some(script) = words.get(index + 1)
+            {
+                parse_script(script, depth + 1, found);
             }
         }
         "ssh" => {
@@ -380,15 +380,15 @@ fn parse_command(words: &[String], depth: usize, found: &mut Vec<(String, TouchK
             _ => {}
         },
         "docker-compose" => compose_exec(&mut operands, found),
-        "kubectl" => {
-            if operands.next("ns", &["--namespace", "--context", "--kubeconfig", "--server", "--cluster", "--user"])
-                == Some("exec")
+        "kubectl"
+            if operands
+                .next("ns", &["--namespace", "--context", "--kubeconfig", "--server", "--cluster", "--user"])
+                == Some("exec") =>
+        {
+            if let Some(pod) =
+                operands.next("cnf", &["--container", "--namespace", "--filename", "--pod-running-timeout"])
             {
-                if let Some(pod) =
-                    operands.next("cnf", &["--container", "--namespace", "--filename", "--pod-running-timeout"])
-                {
-                    emit(found, format!("kubectl://{pod}"), TouchKind::Read);
-                }
+                emit(found, format!("kubectl://{pod}"), TouchKind::Read);
             }
         }
         _ => {}

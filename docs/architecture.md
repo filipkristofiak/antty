@@ -109,3 +109,15 @@ Touched targets are classified by `model::Scope`:
 Problems with the data sources (no matching session dir, unwritable state
 dir, unreadable state log) show up in the status bar, and antty keeps
 running. Malformed session jsonl lines are skipped.
+
+## Verification before merging
+
+CI runs these checks on Linux and macOS; build and tests alone do not cover
+Clippy warnings, which CI treats as errors:
+
+```
+cargo fmt --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo build --locked
+cargo test --locked
+```

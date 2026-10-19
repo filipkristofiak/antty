@@ -8,6 +8,7 @@ mod editor;
 mod keys;
 mod model;
 mod parse;
+mod remote;
 mod search;
 mod sessions;
 mod snapshot;

@@ -27,6 +27,8 @@ pub struct Tree {
     pub mounts: Vec<usize>,
     /// WEB forest roots: `Scope::WebSearch`/`Scope::WebFetch` events.
     pub web: Vec<usize>,
+    /// MCP forest roots: `Scope::Mcp` events, server → tool.
+    pub mcp: Vec<usize>,
     /// Per-session forest roots (a session's own temp files), keyed by session index; rendered
     /// nested under that session's row when expanded.
     pub session_files: HashMap<usize, Vec<usize>>,
@@ -212,10 +214,13 @@ fn segments(model: &Model, e: &FileEvent) -> Vec<String> {
         Scope::External => external_style_segments(&e.rel),
         Scope::Remote => {
             let s = e.rel.to_string_lossy();
-            let rest = s.strip_prefix("ssh://").unwrap_or(&s);
+            let (scheme, rest) = s.split_once("://").unwrap_or(("ssh", &s));
             let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
-            let mut v = vec![format!("ssh://{host}")];
-            v.extend(path.split('/').filter(|p| !p.is_empty()).map(|p| p.to_string()));
+            let mut v = vec![format!("{scheme}://{host}")];
+            v.extend(path.split('/').filter(|p| !p.is_empty()).map(str::to_owned));
+            if v.len() == 1 {
+                v.push("$".into());
+            }
             v
         }
         Scope::Session(_) => match model.session_dir_split(&e.rel) {
@@ -230,6 +235,11 @@ fn segments(model: &Model, e: &FileEvent) -> Vec<String> {
                 Some((host, path)) => vec![host.to_string(), format!("/{path}")],
                 None => vec![rest.to_string(), "/".to_string()],
             }
+        }
+        Scope::Mcp => {
+            let s = e.rel.to_string_lossy();
+            let (server, tool) = s.split_once('/').unwrap_or(("mcp", &s));
+            vec![server.to_string(), tool.to_string()]
         }
     }
 }
@@ -267,6 +277,7 @@ impl Tree {
         }
         let mut mounts_trie = Trie::default();
         let mut web_trie = Trie::default();
+        let mut mcp_trie = Trie::default();
         let mut session_tries: HashMap<usize, Trie> = HashMap::new();
 
         let mut presence: HashMap<&Path, Vec<usize>> = HashMap::new();
@@ -297,6 +308,9 @@ impl Tree {
                 }
                 Scope::WebSearch | Scope::WebFetch => {
                     web_trie.insert(&segments(model, e), false, false, Some(i));
+                }
+                Scope::Mcp => {
+                    mcp_trie.insert(&segments(model, e), false, false, Some(i));
                 }
                 Scope::Session(s) => {
                     session_tries.entry(s).or_default().insert(&segments(model, e), false, false, Some(i));
@@ -343,13 +357,14 @@ impl Tree {
         };
         let mounts = mounts_trie.emit("m:", "", 0, None, &mut nodes);
         let web = web_trie.emit("w:", "", 0, None, &mut nodes);
+        let mcp = mcp_trie.emit("mcp:", "", 0, None, &mut nodes);
         let mut session_files = HashMap::new();
         for (s, trie) in session_tries {
             let roots = trie.emit(&format!("s{s}:"), "", 1, None, &mut nodes);
             session_files.insert(s, roots);
         }
 
-        Tree { nodes, files, mounts, web, session_files }
+        Tree { nodes, files, mounts, web, mcp, session_files }
     }
 
     /// Index of the node with this `key`. Keys are stable across a `Tree::build` (derived from
@@ -667,6 +682,15 @@ pub fn build_rows(model: &Model, tree: &Tree, state: &ExpandState) -> Vec<Row> {
         rows.extend(web_rows);
     }
 
+    let mut mcp_rows = Vec::new();
+    for &root_idx in &tree.mcp {
+        push_node_rows(model, tree, state, root_idx, true, &mut mcp_rows);
+    }
+    if !mcp_rows.is_empty() {
+        rows.push(Row::Section("mcp"));
+        rows.extend(mcp_rows);
+    }
+
     rows
 }
 
@@ -703,6 +727,51 @@ mod tests {
         });
         model.participants[who.0].session = Some(idx);
         (model, who)
+    }
+
+    #[test]
+    fn mcp_section_keeps_server_and_tool_separate_and_filters_hidden_calls() {
+        let root = temp_root("mcp");
+        let (mut model, who) = model_with_main(root.clone());
+        push_event(&mut model, who, PathBuf::from("github/create_issue"), Scope::Mcp);
+        let tree = Tree::build(&model, FilesView::Merged);
+        let mut state = ExpandState::default();
+        state.expand_all();
+        let rows = build_rows(&model, &tree, &state);
+        let section = rows.iter().position(|row| matches!(row, Row::Section("mcp"))).unwrap();
+        let Row::Node(server) = rows[section + 1] else { panic!("missing server") };
+        let Row::Node(tool) = rows[section + 2] else { panic!("missing tool") };
+        assert_eq!(tree.nodes[server].name, "github");
+        assert!(tree.nodes[server].is_dir);
+        assert_eq!(tree.nodes[tool].name, "create_issue");
+        assert_eq!(tree.nodes[tool].parent, Some(server));
+        assert_eq!(tree.nodes[tool].events, vec![0]);
+        model.session_filter.insert(1);
+        assert!(!build_rows(&model, &tree, &state).iter().any(|row| matches!(row, Row::Section("mcp"))));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn remote_host_events_survive_compaction_with_and_without_path_events() {
+        for with_path in [false, true] {
+            let root = temp_root(if with_path { "remote-path" } else { "remote-host" });
+            let (mut model, who) = model_with_main(root.clone());
+            push_event(&mut model, who, PathBuf::from("ssh://h"), Scope::Remote);
+            if with_path {
+                push_event(&mut model, who, PathBuf::from("ssh://h/etc/x"), Scope::Remote);
+            }
+            let tree = Tree::build(&model, FilesView::Merged);
+            let host = tree.mounts.iter().copied().find(|&idx| tree.nodes[idx].name == "ssh://h").unwrap();
+            assert!(tree.nodes[host].is_dir);
+            let target = tree.nodes[host].children.iter().copied().find(|&idx| tree.nodes[idx].name == "$").unwrap();
+            assert_eq!(tree.nodes[target].events, vec![0]);
+            if with_path {
+                let path =
+                    tree.nodes[host].children.iter().copied().find(|&idx| tree.nodes[idx].name == "etc").unwrap();
+                assert_eq!(tree.nodes[path].events, vec![1]);
+            }
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     fn push_event(model: &mut Model, who: ParticipantId, rel: PathBuf, scope: Scope) {

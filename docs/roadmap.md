@@ -62,6 +62,36 @@ and leave the default view unchanged.
   Space toggles. Decide the exact gesture mappings only after checking for
   terminal conflicts; no new mouse bindings are committed yet.
 
+## 5. How files were touched
+
+Every event is tied to a harness read/write/edit or to a watcher change
+inside a shell window. Most of the "how" lives in what the agent ran.
+
+- [x] Command provenance: watcher writes attributed to a tool call show that
+  call's command/code in Detail and full-screen Diff; the text is persisted
+  (capped at 4 KiB) in the state log so it survives transcript loss.
+- [x] Attribution windows for every file-mutating tool, not only bash/eval:
+  omp `xd://` device writes (`ast_edit`/`resolve`/`lsp`) and MCP tools in all
+  three harnesses. Watcher writes in those windows are labelled with the tool
+  instead of falling back to "you".
+- [x] `MCP` section: MCP tool calls grouped server → tool, with arguments in
+  Detail.
+- [x] Inferred remote targets in MOUNTS from ssh/scp/rsync/docker exec/kubectl
+  exec shell commands, labelled "inferred".
+- [ ] Inferred web fetches: URLs from `curl`/`wget`/`gh api`/HTTP clients in
+  shell commands, shown in WEB as inferred.
+- [ ] Exploration marks: grep/glob/find/ls (and Codex `parsed_cmd`
+  search/list_files) as a "scanned" mark on directory rows, not a section.
+- [ ] Script-run linking: a temp script the session wrote → the command that ran
+  it → the files that run changed.
+- [ ] Watch temp roots too, so shell writes outside the project (`/tmp`,
+  `$TMPDIR`) show under the session row.
+
+Limits: remote side effects are never observed (only the command sent);
+interactive stdin streams (Codex `write_stdin`, pty shells) and indirection
+(`bash -c` beyond one level, Makefiles, subprocess calls) are parsed from
+intent, not effect.
+
 ## Done
 
 - Timeline gaps: runs of 6 or more columns idle across visible activity

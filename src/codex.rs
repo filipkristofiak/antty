@@ -11,10 +11,9 @@ use std::time::SystemTime;
 use serde_json::Value;
 
 use crate::model::{
-    EventDetail, FileEvent, Model, ParticipantId, ParticipantKind, Prompt, Scope, Session, ToolWindow, TouchKind,
-    TouchSource, Ts,
+    EventDetail, FileEvent, Model, ParticipantId, ParticipantKind, Prompt, Scope, Session, TouchKind, TouchSource, Ts,
 };
-use crate::parse::{locate, parse_ts_iso, parse_ts_ms, push_raw_interval};
+use crate::parse::{locate, mcp_label, parse_ts_iso, parse_ts_ms, push_mcp_event, push_raw_interval};
 use crate::sessions::scan_jsonl_files;
 
 const UNTITLED: &str = "(untitled)";
@@ -252,41 +251,112 @@ pub fn ingest(model: &mut Model, who: ParticipantId, v: &Value, project_dir: &Pa
         ("event_msg", "web_search_end") if uses_history(model, who, HistoryMode::Legacy) => {
             web_search(model, who, payload, payload.get("call_id").and_then(Value::as_str), ts, ts);
         }
+        ("event_msg", "mcp_tool_call_begin") if uses_history(model, who, HistoryMode::Legacy) => {
+            if let Some(id) = payload.get("call_id").and_then(Value::as_str) {
+                let invocation = &payload["invocation"];
+                let server = invocation.get("server").and_then(Value::as_str).unwrap_or("");
+                let tool = invocation.get("tool").and_then(Value::as_str).unwrap_or("");
+                let args = &invocation["arguments"];
+                let input = if args.is_null() { String::new() } else { args.to_string() };
+                model.open_window(who, id, mcp_label(server, tool), ts, input);
+            }
+        }
+        ("event_msg", "mcp_tool_call_end") if uses_history(model, who, HistoryMode::Legacy) => {
+            if let Some(id) = payload.get("call_id").and_then(Value::as_str) {
+                let start = model
+                    .tool_windows
+                    .iter()
+                    .rev()
+                    .find(|w| w.who == who && w.tool_call_id == id)
+                    .map(|w| w.start)
+                    .unwrap_or(ts);
+                model.close_window(who, id, ts);
+                let result = &payload["result"];
+                if result.get("Err").is_some()
+                    || result.get("Ok").and_then(|ok| ok.get("isError")).and_then(Value::as_bool) == Some(true)
+                {
+                    return;
+                }
+                let invocation = &payload["invocation"];
+                let server = invocation.get("server").and_then(Value::as_str).unwrap_or("");
+                let tool = invocation.get("tool").and_then(Value::as_str).unwrap_or("");
+                push_mcp_event(model, who, id, server, tool, start, ts);
+            }
+        }
+        ("event_msg", "exec_command_end") if uses_history(model, who, HistoryMode::Legacy) => {
+            if let Some(id) = payload.get("call_id").and_then(Value::as_str) {
+                let script =
+                    argv_script(payload.get("command").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]));
+                let start = model
+                    .tool_windows
+                    .iter()
+                    .rev()
+                    .find(|w| w.who == who && w.tool_call_id == id)
+                    .map(|w| w.start)
+                    .unwrap_or(ts);
+                crate::remote::push_inferred(model, who, id, &script, start, ts);
+                model.record_call(who, id, "bash".into(), script);
+            }
+        }
         ("response_item", "custom_tool_call" | "function_call")
             if payload.get("name").and_then(Value::as_str).is_some_and(|name| SHELL_TOOLS.contains(&name)) =>
         {
-            open_window(model, who, payload.get("call_id").and_then(Value::as_str), ts);
+            if let Some(id) = payload.get("call_id").and_then(Value::as_str) {
+                model.open_window(who, id, "bash".into(), ts, codex_call_input(payload));
+            }
         }
         ("response_item", "local_shell_call") => {
-            open_window(model, who, payload.get("call_id").and_then(Value::as_str), ts);
+            if let Some(id) = payload.get("call_id").and_then(Value::as_str) {
+                model.open_window(who, id, "bash".into(), ts, codex_call_input(payload));
+            }
         }
         ("response_item", "custom_tool_call_output" | "function_call_output") => {
-            if let Some(id) = payload.get("call_id").and_then(Value::as_str)
-                && let Some(w) = model
-                    .tool_windows
-                    .iter_mut()
-                    .rev()
-                    .find(|w| w.who == who && w.tool_call_id == id && w.end.is_none())
-            {
-                w.end = Some(ts);
+            if let Some(id) = payload.get("call_id").and_then(Value::as_str) {
+                model.close_window(who, id, ts);
             }
         }
         _ => {}
     }
 }
 
-fn open_window(model: &mut Model, who: ParticipantId, id: Option<&str>, ts: Ts) {
-    if let Some(id) = id
-        && !model.tool_windows.iter().any(|w| w.who == who && w.tool_call_id == id)
-    {
-        model.tool_windows.push(ToolWindow {
-            who,
-            tool_call_id: id.to_owned(),
-            tool: "bash".into(),
-            start: ts,
-            end: None,
-        });
+fn codex_call_input(payload: &Value) -> String {
+    match payload.get("type").and_then(Value::as_str) {
+        Some("custom_tool_call") => payload.get("input").and_then(Value::as_str).unwrap_or("").to_string(),
+        Some("function_call") => {
+            let raw = payload.get("arguments").and_then(Value::as_str).unwrap_or("");
+            let Ok(args) = serde_json::from_str::<Value>(raw) else {
+                return raw.to_string();
+            };
+            if let Some(cmd) = args.get("cmd").and_then(Value::as_str) {
+                cmd.to_string()
+            } else if let Some(command) = args.get("command").and_then(Value::as_array) {
+                command.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")
+            } else {
+                args.get("command").and_then(Value::as_str).unwrap_or("").to_string()
+            }
+        }
+        Some("local_shell_call") => payload
+            .get("action")
+            .and_then(|action| action.get("command"))
+            .and_then(Value::as_array)
+            .map(|command| command.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "))
+            .unwrap_or_default(),
+        _ => String::new(),
     }
+}
+
+fn argv_script(argv: &[Value]) -> String {
+    if argv.len() >= 3
+        && argv[0]
+            .as_str()
+            .and_then(|program| Path::new(program).file_name())
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| matches!(name, "sh" | "bash" | "zsh"))
+        && matches!(argv[1].as_str(), Some("-c" | "-lc"))
+    {
+        return argv[2].as_str().unwrap_or("").to_string();
+    }
+    argv.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")
 }
 
 fn push_prompt(model: &mut Model, who: ParticipantId, text: &str, ts: Ts) {
@@ -348,10 +418,19 @@ fn ingest_item(model: &mut Model, who: ParticipantId, payload: &Value, ts: Ts) {
                 .join("\n");
             push_prompt(model, who, &text, ts);
         }
-        "CommandExecution"
-            if item.get("status").and_then(Value::as_str) == Some("completed")
-                && item.get("source").and_then(Value::as_str) != Some("user_shell") =>
-        {
+        "CommandExecution" if item.get("source").and_then(Value::as_str) != Some("user_shell") => {
+            let status = item.get("status").and_then(Value::as_str);
+            if matches!(status, Some("completed" | "failed"))
+                && let Some(id) = id
+            {
+                let script =
+                    argv_script(item.get("command").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]));
+                crate::remote::push_inferred(model, who, id, &script, start, end);
+                model.record_call(who, id, "bash".into(), script);
+            }
+            if status != Some("completed") {
+                return;
+            }
             let cwd =
                 item.get("cwd").and_then(Value::as_str).and_then(file_url_path).unwrap_or_else(|| file_cwd(model, who));
             for cmd in item.get("parsed_cmd").and_then(Value::as_array).into_iter().flatten() {
@@ -367,6 +446,17 @@ fn ingest_item(model: &mut Model, who: ParticipantId, payload: &Value, ts: Ts) {
         }
         "FileChange" if !matches!(item.get("status").and_then(Value::as_str), Some("failed" | "declined")) => {
             file_changes(model, who, &item["changes"], id, start, end);
+        }
+        "McpToolCall" if matches!(item.get("status").and_then(Value::as_str), Some("completed" | "failed")) => {
+            if let Some(id) = id {
+                let server = item.get("server").and_then(Value::as_str).unwrap_or("");
+                let tool = item.get("tool").and_then(Value::as_str).unwrap_or("");
+                model.open_window(who, id, mcp_label(server, tool), start, item["arguments"].to_string());
+                model.close_window(who, id, end);
+                if item.get("status").and_then(Value::as_str) == Some("completed") {
+                    push_mcp_event(model, who, id, server, tool, start, end);
+                }
+            }
         }
         "WebSearch" => web_search(model, who, item, id, start, end),
         _ => {}
@@ -479,6 +569,152 @@ mod tests {
     }
 
     #[test]
+    fn argv_scripts_unwrap_shells_and_join_other_commands() {
+        for (argv, expected) in [
+            (json!(["/bin/zsh", "-lc", "ssh h ls"]), "ssh h ls"),
+            (json!(["bash", "-c", "ssh h uptime", "extra"]), "ssh h uptime"),
+            (json!(["sh", "-lc", "ssh h pwd"]), "ssh h pwd"),
+            (json!(["ssh", "h", "ls"]), "ssh h ls"),
+            (json!(["fish", "-c", "ssh h ls"]), "fish -c ssh h ls"),
+            (json!([]), ""),
+        ] {
+            assert_eq!(argv_script(argv.as_array().unwrap()), expected);
+        }
+    }
+
+    #[test]
+    fn paginated_commands_infer_terminal_agent_scripts_and_read_only_on_success() {
+        let mut model = Model::new(vec![PathBuf::from("/Users/x/proj")]);
+        let dir = Path::new("/nonexistent/codex/sessions");
+        let who = ensure_participant(&mut model, &dir.join("rollout-remote-items.jsonl"), dir);
+        for (id, status, source) in [
+            ("success", "completed", "unified_exec_startup"),
+            ("failure", "failed", "unified_exec_startup"),
+            ("running", "inProgress", "unified_exec_startup"),
+            ("user", "completed", "user_shell"),
+            ("user-failed", "failed", "user_shell"),
+        ] {
+            ingest(
+                &mut model,
+                who,
+                &record(
+                    9,
+                    "event_msg",
+                    json!({
+                        "type":"item_completed","started_at_ms":t(3).timestamp_millis(),
+                        "completed_at_ms":t(7).timestamp_millis(),
+                        "item":{"type":"CommandExecution","id":id,"status":status,"source":source,
+                            "command":["/bin/zsh","-lc","ssh h ls"],"cwd":"/Users/x/proj",
+                            "parsed_cmd":[{"type":"read","path":"a.rs"}]}
+                    }),
+                ),
+                dir,
+            );
+        }
+        assert_eq!(model.events.len(), 3);
+        for id in ["success", "failure"] {
+            let event = model
+                .events
+                .iter()
+                .find(|event| event.scope == Scope::Remote && event.tool_call_id.as_deref() == Some(id))
+                .unwrap();
+            assert_eq!(event.rel, Path::new("ssh://h"));
+            assert_eq!(event.source, TouchSource::Inferred);
+            assert_eq!(event.kind, TouchKind::Read);
+            assert_eq!((event.start, event.end), (t(3), t(7)));
+            assert_eq!(model.call(who, id).unwrap().tool, "bash");
+            assert_eq!(model.call(who, id).unwrap().input, "ssh h ls");
+        }
+        let read = model.events.iter().find(|event| matches!(event.source, TouchSource::Tool(_))).unwrap();
+        assert_eq!(read.tool_call_id.as_deref(), Some("success"));
+        assert_eq!(read.rel, Path::new("a.rs"));
+        for id in ["running", "user", "user-failed"] {
+            assert!(model.call(who, id).is_none());
+        }
+    }
+
+    #[test]
+    fn command_history_modes_select_producers_and_legacy_errors_overwrite_wrappers() {
+        let base = std::env::temp_dir().join(format!("antty-codex-test-remote-history-{}", std::process::id()));
+        fs::create_dir_all(&base).unwrap();
+        for mode in ["legacy", "paginated"] {
+            let file = base.join(format!("rollout-{mode}.jsonl"));
+            fs::write(
+                &file,
+                record(0, "session_meta", json!({"id":mode,"cwd":base,"history_mode":mode})).to_string() + "\n",
+            )
+            .unwrap();
+            let mut model = Model::new(vec![base.clone()]);
+            let who = ensure_participant(&mut model, &file, &base);
+            ingest(
+                &mut model,
+                who,
+                &record(
+                    3,
+                    "response_item",
+                    json!({
+                        "type":"custom_tool_call","name":"exec","call_id":"legacy","input":"tools.exec_command({cmd: 'ssh h ls'})"
+                    }),
+                ),
+                &base,
+            );
+            ingest(
+                &mut model,
+                who,
+                &record(
+                    7,
+                    "event_msg",
+                    json!({
+                        "type":"exec_command_end","call_id":"legacy","command":["/bin/bash","-lc","ssh h ls"],
+                        "exit_code":1,"status":"failed"
+                    }),
+                ),
+                &base,
+            );
+            ingest(
+                &mut model,
+                who,
+                &record(
+                    9,
+                    "event_msg",
+                    json!({
+                        "type":"item_completed","item":{"type":"CommandExecution","id":"paginated",
+                            "status":"failed","source":"unified_exec_startup","command":["ssh","h","ls"]}
+                    }),
+                ),
+                &base,
+            );
+            assert_eq!(model.events.len(), 1);
+            let event = &model.events[0];
+            assert_eq!(event.tool_call_id.as_deref(), Some(mode));
+            assert_eq!(event.rel, Path::new("ssh://h"));
+            assert_eq!(event.source, TouchSource::Inferred);
+            assert_eq!(model.call(who, mode).unwrap().input, "ssh h ls");
+            if mode == "legacy" {
+                assert_eq!((event.start, event.end), (t(3), t(7)));
+                assert!(model.call(who, "paginated").is_none());
+                ingest(
+                    &mut model,
+                    who,
+                    &record(
+                        11,
+                        "event_msg",
+                        json!({
+                            "type":"exec_command_end","call_id":"no-window","command":["ssh","other","ls"],"exit_code":1
+                        }),
+                    ),
+                    &base,
+                );
+                assert_eq!((model.events[1].start, model.events[1].end), (t(11), t(11)));
+                assert_eq!(model.call(who, "no-window").unwrap().input, "ssh other ls");
+            } else {
+                assert_eq!(model.call(who, "legacy").unwrap().input, "tools.exec_command({cmd: 'ssh h ls'})");
+            }
+        }
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
     fn ingest_builds_prompts_events_windows_and_spans() {
         let mut model = Model::new(vec![PathBuf::from("/Users/x/proj")]);
         let dir = Path::new("/nonexistent/codex/sessions");
@@ -559,11 +795,257 @@ mod tests {
         assert_eq!(events("https://example.com")[0].scope, Scope::WebFetch);
         assert_eq!(model.snapshot_before(Scope::Project(0), Path::new("new.rs"), t(20)), Some("hi\n"));
         assert_eq!(model.tool_windows.len(), 1);
-        assert_eq!(model.tool_windows[0].tool, "bash");
+        assert_eq!(model.call(who, "c1").unwrap().tool, "bash");
         assert_eq!(model.tool_windows[0].start, t(2));
         assert_eq!(model.tool_windows[0].end, Some(t(4)));
         flush_dirty_spans(&mut model, 30);
         assert_eq!(model.spans.iter().map(|s| (s.start, s.end)).collect::<Vec<_>>(), vec![(t(0), t(20))]);
+    }
+
+    #[test]
+    fn shell_call_inputs_are_captured_by_payload_type() {
+        let mut model = Model::new(vec![PathBuf::from("/Users/x/proj")]);
+        let dir = Path::new("/nonexistent/codex/sessions");
+        let who = ensure_participant(&mut model, &dir.join("rollout-inputs.jsonl"), dir);
+        let cases = [
+            (
+                json!({"type":"custom_tool_call","name":"exec","call_id":"custom",
+                "input":"const r = await tools.exec_command({cmd: 'ls'});"}),
+                "const r = await tools.exec_command({cmd: 'ls'});",
+            ),
+            (
+                json!({"type":"function_call","name":"exec_command","call_id":"cmd",
+                "arguments":"{\"cmd\":\"ls\\npwd\",\"command\":\"ignored\"}"}),
+                "ls\npwd",
+            ),
+            (
+                json!({"type":"function_call","name":"shell","call_id":"argv",
+                "arguments":"{\"command\":[\"sh\",\"-c\",\"pwd\"]}"}),
+                "sh -c pwd",
+            ),
+            (
+                json!({"type":"function_call","name":"shell_command","call_id":"string",
+                "arguments":"{\"command\":\"pwd\"}"}),
+                "pwd",
+            ),
+            (
+                json!({"type":"function_call","name":"exec_command","call_id":"raw",
+                "arguments":"not JSON"}),
+                "not JSON",
+            ),
+            (
+                json!({"type":"local_shell_call","call_id":"local",
+                "action":{"command":["/bin/sh","-c","ls"]}}),
+                "/bin/sh -c ls",
+            ),
+            (json!({"type":"local_shell_call","call_id":"missing"}), ""),
+        ];
+        for (payload, expected) in cases {
+            let id = payload["call_id"].as_str().unwrap().to_string();
+            ingest(&mut model, who, &record(1, "response_item", payload), dir);
+            let call = model.call(who, &id).unwrap();
+            assert_eq!(call.tool, "bash");
+            assert_eq!(call.input, expected);
+        }
+    }
+
+    #[test]
+    fn legacy_mcp_begin_captures_arguments_and_respects_history_mode() {
+        let base = std::env::temp_dir().join(format!("antty-codex-test-mcp-{}", std::process::id()));
+        fs::create_dir_all(&base).unwrap();
+        for mode in ["legacy", "paginated"] {
+            let file = base.join(format!("rollout-{mode}.jsonl"));
+            fs::write(
+                &file,
+                record(0, "session_meta", json!({"id":mode,"cwd":base,"history_mode":mode})).to_string() + "\n",
+            )
+            .unwrap();
+            let mut model = Model::new(vec![base.clone()]);
+            let who = ensure_participant(&mut model, &file, &base);
+            for (id, args) in [("m1", json!({"title":"x"})), ("m2", Value::Null)] {
+                let v = record(
+                    3,
+                    "event_msg",
+                    json!({"type":"mcp_tool_call_begin","call_id":id,
+                    "invocation":{"server":"github","tool":"create_issue","arguments":args}}),
+                );
+                ingest(&mut model, who, &v, &base);
+                ingest(&mut model, who, &v, &base);
+                if mode == "legacy" {
+                    let call = model.call(who, id).unwrap();
+                    assert_eq!(call.tool, "mcp:github/create_issue");
+                    assert_eq!(call.input, if args.is_null() { String::new() } else { args.to_string() });
+                } else {
+                    assert!(model.call(who, id).is_none());
+                }
+            }
+            assert_eq!(model.tool_windows.len(), if mode == "legacy" { 2 } else { 0 });
+            assert!(model.tool_windows.iter().all(|w| w.start == t(3) && w.end.is_none()));
+            assert!(model.events.is_empty());
+        }
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn legacy_mcp_results_emit_success_and_close_error_windows() {
+        let mut model = Model::new(vec![PathBuf::from("/Users/x/proj")]);
+        let dir = Path::new("/nonexistent/codex/sessions");
+        let who = ensure_participant(&mut model, &dir.join("rollout-mcp-results.jsonl"), dir);
+        for (id, result) in [
+            ("success", json!({"Ok":{"content":[]}})),
+            ("transport-error", json!({"Err":"x"})),
+            ("tool-error", json!({"Ok":{"content":[],"isError":true}})),
+        ] {
+            let invocation = json!({"server":"github","tool":"create_issue","arguments":{"title":"x"}});
+            ingest(
+                &mut model,
+                who,
+                &record(
+                    3,
+                    "event_msg",
+                    json!({
+                        "type":"mcp_tool_call_begin","call_id":id,"invocation":invocation
+                    }),
+                ),
+                dir,
+            );
+            ingest(
+                &mut model,
+                who,
+                &record(
+                    7,
+                    "event_msg",
+                    json!({
+                        "type":"mcp_tool_call_end","call_id":id,"invocation":invocation,"result":result
+                    }),
+                ),
+                dir,
+            );
+        }
+        assert_eq!(model.events.len(), 1);
+        let event = &model.events[0];
+        assert_eq!(event.who, who);
+        assert_eq!(event.scope, Scope::Mcp);
+        assert_eq!(event.rel, Path::new("github/create_issue"));
+        assert_eq!(event.kind, TouchKind::Read);
+        assert_eq!(event.source, TouchSource::Tool("mcp".into()));
+        assert_eq!(event.tool_call_id.as_deref(), Some("success"));
+        assert_eq!((event.start, event.end), (t(3), t(7)));
+        assert!(matches!(event.detail, EventDetail::None));
+        assert_eq!(model.tool_windows.len(), 3);
+        assert!(model.tool_windows.iter().all(|w| w.start == t(3) && w.end == Some(t(7))));
+        assert_eq!(model.call(who, "success").unwrap().input, json!({"title":"x"}).to_string());
+
+        ingest(
+            &mut model,
+            who,
+            &record(
+                9,
+                "event_msg",
+                json!({
+                    "type":"mcp_tool_call_end","call_id":"no-begin",
+                    "invocation":{"server":"github","tool":"list_issues"},"result":{"Ok":{"content":[]}}
+                }),
+            ),
+            dir,
+        );
+        assert_eq!(model.events.len(), 2);
+        assert_eq!((model.events[1].start, model.events[1].end), (t(9), t(9)));
+        assert_eq!(model.events[1].rel, Path::new("github/list_issues"));
+    }
+
+    #[test]
+    fn paginated_mcp_items_capture_terminal_windows_and_skip_in_progress() {
+        let mut model = Model::new(vec![PathBuf::from("/Users/x/proj")]);
+        let dir = Path::new("/nonexistent/codex/sessions");
+        let who = ensure_participant(&mut model, &dir.join("rollout-mcp-items.jsonl"), dir);
+        for (id, status, args) in [
+            ("success", "completed", json!({"title":"x"})),
+            ("failure", "failed", Value::Null),
+            ("running", "inProgress", json!({"title":"pending"})),
+        ] {
+            ingest(
+                &mut model,
+                who,
+                &record(
+                    9,
+                    "event_msg",
+                    json!({
+                        "type":"item_completed","started_at_ms":t(3).timestamp_millis(),
+                        "completed_at_ms":t(7).timestamp_millis(),
+                        "item":{"type":"McpToolCall","id":id,"server":"github","tool":"create_issue",
+                            "arguments":args,"status":status}
+                    }),
+                ),
+                dir,
+            );
+            if status != "inProgress" {
+                let call = model.call(who, id).unwrap();
+                assert_eq!(call.tool, "mcp:github/create_issue");
+                assert_eq!(call.input, args.to_string());
+            }
+        }
+        assert_eq!(model.events.len(), 1);
+        let event = &model.events[0];
+        assert_eq!(event.who, who);
+        assert_eq!(event.scope, Scope::Mcp);
+        assert_eq!(event.rel, Path::new("github/create_issue"));
+        assert_eq!(event.kind, TouchKind::Read);
+        assert_eq!(event.source, TouchSource::Tool("mcp".into()));
+        assert_eq!(event.tool_call_id.as_deref(), Some("success"));
+        assert_eq!((event.start, event.end), (t(3), t(7)));
+        assert!(matches!(event.detail, EventDetail::None));
+        assert_eq!(model.tool_windows.len(), 2);
+        assert!(model.tool_windows.iter().all(|w| w.start == t(3) && w.end == Some(t(7))));
+        assert!(model.call(who, "running").is_none());
+    }
+
+    #[test]
+    fn declared_history_mode_avoids_duplicate_mcp_calls() {
+        let base = std::env::temp_dir().join(format!("antty-codex-test-mcp-history-{}", std::process::id()));
+        fs::create_dir_all(&base).unwrap();
+        for mode in ["legacy", "paginated"] {
+            let file = base.join(format!("rollout-{mode}.jsonl"));
+            fs::write(
+                &file,
+                record(0, "session_meta", json!({"id":mode,"cwd":base,"history_mode":mode})).to_string() + "\n",
+            )
+            .unwrap();
+            let mut model = Model::new(vec![base.clone()]);
+            let who = ensure_participant(&mut model, &file, &base);
+            for (sec, payload) in [
+                (
+                    3,
+                    json!({"type":"mcp_tool_call_begin","call_id":"legacy",
+                    "invocation":{"server":"github","tool":"create_issue","arguments":{"title":"legacy"}}}),
+                ),
+                (
+                    7,
+                    json!({"type":"mcp_tool_call_end","call_id":"legacy",
+                    "invocation":{"server":"github","tool":"create_issue"},"result":{"Ok":{"content":[]}}}),
+                ),
+                (
+                    9,
+                    json!({"type":"item_completed","started_at_ms":t(4).timestamp_millis(),
+                    "completed_at_ms":t(8).timestamp_millis(),
+                    "item":{"type":"McpToolCall","id":"paginated","server":"github","tool":"create_issue",
+                        "arguments":{"title":"paginated"},"status":"completed"}}),
+                ),
+            ] {
+                ingest(&mut model, who, &record(sec, "event_msg", payload), &base);
+            }
+            assert_eq!(model.events.len(), 1);
+            assert_eq!(model.events[0].tool_call_id.as_deref(), Some(mode));
+            assert_eq!(model.events[0].scope, Scope::Mcp);
+            assert_eq!(model.tool_windows.len(), 1);
+            let window = &model.tool_windows[0];
+            let expected = if mode == "legacy" { (t(3), Some(t(7))) } else { (t(4), Some(t(8))) };
+            assert_eq!((window.start, window.end), expected);
+            assert_eq!(model.call(who, mode).unwrap().input, json!({"title":mode}).to_string());
+            let ignored = if mode == "legacy" { "paginated" } else { "legacy" };
+            assert!(model.call(who, ignored).is_none());
+        }
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

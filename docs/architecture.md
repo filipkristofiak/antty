@@ -34,7 +34,7 @@ Two paths write `FileEvent`s into `Model`:
 - `parse.rs` reads what the agent logged: tool calls and their results.
   It's exact, but it only sees work done through tools.
 - `attrib.rs` reads raw filesystem events and guesses who caused them: a
-  running bash/eval tool call, otherwise "you".
+  running file-mutating tool call, otherwise "you".
 
 ## Watcher attribution
 
@@ -47,7 +47,7 @@ Two paths write `FileEvent`s into `Model`:
    window (e.g. `sed -i`'s temp file) is dropped.
 3. `classify_one` drops the event if a tool already logged a write to that
    path ending between 10s before and 1s after it (`DEDUP_TOOL_*`).
-   Otherwise the event goes to the latest-starting bash/eval tool window
+   Otherwise the event goes to the latest-starting file-mutating tool window
    open from 1s before to 8s after it (`WINDOW_*_SLACK_SECS`), or to "you"
    if none matches.
 
@@ -55,12 +55,23 @@ These constants encode observed FSEvents latency (see the comment above
 the dedup check), not a protocol guarantee. Change them only with a
 reproduction.
 
+`Model::calls` retains the tool label and input, keyed by participant and call ID.
+`FileEvent::tool_call_id` links watcher, inferred remote and MCP events to that record.
+Windows cover shell/code execution, device writes and MCP calls; parent task calls
+are excluded because subagents have their own windows. Reset drops transcript-derived
+events and windows, but retains observed watcher events and their calls.
+
 ## Persistence
 
 Watcher events have no other record, so each classified one is appended,
 with its diff, as a JSON line to
 `<state-dir>/<project path with / replaced by _>.jsonl`. There is no
 rotation, so the file grows with edit volume.
+
+The `who` object retains the call ID, tool label and at most 4096 UTF-8 bytes of
+input, followed by a truncation marker when needed. Old records without tool/input
+remain readable as bash windows. Replay only restores a missing call, so a loaded
+transcript's complete input wins over the persisted copy.
 
 At startup `attrib::replay` reads the log back. It must run after
 `sessions::load_initial` for every harness, which registers the participants the logged
@@ -89,8 +100,9 @@ Touched targets are classified by `model::Scope`:
 2. Fix the resulting compile errors in `tree.rs` (`segments`,
    `Tree::build`) and `ui/detail.rs` (`display_target`), which match
    `Scope` exhaustively.
-3. Make `parse::locate` return the new variant. The compiler won't flag a
-   missing producer; without this step the variant just never shows up.
+3. Add a producer in the relevant harness parser, or make `parse::locate` return
+   the new variant for file targets. The compiler won't flag a missing producer;
+   without this step the variant just never shows up.
 
 ## Errors
 

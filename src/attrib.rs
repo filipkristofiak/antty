@@ -365,7 +365,7 @@ mod tests {
         model.open_window(who, "tc1", "ast_edit".into(), start, "x".into());
         model.close_window(who, "tc1", start + Duration::seconds(5));
         fs::write(root.join("a.txt"), "x").unwrap();
-        let mut attributor = Attributor::new(&state, &[root.clone()]);
+        let mut attributor = Attributor::new(&state, std::slice::from_ref(&root));
         attributor.push(RawFs { path: root.join("a.txt"), kind: FsKind::Modified, at: start + Duration::seconds(2) });
         assert_eq!(attributor.classify_and_apply(&mut model, start + Duration::seconds(30)), 1);
         assert_eq!(model.events[0].source, TouchSource::Window("ast_edit".into()));
@@ -403,7 +403,7 @@ mod tests {
         );
         let input = "é".repeat(5000);
         model.record_call(who, "tc1", "eval".into(), input.clone());
-        let mut attributor = Attributor::new(&state, &[root.clone()]);
+        let mut attributor = Attributor::new(&state, std::slice::from_ref(&root));
         attributor.persist(
             0,
             &model,

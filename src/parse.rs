@@ -210,7 +210,7 @@ fn recompute_spans(model: &mut Model, who: ParticipantId, idle_gap: i64) {
 }
 
 /// Recompute spans for every participant marked dirty since the last flush, then clear the
-/// dirty set. Call once per ingested batch (a `Msg::Lines` payload, or the whole initial load)
+/// dirty set. Call once per ingested batch (`Msg::Records`)
 /// rather than once per interval: `recompute_spans` re-sorts and re-merges a participant's
 /// entire history each time, so batching avoids quadratic work across a large historical file.
 pub fn flush_dirty_spans(model: &mut Model, idle_gap: i64) {

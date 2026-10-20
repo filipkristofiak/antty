@@ -360,7 +360,8 @@ mod tests {
     use ratatui::layout::Rect;
 
     fn test_app(root: &std::path::Path, state_dir: &std::path::Path) -> App {
-        let model = Model::new(vec![root.to_path_buf()]);
+        let mut model = Model::new(vec![root.to_path_buf()]);
+        crate::disk::list_now(&mut model);
         let tree = Tree::build(&model, FilesView::Merged);
         let ui = UiState::new(false);
         let rows = tree::build_rows(&model, &tree, &ui.expand);
@@ -368,6 +369,7 @@ mod tests {
         let now = chrono::Utc::now();
         let mut view = View::new(true);
         view.fit(now - chrono::Duration::hours(1), now, layout.gantt_width as usize);
+        let (tx, _) = std::sync::mpsc::sync_channel(16);
         App {
             model,
             tree,
@@ -379,6 +381,19 @@ mod tests {
             layout,
             launch: None,
             suspend: false,
+            disk_tx: None,
+            walk_pending: Default::default(),
+            walk_stale: Default::default(),
+            pending_seed: None,
+            needs_rebuild: false,
+            state_dir: state_dir.to_path_buf(),
+            index_spec: crate::index::Spec {
+                path: crate::index::path_for(state_dir, root),
+                harness_roots: Vec::new(),
+                idle_gap: 30,
+                roots: vec![root.to_path_buf()],
+            },
+            tx,
         }
     }
 
@@ -561,6 +576,7 @@ mod tests {
         std::fs::write(b.join("shared.rs"), "b").unwrap();
         let mut app = test_app(&a, &state_dir);
         app.model = Model::new(vec![a.clone(), b.clone()]);
+        crate::disk::list_now(&mut app.model);
         let now = chrono::Utc::now();
         for (root, line, end) in [(0, 42, now), (1, 7, now - chrono::Duration::seconds(1))] {
             app.model.events.push(FileEvent {
@@ -582,6 +598,7 @@ mod tests {
         assert_eq!(app.selected_file_target().unwrap(), (b.join("shared.rs"), Some(7)));
 
         std::fs::write(a.join("shared.rs"), "a").unwrap();
+        crate::disk::list_now(&mut app.model);
         app.rebuild();
         assert_eq!(app.selected_file_target().unwrap(), (a.join("shared.rs"), Some(42)));
         drop(app);

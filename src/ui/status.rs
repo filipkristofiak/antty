@@ -29,6 +29,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
         if app.ui.expand.auto_follow { "on" } else { "off" },
         if app.view.collapse_gaps() { "on" } else { "off" }
     );
+    if let Some((done, total)) = app.ui.loading {
+        right = format!("indexing {done}/{total} · {right}");
+    }
     if app.model.roots.len() > 1 {
         right.push_str(match app.ui.files_view {
             crate::tree::FilesView::Merged => " · worktrees:merged",

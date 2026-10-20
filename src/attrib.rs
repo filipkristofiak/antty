@@ -1,4 +1,4 @@
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -41,9 +41,12 @@ fn kind_strength(k: FsKind) -> u8 {
     }
 }
 
+pub(crate) fn state_file_stem(root: &Path) -> String {
+    root.to_string_lossy().replace('/', "_")
+}
+
 fn persist_path_for(state_dir: &Path, root: &Path) -> PathBuf {
-    let name = root.to_string_lossy().replace('/', "_");
-    state_dir.join(format!("{name}.jsonl"))
+    state_dir.join(format!("{}.jsonl", state_file_stem(root)))
 }
 
 struct Pending {
@@ -53,7 +56,7 @@ struct Pending {
 
 pub struct Attributor {
     pending: Vec<Pending>,
-    persist_files: Vec<Option<File>>,
+    persist_paths: Vec<PathBuf>,
     pub persist_error: Option<String>,
     delay_secs: i64,
 }
@@ -61,34 +64,21 @@ pub struct Attributor {
 impl Attributor {
     pub fn new(state_dir: &Path, roots: &[PathBuf]) -> Self {
         let mut persist_error = None;
-        let persist_files = match fs::create_dir_all(state_dir) {
-            Ok(()) => roots
-                .iter()
-                .map(|root| {
-                    match OpenOptions::new().create(true).append(true).open(persist_path_for(state_dir, root)) {
-                        Ok(file) => Some(file),
-                        Err(e) => {
-                            if persist_error.is_none() {
-                                persist_error = Some(format!("watch events not persisted: {e}"));
-                            }
-                            None
-                        }
-                    }
-                })
-                .collect(),
+        let persist_paths = match fs::create_dir_all(state_dir) {
+            Ok(()) => roots.iter().map(|root| persist_path_for(state_dir, root)).collect(),
             Err(e) => {
                 persist_error = Some(format!("watch events not persisted: {e}"));
-                (0..roots.len()).map(|_| None).collect()
+                Vec::new()
             }
         };
-        Attributor { pending: Vec::new(), persist_files, persist_error, delay_secs: CLASSIFY_DELAY_SECS }
+        Attributor { pending: Vec::new(), persist_paths, persist_error, delay_secs: CLASSIFY_DELAY_SECS }
     }
 
     #[cfg(test)]
     fn disabled() -> Self {
         Attributor {
             pending: Vec::new(),
-            persist_files: Vec::new(),
+            persist_paths: Vec::new(),
             persist_error: None,
             delay_secs: CLASSIFY_DELAY_SECS,
         }
@@ -231,7 +221,16 @@ impl Attributor {
         at: Ts,
         diff: Option<&str>,
     ) {
-        let Some(file) = self.persist_files.get_mut(root).and_then(Option::as_mut) else { return };
+        let Some(path) = self.persist_paths.get(root) else { return };
+        let mut file = match OpenOptions::new().create(true).append(true).open(path) {
+            Ok(file) => file,
+            Err(e) => {
+                if self.persist_error.is_none() {
+                    self.persist_error = Some(format!("watch events not persisted: {e}"));
+                }
+                return;
+            }
+        };
         let change = match kind {
             FsKind::Created => "created",
             FsKind::Modified => "modified",

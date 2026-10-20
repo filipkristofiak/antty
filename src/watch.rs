@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::Sender;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::SyncSender;
 
 use chrono::Utc;
 use ignore::Match;
@@ -143,11 +144,11 @@ impl GitignoreSet {
     }
 }
 
-fn send(tx: &Sender<Msg>, path: PathBuf, kind: FsKind, at: Ts) {
+fn send(tx: &SyncSender<Msg>, path: PathBuf, kind: FsKind, at: Ts) {
     let _ = tx.send(Msg::Fs(RawFs { path, kind, at }));
 }
 
-fn handle_event(gi: &GitignoreSet, event: Event, tx: &Sender<Msg>) {
+fn handle_event(gi: &GitignoreSet, event: Event, tx: &SyncSender<Msg>) {
     let at = Utc::now();
     match event.kind {
         EventKind::Create(_) => {
@@ -223,12 +224,41 @@ fn handle_event(gi: &GitignoreSet, event: Event, tx: &Sender<Msg>) {
     }
 }
 
+/// Prepare each checkout's watcher in parallel without blocking the UI thread.
+pub fn spawn_watchers(roots: Vec<(PathBuf, Vec<PathBuf>)>, tx: SyncSender<Msg>) {
+    std::thread::spawn(move || {
+        let next = AtomicUsize::new(0);
+        let disconnected = AtomicBool::new(false);
+        let workers = std::thread::available_parallelism().map_or(1, |n| n.get()).min(roots.len());
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                let roots = &roots;
+                let next = &next;
+                let disconnected = &disconnected;
+                let tx = &tx;
+                scope.spawn(move || {
+                    while !disconnected.load(Ordering::Relaxed) {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some((root, nested)) = roots.get(i) else { break };
+                        if let Err(e) = spawn_watcher(root.clone(), nested.clone(), tx.clone())
+                            && tx.send(Msg::WatchError(e.to_string())).is_err()
+                        {
+                            disconnected.store(true, Ordering::Relaxed);
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+    });
+}
+
 /// Start the filesystem watcher. Startup errors are returned; later failures are sent to the UI.
-pub fn spawn_watcher(root: PathBuf, exclude: Vec<PathBuf>, tx: Sender<Msg>) -> notify::Result<()> {
+pub fn spawn_watcher(root: PathBuf, exclude: Vec<PathBuf>, tx: SyncSender<Msg>) -> notify::Result<()> {
     start(root, exclude, tx, RecommendedWatcher::kind() == notify::WatcherKind::Inotify)
 }
 
-fn start(root: PathBuf, exclude: Vec<PathBuf>, tx: Sender<Msg>, per_dir: bool) -> notify::Result<()> {
+fn start(root: PathBuf, exclude: Vec<PathBuf>, tx: SyncSender<Msg>, per_dir: bool) -> notify::Result<()> {
     let gitignore = GitignoreSet::build(&root, exclude);
     let (events_tx, events_rx) = std::sync::mpsc::channel::<notify::Result<Event>>();
     let mut watcher = notify::recommended_watcher(events_tx)?;
@@ -273,7 +303,7 @@ fn start(root: PathBuf, exclude: Vec<PathBuf>, tx: Sender<Msg>, per_dir: bool) -
     Ok(())
 }
 
-fn watch_new_dirs(watcher: &mut RecommendedWatcher, gi: &GitignoreSet, event: &Event, tx: &Sender<Msg>) {
+fn watch_new_dirs(watcher: &mut RecommendedWatcher, gi: &GitignoreSet, event: &Event, tx: &SyncSender<Msg>) {
     if !matches!(event.kind, EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(_))) {
         return;
     }

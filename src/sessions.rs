@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::SyncSender;
+use std::sync::{LazyLock, Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
@@ -10,7 +11,7 @@ use crate::model::{Model, ParticipantId, ParticipantKind, Session};
 use crate::watch::RawFs;
 
 /// Which agent harness wrote a session log, and so which on-disk format to read it with.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Harness {
     Omp,
     Claude,
@@ -18,19 +19,11 @@ pub enum Harness {
 }
 
 impl Harness {
-    fn discover_project_dir(self, root: &Path, project_root: &Path) -> Option<PathBuf> {
+    pub fn index_root(self, root: &Path) -> RootIndex {
         match self {
-            Harness::Omp => discover_omp_project_dir(root, project_root),
-            Harness::Claude => crate::claude::discover_project_dir(root, project_root),
-            Harness::Codex => crate::codex::discover_project_dir(root, project_root),
-        }
-    }
-
-    fn scan_files(self, project_dir: &Path, project_root: &Path) -> Vec<PathBuf> {
-        match self {
-            Harness::Omp => scan_jsonl_files(project_dir),
-            Harness::Claude => crate::claude::scan_files(project_dir),
-            Harness::Codex => crate::codex::scan_files(project_dir, project_root),
+            Harness::Omp => RootIndex::Dirs(omp_project_dirs(root)),
+            Harness::Claude => RootIndex::Dirs(crate::claude::project_dirs(root)),
+            Harness::Codex => RootIndex::Rollouts(crate::codex::rollouts_by_cwd(root)),
         }
     }
 
@@ -61,13 +54,45 @@ impl Harness {
     }
 }
 
+/// One shared pass over a harness session root, keyed by canonical launch cwd.
+pub enum RootIndex {
+    Dirs(HashMap<PathBuf, PathBuf>),
+    Rollouts(HashMap<PathBuf, Vec<PathBuf>>),
+}
+
+impl RootIndex {
+    pub fn project_dir(&self, harness_root: &Path, project_root: &Path) -> Option<PathBuf> {
+        match self {
+            Self::Dirs(dirs) => dirs.get(project_root).cloned(),
+            Self::Rollouts(files) => files.contains_key(project_root).then(|| harness_root.to_path_buf()),
+        }
+    }
+}
+
+fn source_files(src: &TailSource, dir: &Path, index: Option<&RootIndex>) -> Vec<PathBuf> {
+    match src.harness {
+        Harness::Omp => scan_jsonl_files(dir),
+        Harness::Claude => crate::claude::scan_files(dir),
+        Harness::Codex => match index {
+            Some(RootIndex::Rollouts(files)) => files.get(&src.project_root).cloned().unwrap_or_default(),
+            _ => Vec::new(),
+        },
+    }
+}
+
 /// Messages sent from background threads (tailer, fs watcher) to the main event loop.
 pub enum Msg {
-    Lines { harness: Harness, project_dir: PathBuf, participant_file: PathBuf, lines: Vec<String> },
+    Records { harness: Harness, project_dir: PathBuf, participant_file: PathBuf, records: Vec<serde_json::Value> },
     Reset(PathBuf),
     Fs(RawFs),
     Tick,
     WatchError(String),
+    Disk { snapshot: Box<crate::disk::DiskSnapshot>, walked: Vec<usize> },
+    Seed { at: crate::model::Ts, files: Vec<(PathBuf, String)> },
+    Progress { done: usize, total: usize },
+    Loaded { found: bool, tails: Result<Vec<crate::index::CachedTail>, String> },
+    Cached(Box<Model>),
+    Notice(String),
 }
 
 pub struct FileRole {
@@ -162,11 +187,12 @@ pub(crate) fn is_dotfile(path: &Path) -> bool {
     path.file_name().and_then(|n| n.to_str()).map(|n| n.starts_with('.')).unwrap_or(true)
 }
 
-/// Find the direct child of omp's `sessions_root` whose most-recent top-level session file has
-/// `cwd == project_root`. Header matching is authoritative; we never reimplement omp's
-/// cwd-encoding rule.
-fn discover_omp_project_dir(sessions_root: &Path, project_root: &Path) -> Option<PathBuf> {
-    let rd = fs::read_dir(sessions_root).ok()?;
+static OMP_HEADER_CWDS: LazyLock<Mutex<HashMap<PathBuf, PathBuf>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Map canonical launch cwd to its first matching project directory.
+fn omp_project_dirs(sessions_root: &Path) -> HashMap<PathBuf, PathBuf> {
+    let mut dirs = HashMap::new();
+    let Ok(rd) = fs::read_dir(sessions_root) else { return dirs };
     for entry in rd.flatten() {
         let dir = entry.path();
         if !dir.is_dir() {
@@ -180,13 +206,18 @@ fn discover_omp_project_dir(sessions_root: &Path, project_root: &Path) -> Option
             inner.flatten().map(|e| e.path()).filter(|p| p.is_file() && is_jsonl(p) && !is_dotfile(p)).collect();
         top.sort();
         let Some(last) = top.last() else { continue };
-        let Some(cwd) = read_header_cwd(last) else { continue };
-        let canon = cwd.canonicalize().unwrap_or(cwd);
-        if canon == project_root {
-            return Some(dir);
-        }
+        let mut cache = OMP_HEADER_CWDS.lock().unwrap_or_else(PoisonError::into_inner);
+        let cwd = if let Some(cwd) = cache.get(last) {
+            cwd.clone()
+        } else {
+            let Some(cwd) = read_header_cwd(last) else { continue };
+            let cwd = cwd.canonicalize().unwrap_or(cwd);
+            cache.insert(last.clone(), cwd.clone());
+            cwd
+        };
+        dirs.entry(cwd).or_insert(dir);
     }
-    None
+    dirs
 }
 
 fn scan_jsonl_files_rec(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -214,10 +245,8 @@ pub(crate) fn scan_jsonl_files(project_dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Split previously-buffered partial bytes plus newly read bytes into complete lines and a new
-/// trailing partial remainder. Shared by `load_initial` and the tailer loop so a session file
-/// that's mid-write at either point is handled identically: the incomplete final line is carried
-/// forward rather than dropped or reprocessed.
+/// Split buffered partial bytes and newly read bytes into complete lines and a trailing
+/// remainder, carried forward until the writer finishes that record.
 fn split_lines(mut partial: Vec<u8>, new_bytes: &[u8]) -> (Vec<String>, Vec<u8>) {
     partial.extend_from_slice(new_bytes);
     let mut lines = Vec::new();
@@ -252,97 +281,196 @@ pub struct TailSource {
     pub states: HashMap<PathBuf, TailState>,
 }
 
-/// Synchronously read every jsonl file for the project's session dir under `root` once,
-/// ingesting all historical lines into `model`. Returns the discovered project dir (if any) and
-/// each file's resulting tail state (offset just past the last complete newline, plus any
-/// dangling partial bytes), so a subsequent tailer can resume exactly from there without losing
-/// or duplicating a line that was mid-write at startup.
-pub fn load_initial(
+pub fn apply_records(
     model: &mut Model,
     harness: Harness,
-    root: &Path,
-    project_root: &Path,
+    project_dir: &Path,
+    file: &Path,
+    records: &[serde_json::Value],
     idle_gap: i64,
-) -> TailSource {
-    let project_dir = harness.discover_project_dir(root, project_root);
-    let mut states = HashMap::new();
-    if let Some(dir) = &project_dir {
-        for f in harness.scan_files(dir, project_root) {
-            let Ok(bytes) = fs::read(&f) else { continue };
-            let (lines, partial) = split_lines(Vec::new(), &bytes);
-            // `offset` stops right before any dangling (incomplete) trailing line; we do NOT
-            // also carry `partial` forward in the returned TailState. If we did, the tailer's
-            // next read would start at `offset` (which still points at those same bytes on
-            // disk) and re-read them, then `split_lines` would prepend the in-memory `partial`
-            // on top, duplicating the fragment and breaking its JSON. Leaving the tail state's
-            // partial empty lets the next read pick the dangling bytes up fresh, exactly once.
-            let consumed = (bytes.len() - partial.len()) as u64;
-            let who = harness.ensure_participant(model, &f, dir);
-            for line in &lines {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-                    harness.ingest(model, who, &v, dir, idle_gap);
-                }
-            }
-            states.insert(f, TailState { offset: consumed, partial: Vec::new() });
-        }
+) {
+    let who = harness.ensure_participant(model, file, project_dir);
+    for record in records {
+        harness.ingest(model, who, record, project_dir, idle_gap);
     }
     crate::parse::flush_dirty_spans(model, idle_gap);
-    TailSource { harness, root: root.to_path_buf(), project_root: project_root.to_path_buf(), project_dir, states }
 }
 
-/// Background thread: for every source, rediscovers the project's session dir and tails every
-/// jsonl file in it once per second, forwarding complete lines to the main thread. Each source's
-/// `states` seeds file offsets from `load_initial`; `partial` starts empty in every seeded entry,
-/// so any line still incomplete at startup is read fresh on the first tick.
-pub fn spawn_tailer(mut sources: Vec<TailSource>, tx: Sender<Msg>) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
-        loop {
-            for src in sources.iter_mut() {
-                if src.project_dir.is_none() {
-                    src.project_dir = src.harness.discover_project_dir(&src.root, &src.project_root);
-                }
-                let Some(dir) = &src.project_dir else { continue };
-                for f in src.harness.scan_files(dir, &src.project_root) {
-                    let size = match fs::metadata(&f) {
-                        Ok(m) => m.len(),
-                        Err(_) => continue,
-                    };
-                    let state = src.states.entry(f.clone()).or_insert(TailState { offset: 0, partial: Vec::new() });
-                    if size < state.offset {
-                        state.offset = 0;
-                        state.partial.clear();
-                        let _ = tx.send(Msg::Reset(f.clone()));
-                    }
-                    if size > state.offset
-                        && let Ok(mut file) = fs::File::open(&f)
-                        && file.seek(SeekFrom::Start(state.offset)).is_ok()
+const RECORDS_PER_MSG: usize = 2048;
+
+fn poll_source(src: &mut TailSource, files: Vec<PathBuf>, tx: &SyncSender<Msg>) -> bool {
+    let Some(dir) = &src.project_dir else { return true };
+    for f in files {
+        let Ok(meta) = fs::metadata(&f) else { continue };
+        let state = src.states.entry(f.clone()).or_insert(TailState { offset: 0, partial: Vec::new() });
+        if meta.len() < state.offset {
+            state.offset = 0;
+            state.partial.clear();
+            if tx.send(Msg::Reset(f.clone())).is_err() {
+                return false;
+            }
+        }
+        if meta.len() > state.offset
+            && let Ok(mut file) = fs::File::open(&f)
+            && file.seek(SeekFrom::Start(state.offset)).is_ok()
+        {
+            let mut buf = Vec::new();
+            if let Ok(n) = file.read_to_end(&mut buf) {
+                let (lines, partial) = split_lines(std::mem::take(&mut state.partial), &buf);
+                // Count actual bytes read: a live file may grow after the stat.
+                state.offset += n as u64;
+                state.partial = partial;
+                let mut records = lines.into_iter().filter_map(|line| serde_json::from_str(&line).ok()).peekable();
+                while records.peek().is_some() {
+                    let chunk = records.by_ref().take(RECORDS_PER_MSG).collect();
+                    if tx
+                        .send(Msg::Records {
+                            harness: src.harness,
+                            project_dir: dir.clone(),
+                            participant_file: f.clone(),
+                            records: chunk,
+                        })
+                        .is_err()
                     {
-                        let mut buf = Vec::new();
-                        if let Ok(n) = file.read_to_end(&mut buf) {
-                            let old_partial = std::mem::take(&mut state.partial);
-                            let (lines, new_partial) = split_lines(old_partial, &buf);
-                            // Advance by bytes actually read, not the pre-read `size`
-                            // stat: the file may have grown further between the two.
-                            // Using `size` here would under-count on a live file and
-                            // cause the next tick to re-read (and re-ingest) the tail.
-                            state.offset += n as u64;
-                            state.partial = new_partial;
-                            if !lines.is_empty() {
-                                let _ = tx.send(Msg::Lines {
-                                    harness: src.harness,
-                                    project_dir: dir.clone(),
-                                    participant_file: f.clone(),
-                                    lines,
-                                });
-                            }
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    true
+}
+
+/// Discover once per harness root and parse sources on bounded background workers.
+pub fn spawn_tailer(
+    mut sources: Vec<TailSource>,
+    cache: Option<crate::index::Spec>,
+    tx: SyncSender<Msg>,
+) -> thread::JoinHandle<()> {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    thread::spawn(move || {
+        if let Some(spec) = &cache {
+            match crate::index::load(spec) {
+                Ok(Some((model, tails))) => {
+                    if tx.send(Msg::Cached(Box::new(model))).is_err() {
+                        return;
+                    }
+                    for tail in tails {
+                        if let Some(src) = sources
+                            .iter_mut()
+                            .find(|s| s.harness == tail.harness && s.project_root == tail.project_root)
+                        {
+                            src.project_dir = Some(tail.project_dir);
+                            src.states = tail
+                                .files
+                                .into_iter()
+                                .map(|f| (f.path, TailState { offset: f.offset, partial: Vec::new() }))
+                                .collect();
                         }
                     }
                 }
+                Ok(None) => {}
+                Err(e) => {
+                    if tx.send(Msg::Notice(format!("index rebuilt: {e}"))).is_err() {
+                        return;
+                    }
+                }
             }
-            let _ = tx.send(Msg::Tick);
-            thread::sleep(Duration::from_millis(1000));
+        }
+        let mut first = true;
+        loop {
+            let mut indexes = HashMap::new();
+            for src in &sources {
+                if src.harness == Harness::Codex || src.project_dir.is_none() {
+                    indexes.entry((src.harness, src.root.clone())).or_insert_with(|| src.harness.index_root(&src.root));
+                }
+            }
+            for src in &mut sources {
+                if src.project_dir.is_none() {
+                    src.project_dir = indexes
+                        .get(&(src.harness, src.root.clone()))
+                        .and_then(|i| i.project_dir(&src.root, &src.project_root));
+                }
+            }
+            let total = sources.len();
+            let done = AtomicUsize::new(0);
+            let stopped = AtomicBool::new(false);
+            let workers = thread::available_parallelism().map_or(1, |n| n.get()).min(total).max(1);
+            {
+                let queue = Mutex::new(sources.iter_mut().rev().collect::<Vec<_>>());
+                thread::scope(|scope| {
+                    for _ in 0..workers {
+                        let (queue, indexes, done, stopped, tx) = (&queue, &indexes, &done, &stopped, &tx);
+                        scope.spawn(move || {
+                            while !stopped.load(Ordering::Relaxed) {
+                                let Some(src) = queue.lock().unwrap_or_else(PoisonError::into_inner).pop() else {
+                                    break;
+                                };
+                                let files = src.project_dir.as_ref().map_or_else(Vec::new, |dir| {
+                                    source_files(src, dir, indexes.get(&(src.harness, src.root.clone())))
+                                });
+                                if !poll_source(src, files, tx)
+                                    || (first
+                                        && tx
+                                            .send(Msg::Progress {
+                                                done: done.fetch_add(1, Ordering::Relaxed) + 1,
+                                                total,
+                                            })
+                                            .is_err())
+                                {
+                                    stopped.store(true, Ordering::Relaxed);
+                                    break;
+                                }
+                            }
+                        });
+                    }
+                });
+            }
+            if stopped.load(Ordering::Relaxed) {
+                return;
+            }
+            if first {
+                if tx
+                    .send(Msg::Loaded {
+                        found: sources.iter().any(|s| s.project_dir.is_some()),
+                        tails: crate::index::tails(&sources),
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+                first = false;
+            }
+            if tx.send(Msg::Tick).is_err() {
+                return;
+            }
+            thread::sleep(Duration::from_secs(1));
         }
     })
+}
+
+#[cfg(test)]
+pub fn load_blocking(model: &mut Model, harness: Harness, root: &Path, project_root: &Path, idle_gap: i64) {
+    let index = harness.index_root(root);
+    let mut src = TailSource {
+        harness,
+        root: root.to_path_buf(),
+        project_root: project_root.to_path_buf(),
+        project_dir: index.project_dir(root, project_root),
+        states: HashMap::new(),
+    };
+    let files = src.project_dir.as_ref().map_or_else(Vec::new, |dir| source_files(&src, dir, Some(&index)));
+    let (tx, rx) = std::sync::mpsc::sync_channel(4096);
+    thread::scope(|scope| {
+        scope.spawn(move || {
+            poll_source(&mut src, files, &tx);
+        });
+        for msg in rx {
+            if let Msg::Records { harness, project_dir, participant_file, records } = msg {
+                apply_records(model, harness, &project_dir, &participant_file, &records, idle_gap);
+            }
+        }
+    });
 }
 
 #[cfg(test)]
@@ -351,7 +479,7 @@ mod tests {
     use std::io::Write;
 
     #[test]
-    fn load_initial_then_tailer_reconstructs_a_line_that_was_mid_write_at_startup() {
+    fn poll_source_completes_a_line_left_mid_write_by_the_previous_pass() {
         let base = std::env::temp_dir().join(format!("antty-sessions-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         let project_root = base.join("proj");
@@ -370,15 +498,20 @@ mod tests {
             "{{\"type\":\"session\",\"version\":3,\"id\":\"x\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":{:?}}}\n",
             project_root.to_string_lossy()
         );
-        // A line still being written when `load_initial` runs: no trailing newline yet.
+        // A line still being written during the first poll.
         let half_written = "{\"type\":\"title_change\"".to_string();
         fs::write(&file, format!("{title_line}{header_line}{half_written}")).unwrap();
 
-        let mut model = Model::new(vec![project_root.clone()]);
-        let src = load_initial(&mut model, Harness::Omp, &sessions_root, &project_root, 30);
-        assert_eq!(src.project_dir, Some(project_dir));
-        let state = src.states.get(&file).expect("tail state seeded for the file");
-        assert!(state.partial.is_empty(), "load_initial must not carry the dangling line forward in-memory");
+        let mut src = TailSource {
+            harness: Harness::Omp,
+            root: sessions_root,
+            project_root,
+            project_dir: Some(project_dir),
+            states: HashMap::new(),
+        };
+        let (tx, rx) = std::sync::mpsc::sync_channel(16);
+        assert!(poll_source(&mut src, vec![file.clone()], &tx));
+        for _ in rx.try_iter() {}
 
         // The writer finishes the line and appends more, exactly like a live tailer tick would see.
         let rest = ",\"title\":\"Real Title\"}\n";
@@ -386,15 +519,15 @@ mod tests {
         f.write_all(rest.as_bytes()).unwrap();
         drop(f);
 
-        let mut fh = fs::File::open(&file).unwrap();
-        fh.seek(SeekFrom::Start(state.offset)).unwrap();
-        let mut buf = Vec::new();
-        fh.read_to_end(&mut buf).unwrap();
-        let (lines, new_partial) = split_lines(Vec::new(), &buf);
-
-        assert_eq!(lines.len(), 1, "the completed line must appear exactly once, not duplicated");
-        assert!(new_partial.is_empty());
-        let v: serde_json::Value = serde_json::from_str(&lines[0]).expect("reconstructed line must be valid JSON");
-        assert_eq!(v["title"], "Real Title");
+        assert!(poll_source(&mut src, vec![file], &tx));
+        let records: Vec<_> = rx
+            .try_iter()
+            .flat_map(|msg| match msg {
+                Msg::Records { records, .. } => records,
+                _ => Vec::new(),
+            })
+            .collect();
+        assert_eq!(records.len(), 1, "the completed record must appear exactly once");
+        assert_eq!(records[0]["title"], "Real Title");
     }
 }

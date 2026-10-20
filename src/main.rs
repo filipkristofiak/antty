@@ -4,7 +4,9 @@ mod cli;
 mod cmdline;
 mod codex;
 mod delta;
+mod disk;
 mod editor;
+mod index;
 mod keys;
 mod model;
 mod parse;
@@ -102,10 +104,19 @@ struct App {
     layout: ui::LayoutInfo,
     launch: Option<editor::Invocation>,
     suspend: bool,
+    disk_tx: Option<mpsc::Sender<usize>>,
+    walk_pending: std::collections::HashSet<usize>,
+    walk_stale: std::collections::HashSet<usize>,
+    pending_seed: Option<(Ts, Vec<(std::path::PathBuf, String)>)>,
+    needs_rebuild: bool,
+    state_dir: std::path::PathBuf,
+    index_spec: index::Spec,
+    tx: mpsc::SyncSender<Msg>,
 }
 
 impl App {
     fn rebuild(&mut self) {
+        self.needs_rebuild = false;
         let row = self.selected_row();
         // A `Row::Node` index is only stable within the current tree; capture its `key` (stable
         // across a rebuild, unlike the index `Tree::build` reassigns) so the selection can be
@@ -493,38 +504,136 @@ impl App {
 
     fn handle_message(&mut self, msg: Msg) -> bool {
         match msg {
-            Msg::Lines { harness, project_dir, participant_file, lines } => {
+            Msg::Records { harness, project_dir, participant_file, records } => {
                 if self.ui.status_extra.as_deref().is_some_and(|s| s.starts_with("no agent sessions")) {
                     self.ui.status_extra = None;
                 }
-                let who = harness.ensure_participant(&mut self.model, &participant_file, &project_dir);
-                for line in lines {
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
-                        harness.ingest(&mut self.model, who, &v, &project_dir, self.idle_gap);
-                    }
-                }
-                parse::flush_dirty_spans(&mut self.model, self.idle_gap);
-                self.rebuild();
+                sessions::apply_records(
+                    &mut self.model,
+                    harness,
+                    &project_dir,
+                    &participant_file,
+                    &records,
+                    self.idle_gap,
+                );
+                self.needs_rebuild = true;
                 true
             }
             Msg::Reset(path) => {
                 if let Some(&who) = self.model.file_participant.get(&path) {
                     self.model.clear_participant_data(who);
-                    self.rebuild();
+                    self.needs_rebuild = true;
                     return true;
                 }
                 false
             }
             Msg::Fs(raw) => {
+                if matches!(raw.kind, watch::FsKind::Created | watch::FsKind::Removed)
+                    && let Some(tx) = &self.disk_tx
+                    && let Some((r, _)) = self.model.project_rel(&raw.path)
+                {
+                    if self.walk_pending.insert(r) {
+                        let _ = tx.send(r);
+                    } else {
+                        self.walk_stale.insert(r);
+                    }
+                }
                 self.attributor.push(raw);
                 false
             }
             Msg::Tick => {
+                if self.ui.loading.is_some() {
+                    return self.ui.view_mode() == Mode::Picker;
+                }
                 let pushed = self.attributor.classify_and_apply(&mut self.model, chrono::Utc::now());
                 if pushed > 0 {
-                    self.rebuild();
+                    self.needs_rebuild = true;
+                }
+                if let Some(e) = self.attributor.persist_error.take() {
+                    self.ui.status_extra = Some(e);
+                    return true;
                 }
                 self.ui.view_mode() == Mode::Picker || pushed > 0
+            }
+            Msg::Disk { snapshot, walked } => {
+                self.model.disk = *snapshot;
+                for r in walked {
+                    self.walk_pending.remove(&r);
+                    if self.walk_stale.remove(&r)
+                        && let Some(tx) = &self.disk_tx
+                    {
+                        self.walk_pending.insert(r);
+                        let _ = tx.send(r);
+                    }
+                }
+                self.needs_rebuild = true;
+                true
+            }
+            Msg::Seed { at, files } => {
+                if self.ui.loading.is_some() {
+                    self.pending_seed = Some((at, files));
+                } else {
+                    for (rel, content) in files {
+                        self.model.record_snapshot(model::Scope::Project(0), &rel, at, content);
+                    }
+                }
+                false
+            }
+            Msg::Progress { done, total } => {
+                let previous = self.ui.loading.map_or(0, |(done, _)| done);
+                self.ui.loading = Some((previous.max(done), total));
+                true
+            }
+            Msg::Notice(s) => {
+                self.ui.status_extra = Some(s);
+                true
+            }
+            Msg::Cached(model) => {
+                let disk = std::mem::take(&mut self.model.disk);
+                let session_roots = std::mem::take(&mut self.model.session_roots);
+                self.model = *model;
+                self.model.disk = disk;
+                self.model.session_roots = session_roots;
+                self.needs_rebuild = true;
+                true
+            }
+            Msg::Loaded { found, tails } => {
+                self.ui.loading = None;
+                if !found {
+                    let root = &self.model.roots[0].path;
+                    self.ui.status_extra = Some(if self.model.roots.len() == 1 {
+                        format!("no agent sessions for {}", root.display())
+                    } else {
+                        format!(
+                            "no agent sessions for {} or its {} other worktrees",
+                            root.display(),
+                            self.model.roots.len() - 1
+                        )
+                    });
+                }
+                match tails.and_then(|tails| index::encode(&self.index_spec, &self.model, &tails)) {
+                    Ok(bytes) => {
+                        let path = self.index_spec.path.clone();
+                        let tx = self.tx.clone();
+                        std::thread::spawn(move || {
+                            if let Err(e) = index::write(&path, &bytes) {
+                                let _ = tx.send(Msg::Notice(format!("index not saved: {e}")));
+                            }
+                        });
+                    }
+                    Err(e) => self.ui.status_extra = Some(format!("index not saved: {e}")),
+                }
+                if let Some((at, files)) = self.pending_seed.take() {
+                    for (rel, content) in files {
+                        self.model.record_snapshot(model::Scope::Project(0), &rel, at, content);
+                    }
+                }
+                if let Some(e) = attrib::replay(&mut self.model, &self.state_dir) {
+                    self.ui.status_extra = Some(e);
+                }
+                self.fit();
+                self.needs_rebuild = true;
+                true
             }
             Msg::WatchError(e) => {
                 self.ui.status_extra = Some(format!("watch: {e}"));
@@ -541,48 +650,42 @@ fn main() -> anyhow::Result<()> {
     let mut model = Model::new(roots.clone());
     model.session_roots = vec![args.omp_dir.clone(), args.claude_dir.clone()];
     let mut sources = Vec::new();
+    let harnesses =
+        [(Harness::Omp, &args.omp_dir), (Harness::Claude, &args.claude_dir), (Harness::Codex, &args.codex_dir)];
     for root in &roots {
-        for (harness, dir) in
-            [(Harness::Omp, &args.omp_dir), (Harness::Claude, &args.claude_dir), (Harness::Codex, &args.codex_dir)]
-        {
-            sources.push(sessions::load_initial(&mut model, harness, dir, root, args.idle_gap));
+        for (harness, dir) in &harnesses {
+            sources.push(sessions::TailSource {
+                harness: *harness,
+                root: (*dir).clone(),
+                project_root: root.clone(),
+                project_dir: None,
+                states: Default::default(),
+            });
         }
-    }
-
-    let mut status_extra = None;
-    if sources.iter().all(|s| s.project_dir.is_none()) {
-        status_extra = Some(if roots.len() == 1 {
-            format!("no agent sessions for {}", args.project.display())
-        } else {
-            format!("no agent sessions for {} or its {} other worktrees", args.project.display(), roots.len() - 1)
-        });
     }
 
     let attributor = Attributor::new(&args.state_dir, &roots);
-    if let Some(e) = &attributor.persist_error {
-        status_extra = Some(e.clone());
-    }
-    if let Some(e) = attrib::replay(&mut model, &args.state_dir) {
-        status_extra = Some(e);
-    }
+    let status_extra = attributor.persist_error.clone();
+    let source_count = sources.len();
+    let index_spec = index::Spec {
+        path: index::path_for(&args.state_dir, &args.project),
+        harness_roots: harnesses.iter().map(|(_, dir)| (*dir).clone()).collect(),
+        idle_gap: args.idle_gap,
+        roots: roots.clone(),
+    };
+
+    let (tx, rx) = mpsc::sync_channel::<Msg>(256);
+    let _tailer = sessions::spawn_tailer(sources, Some(index_spec.clone()), tx.clone());
+
+    let disk_roots: Vec<_> = roots.iter().enumerate().map(|(i, r)| (r.clone(), model.nested_roots(i))).collect();
+    let lister_tx = disk::spawn_lister(disk_roots.clone(), !args.no_watch, tx.clone());
+    let disk_tx = (!args.no_watch).then_some(lister_tx);
     if !args.no_watch {
-        snapshot::seed_from_disk(&mut model, chrono::Utc::now());
+        watch::spawn_watchers(disk_roots, tx.clone());
     }
 
-    let (tx, rx) = mpsc::channel::<Msg>();
-    let _tailer = sessions::spawn_tailer(sources, tx.clone());
-
-    let mut watch_on = false;
-    if !args.no_watch {
-        for (i, root) in roots.iter().enumerate() {
-            match watch::spawn_watcher(root.clone(), model.nested_roots(i), tx.clone()) {
-                Ok(()) => watch_on = true,
-                Err(e) => status_extra = Some(format!("watch: {e}")),
-            }
-        }
-    }
-
-    let mut ui_state = UiState::new(watch_on);
+    let mut ui_state = UiState::new(!args.no_watch);
+    ui_state.loading = Some((0, source_count));
     ui_state.files_view = if args.separate_worktrees { tree::FilesView::Separate } else { tree::FilesView::Merged };
     ui_state.status_extra = status_extra;
     ui_state.no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
@@ -610,6 +713,14 @@ fn main() -> anyhow::Result<()> {
         layout,
         launch: None,
         suspend: false,
+        disk_tx,
+        walk_pending: Default::default(),
+        walk_stale: Default::default(),
+        pending_seed: None,
+        needs_rebuild: false,
+        state_dir: args.state_dir,
+        index_spec,
+        tx,
     };
     app.view.set_activity(timeline::visible_activity(&app.model));
     app.fit();
@@ -622,12 +733,41 @@ fn main() -> anyhow::Result<()> {
 fn run_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App, rx: mpsc::Receiver<Msg>) -> anyhow::Result<()> {
     let mut dirty = true;
     let mut drawn_now_col = i64::MIN;
+    const DRAIN_BUDGET: Duration = Duration::from_millis(30);
+    const MIN_LOADING_REFRESH: Duration = Duration::from_millis(250);
+    let mut last_refresh = std::time::Instant::now();
+    let mut refresh_delay = MIN_LOADING_REFRESH;
     loop {
+        let drain_started = std::time::Instant::now();
+        let mut backlog = false;
         while let Ok(msg) = rx.try_recv() {
             dirty |= app.handle_message(msg);
+            if drain_started.elapsed() >= DRAIN_BUDGET {
+                backlog = true;
+                break;
+            }
+        }
+        let loading = app.ui.loading.is_some();
+        let refresh_due = !loading || last_refresh.elapsed() >= refresh_delay;
+        let mut refresh_cost = Duration::ZERO;
+        if app.needs_rebuild && refresh_due {
+            let started = loading.then(std::time::Instant::now);
+            app.rebuild();
+            if let Some(started) = started {
+                refresh_cost += started.elapsed();
+            }
+            dirty = true;
         }
 
-        if event::poll(Duration::from_millis(200))? {
+        let timeout = if backlog {
+            0
+        } else if app.needs_rebuild {
+            50
+        } else {
+            200
+        };
+        let mut input_changed = false;
+        if event::poll(Duration::from_millis(timeout))? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     if app.handle_key(key) {
@@ -640,13 +780,20 @@ fn run_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App, rx: mpsc::Re
                         app.ui.flash = editor::suspend(terminal)?;
                     }
                     dirty = true;
+                    input_changed = true;
                 }
-                Event::Resize(_, _) => dirty = true,
+                Event::Resize(_, _) => {
+                    dirty = true;
+                    input_changed = true;
+                }
                 _ => {}
             }
         }
 
         if !dirty && app.view.col_for(chrono::Utc::now()) == drawn_now_col {
+            continue;
+        }
+        if loading && !refresh_due && !input_changed && drawn_now_col != i64::MIN {
             continue;
         }
 
@@ -657,10 +804,18 @@ fn run_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App, rx: mpsc::Re
         app.view.clamp_to_view(app.layout.gantt_width.max(1) as usize);
         drawn_now_col = app.view.col_for(chrono::Utc::now());
 
+        let draw_started = (loading && refresh_due).then(std::time::Instant::now);
         terminal.draw(|f| {
             let app_ref = app.as_ref();
             ui::draw(f, &app_ref);
         })?;
+        if let Some(started) = draw_started {
+            refresh_cost += started.elapsed();
+            // Bound background view work to roughly one fifth of loading time.
+            // Input-driven redraws bypass this cadence.
+            refresh_delay = MIN_LOADING_REFRESH.max(refresh_cost * 4);
+            last_refresh = std::time::Instant::now();
+        }
         dirty = false;
     }
 }

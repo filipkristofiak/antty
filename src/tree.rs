@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::model::{FileEvent, Model, ParticipantId, ParticipantKind, Scope};
 
@@ -59,8 +60,8 @@ pub fn parse_files_key(key: &str) -> Option<(usize, &str)> {
 // generic path trie -> forest
 // ---------------------------------------------------------------------------
 
-#[derive(Default)]
-struct Trie {
+#[derive(Clone, Default)]
+pub(crate) struct Trie {
     children: BTreeMap<String, Trie>,
     is_dir: bool,
     deleted: bool,
@@ -100,6 +101,15 @@ impl Trie {
             child.present.insert(pos, root);
         }
         child.mark_present(rest, root);
+    }
+
+    fn mark_unpresent_deleted(&mut self) {
+        for child in self.children.values_mut() {
+            if !effective_is_dir(child) && !child.events.is_empty() && child.present.is_empty() {
+                child.deleted = true;
+            }
+            child.mark_unpresent_deleted();
+        }
     }
 
     /// Neotree-style path compaction: while a dir has exactly one child and that child is
@@ -187,6 +197,19 @@ fn path_components(p: &Path) -> Vec<String> {
         .collect()
 }
 
+pub(crate) fn merged_disk_trie(listings: &[Option<Arc<crate::disk::Listing>>]) -> Trie {
+    let mut trie = Trie::default();
+    for (root, listing) in listings.iter().enumerate() {
+        let Some(listing) = listing else { continue };
+        for (rel, &is_dir) in listing.iter() {
+            let segs = path_components(rel);
+            trie.insert(&segs, is_dir, false, None);
+            trie.mark_present(&segs, root);
+        }
+    }
+    trie
+}
+
 /// Segments for an absolute path outside the project: `["~", rest…]` under `$HOME`, else
 /// `["/<first component>", rest…]`.
 fn external_style_segments(rel: &Path) -> Vec<String> {
@@ -245,33 +268,24 @@ fn segments(model: &Model, e: &FileEvent) -> Vec<String> {
 }
 
 impl Tree {
-    /// FILES = a gitignore-respecting disk walk plus every `Scope::Project` event (historical/
+    /// FILES = cached gitignore-respecting listings plus every `Scope::Project` event (historical/
     /// deleted/gitignored files still appear); not path-compacted. Multiple roots use either
     /// one merged trie or one checkout wrapper per root. MOUNTS = `External`/`Remote` events,
     /// path-compacted. WEB = `WebSearch`/`WebFetch` events, not compacted. One forest per session
     /// index touched by a `Scope::Session` event, path-compacted, rendered at depth 1 (nested
-    /// under that session's row). Only FILES does disk I/O.
+    /// under that session's row). Only unlisted event paths need memoized disk existence checks.
     pub fn build(model: &Model, view: FilesView) -> Tree {
         let merged = model.roots.len() > 1 && view == FilesView::Merged;
         let mut files_tries: Vec<Trie> =
             (0..if merged { 1 } else { model.roots.len() }).map(|_| Trie::default()).collect();
 
-        for (i, root) in model.roots.iter().enumerate() {
-            for entry in crate::snapshot::project_walker(&root.path, model.nested_roots(i)).flatten() {
-                let path = entry.path();
-                if path == root.path {
-                    continue;
-                }
-                let Ok(rel) = path.strip_prefix(&root.path) else { continue };
-                if rel.as_os_str().is_empty() {
-                    continue;
-                }
-                let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-                let segs = path_components(rel);
-                let trie = &mut files_tries[if merged { 0 } else { i }];
-                trie.insert(&segs, is_dir, false, None);
-                if merged {
-                    trie.mark_present(&segs, i);
+        if merged {
+            files_tries[0] = model.disk.merged.clone().unwrap_or_default();
+        } else {
+            for (i, listing) in model.disk.listings.iter().enumerate() {
+                let Some(listing) = listing else { continue };
+                for (rel, &is_dir) in listing.iter() {
+                    files_tries[i].insert(&path_components(rel), is_dir, false, None);
                 }
             }
         }
@@ -280,27 +294,24 @@ impl Tree {
         let mut mcp_trie = Trie::default();
         let mut session_tries: HashMap<usize, Trie> = HashMap::new();
 
-        let mut presence: HashMap<&Path, Vec<usize>> = HashMap::new();
+        let mut presence: HashMap<(usize, &Path), bool> = HashMap::new();
         for (i, e) in model.events.iter().enumerate() {
             match e.scope {
                 Scope::Project(root) => {
+                    let listed = model.disk.listed(root, &e.rel);
+                    let exists = listed == Some(false)
+                        && *presence
+                            .entry((root, &e.rel))
+                            .or_insert_with(|| model.roots[root].path.join(&e.rel).exists());
+                    let segs = path_components(&e.rel);
                     if merged {
-                        let present = presence.entry(&e.rel).or_insert_with(|| {
-                            model
-                                .roots
-                                .iter()
-                                .enumerate()
-                                .filter_map(|(r, root)| root.path.join(&e.rel).exists().then_some(r))
-                                .collect()
-                        });
-                        let segs = path_components(&e.rel);
-                        files_tries[0].insert(&segs, false, present.is_empty(), Some(i));
-                        for &r in present.iter() {
-                            files_tries[0].mark_present(&segs, r);
+                        files_tries[0].insert(&segs, false, false, Some(i));
+                        if exists {
+                            files_tries[0].mark_present(&segs, root);
                         }
                     } else {
-                        let deleted = !model.roots[root].path.join(&e.rel).exists();
-                        files_tries[root].insert(&path_components(&e.rel), false, deleted, Some(i));
+                        let deleted = listed == Some(false) && !exists;
+                        files_tries[root].insert(&segs, false, deleted, Some(i));
                     }
                 }
                 Scope::External | Scope::Remote => {
@@ -316,6 +327,9 @@ impl Tree {
                     session_tries.entry(s).or_default().insert(&segments(model, e), false, false, Some(i));
                 }
             }
+        }
+        if merged && model.disk.merged.is_some() {
+            files_tries[0].mark_unpresent_deleted();
         }
         mounts_trie.compact();
         for t in session_tries.values_mut() {
@@ -726,7 +740,55 @@ mod tests {
             main: who,
         });
         model.participants[who.0].session = Some(idx);
+        crate::disk::list_now(&mut model);
         (model, who)
+    }
+
+    #[test]
+    fn unavailable_listings_do_not_mark_history_deleted() {
+        let a = temp_root("unlisted-a").canonicalize().unwrap();
+        let b = temp_root("unlisted-b").canonicalize().unwrap();
+        let mut model = Model::new(vec![a.clone(), b.clone()]);
+        push_event(&mut model, Model::YOU, PathBuf::from("gone.rs"), Scope::Project(0));
+        for view in [FilesView::Merged, FilesView::Separate] {
+            let tree = Tree::build(&model, view);
+            let key = if view == FilesView::Merged { "f*:gone.rs" } else { "f0:gone.rs" };
+            assert!(!tree.nodes[tree.find_by_key(key).unwrap()].deleted);
+        }
+        crate::disk::list_now(&mut model);
+        for view in [FilesView::Merged, FilesView::Separate] {
+            let tree = Tree::build(&model, view);
+            let key = if view == FilesView::Merged { "f*:gone.rs" } else { "f0:gone.rs" };
+            assert!(tree.nodes[tree.find_by_key(key).unwrap()].deleted);
+        }
+        fs::remove_dir_all(a).unwrap();
+        fs::remove_dir_all(b).unwrap();
+    }
+
+    #[test]
+    fn ignored_event_paths_only_stat_their_own_checkout() {
+        let a = temp_root("ignored-a").canonicalize().unwrap();
+        let b = temp_root("ignored-b").canonicalize().unwrap();
+        for root in [&a, &b] {
+            fs::write(root.join(".ignore"), "ignored.rs\n").unwrap();
+            fs::write(root.join("ignored.rs"), "").unwrap();
+        }
+        let mut model = Model::new(vec![a.clone(), b.clone()]);
+        crate::disk::list_now(&mut model);
+        assert_eq!(model.disk.listed(0, Path::new("ignored.rs")), Some(false));
+        push_event(&mut model, Model::YOU, PathBuf::from("ignored.rs"), Scope::Project(0));
+        let tree = Tree::build(&model, FilesView::Merged);
+        let file = &tree.nodes[tree.find_by_key("f*:ignored.rs").unwrap()];
+        assert_eq!(file.present_in, vec![0]);
+        assert!(!file.deleted);
+
+        fs::remove_file(a.join("ignored.rs")).unwrap();
+        let tree = Tree::build(&model, FilesView::Merged);
+        let file = &tree.nodes[tree.find_by_key("f*:ignored.rs").unwrap()];
+        assert!(file.present_in.is_empty());
+        assert!(file.deleted);
+        fs::remove_dir_all(a).unwrap();
+        fs::remove_dir_all(b).unwrap();
     }
 
     #[test]
@@ -817,6 +879,7 @@ mod tests {
         let mut model = Model::new(vec![a, b]);
         push_event(&mut model, Model::YOU, PathBuf::from("src/a.rs"), Scope::Project(0));
         push_event(&mut model, Model::YOU, PathBuf::from("src/a.rs"), Scope::Project(1));
+        crate::disk::list_now(&mut model);
 
         let tree = Tree::build(&model, FilesView::Separate);
         assert_eq!(tree.files.len(), 2);
@@ -846,6 +909,7 @@ mod tests {
         push_event(&mut model, Model::YOU, PathBuf::from("src/a.rs"), Scope::Project(0));
         push_event(&mut model, Model::YOU, PathBuf::from("src/a.rs"), Scope::Project(1));
         push_event(&mut model, Model::YOU, PathBuf::from("gone.rs"), Scope::Project(0));
+        crate::disk::list_now(&mut model);
 
         let merged = Tree::build(&model, FilesView::Merged);
         let shared = &merged.nodes[merged.find_by_key("f*:src/a.rs").unwrap()];
@@ -874,7 +938,8 @@ mod tests {
         let inner = outer.join("nested");
         fs::create_dir_all(inner.join("src")).unwrap();
         fs::write(inner.join("src/a.rs"), "inner").unwrap();
-        let model = Model::new(vec![outer, inner.canonicalize().unwrap()]);
+        let mut model = Model::new(vec![outer, inner.canonicalize().unwrap()]);
+        crate::disk::list_now(&mut model);
 
         let tree = Tree::build(&model, FilesView::Separate);
         assert_eq!(tree.files.len(), 2);

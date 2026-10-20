@@ -1,12 +1,13 @@
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 pub type Ts = chrono::DateTime<chrono::Utc>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ParticipantId(pub usize);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ParticipantKind {
     You,
     Main,
@@ -14,7 +15,7 @@ pub enum ParticipantKind {
     Advisor,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Participant {
     pub kind: ParticipantKind,
     pub label: String,
@@ -28,7 +29,7 @@ pub struct Participant {
     pub file: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub file: PathBuf,
     pub id: String,
@@ -45,13 +46,13 @@ pub struct Session {
     pub main: ParticipantId,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TouchKind {
     Read,
     Write,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TouchSource {
     Tool(String),
     /// Watcher change attributed to a tool-call window.
@@ -61,14 +62,14 @@ pub enum TouchSource {
     Watcher,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FsChange {
     Created,
     Modified,
     Removed,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum EventDetail {
     None,
     Diff(String),
@@ -80,7 +81,7 @@ pub enum EventDetail {
 }
 
 /// Which tree section a touched target belongs to, and how `FileEvent.rel` is to be read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Scope {
     /// `rel` is relative to `Model.roots[.0]` (FILES).
     Project(usize),
@@ -100,7 +101,7 @@ pub enum Scope {
     Mcp,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileEvent {
     pub who: ParticipantId,
     pub rel: PathBuf,
@@ -114,20 +115,20 @@ pub struct FileEvent {
     pub detail: EventDetail,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Span {
     pub who: ParticipantId,
     pub start: Ts,
     pub end: Ts,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Prompt {
     pub at: Ts,
     pub session: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Call {
     /// Display label: bash, eval, an omp device name, or mcp:<server>/<tool>.
     pub tool: String,
@@ -135,7 +136,7 @@ pub struct Call {
     pub input: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolWindow {
     pub who: ParticipantId,
     pub tool_call_id: String,
@@ -145,13 +146,14 @@ pub struct ToolWindow {
 
 /// A tool call seen via `tool_execution_start` or an assistant `toolCall` block,
 /// awaiting its matching `toolResult`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pending {
     pub tool: String,
     pub args: serde_json::Value,
     pub start: Ts,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct ProjectRoot {
     pub path: PathBuf,
     /// Non-canonical spellings seen in session headers.
@@ -173,19 +175,24 @@ pub fn project_rel(roots: &[ProjectRoot], abs: &Path) -> Option<(usize, PathBuf)
         .map(|(i, _, rel)| (i, rel))
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Model {
     /// Canonical checkout paths, with the selected --project at index zero.
     pub roots: Vec<ProjectRoot>,
+    #[serde(skip)]
+    pub disk: crate::disk::DiskSnapshot,
     pub participants: Vec<Participant>,
     pub sessions: Vec<Session>,
     pub events: Vec<FileEvent>,
     pub spans: Vec<Span>,
     pub prompts: Vec<Prompt>,
     pub tool_windows: Vec<ToolWindow>,
+    pub window_keys: HashSet<(usize, String)>,
     /// Tool calls keyed by participant index + call id; never cleared on reset,
     /// so retained watcher events keep their command.
     pub calls: HashMap<(usize, String), Call>,
     /// empty = all sessions visible
+    #[serde(skip)]
     pub session_filter: HashSet<usize>,
 
     /// glue: resolve a jsonl file path to its participant.
@@ -238,12 +245,14 @@ impl Model {
         };
         Model {
             roots: project_roots,
+            disk: crate::disk::DiskSnapshot::default(),
             participants: vec![you],
             sessions: Vec::new(),
             events: Vec::new(),
             spans: Vec::new(),
             prompts: Vec::new(),
             tool_windows: Vec::new(),
+            window_keys: HashSet::new(),
             calls: HashMap::new(),
             session_filter: HashSet::new(),
             file_participant: HashMap::new(),
@@ -262,7 +271,7 @@ impl Model {
     }
 
     pub fn open_window(&mut self, who: ParticipantId, id: &str, tool: String, start: Ts, input: String) {
-        if !self.tool_windows.iter().any(|w| w.who == who && w.tool_call_id == id) {
+        if self.window_keys.insert((who.0, id.to_owned())) {
             self.tool_windows.push(ToolWindow { who, tool_call_id: id.to_owned(), start, end: None });
         }
         self.record_call(who, id, tool, input);
@@ -383,6 +392,7 @@ impl Model {
         self.events.retain(|e| !(e.who == who && matches!(e.source, TouchSource::Tool(_) | TouchSource::Inferred)));
         self.spans.retain(|s| s.who != who);
         self.tool_windows.retain(|w| w.who != who);
+        self.window_keys.retain(|(w, _)| *w != who.0);
         self.raw_intervals.remove(&who.0);
         self.last_entry_ts.remove(&who.0);
         let p = &self.participants[who.0];

@@ -6,28 +6,32 @@ How antty is put together, for people changing it. Per-module mechanics
 
 ## Threads
 
-Two background producers send `Msg`s over one `mpsc` channel:
+Background producers share one bounded `sync_channel(256)`:
 
 | Producer | Sends |
 | --- | --- |
-| tailer thread (`sessions::spawn_tailer`), polls every harness's session files (omp, Claude Code) every 1s | `Msg::Lines` (tagged with its `Harness` and project dir), `Msg::Reset`, one `Msg::Tick` per poll |
-| `notify`'s watcher thread, via the `watch::handle_event` callback | `Msg::Fs` |
+| Session coordinator and parallel parser workers (`sessions::spawn_tailer`) | `Records`, `Reset`, `Progress`, `Cached`, `Loaded`, `Notice`, one `Tick` per poll |
+| Filesystem watcher threads | `Fs`, `WatchError` |
+| Checkout lister (`disk::spawn_lister`) | `Disk`, project-only `Seed` |
+| Index writer | `Notice` on write failure |
 
-The main thread is the only consumer and the only code that touches
-`Model`, so `Model` is a plain struct with no locks. `run_loop` (`main.rs`)
-drains the channel, waits up to 200ms for a key, then redraws.
+The main thread owns the live `Model`; cache loading constructs a replacement off-thread.
+`run_loop` drains messages for at most 30ms before checking input. During loading,
+background rebuilds and redraws wait at least 250ms, or four times the previous
+rebuild-and-draw cost, whichever is larger. This leaves most UI-thread time for
+ingestion as the model grows. Key and resize redraws bypass that delay; completion
+refreshes immediately. Input waits are 0ms with backlog, 50ms with a pending rebuild,
+or 200ms otherwise.
 
 ## Data flow
 
-```
-tailer thread --Lines/Reset/Tick--> mpsc --> main thread (App::handle_message)
-notify thread --Fs----------------> mpsc
-  Lines --> parse::ingest ----------> Model
-  Reset --> clear_participant_data -> Model
-  Fs    --> Attributor::push (queued)
-  Tick  --> Attributor::classify_and_apply --> Model, state log
-Model --> Tree::build --> build_rows --> ui::draw
-```
+`Records` are ingested through `sessions::apply_records`; `Reset` clears a
+participant's transcript-derived state. `Cached` replaces log-derived model state
+while retaining the current disk snapshot and session roots. `Disk` replaces cached
+checkout listings. `Fs` queues attribution; `Tick` classifies it only after initial
+loading finishes. `Loaded` saves the log-derived index, applies pending content seeds,
+then replays watcher history and fits the timeline. Changed model data requests a
+batched `Tree::build` / `build_rows` refresh before `ui::draw`.
 
 Two paths write `FileEvent`s into `Model`:
 
@@ -73,11 +77,17 @@ input, followed by a truncation marker when needed. Old records without tool/inp
 remain readable as bash windows. Replay only restores a missing call, so a loaded
 transcript's complete input wins over the persisted copy.
 
-At startup `attrib::replay` reads the log back. It must run after
-`sessions::load_initial` for every harness, which registers the participants the logged
-lines refer to. Lines that fail to parse or resolve are skipped silently,
-so getting this order wrong loses history with no error. If the file
-can't be read at all, the status bar shows an error.
+At startup `attrib::replay` runs after `Loaded`, once participants from every
+harness have been registered. Lines that fail to parse or resolve are skipped
+silently; unreadable logs surface a status error. Append handles are opened per
+write rather than retained per checkout, avoiding descriptor exhaustion.
+
+The separate binary index in `<state-dir>/index/` contains only log-derived state,
+before watcher replay and disk seeds. It records complete-line offsets and the
+preceding 256 bytes for every tailed file. Matching tails permit append-only resume;
+version, harness-root or idle-gap changes invalidate it. Worktree reordering and
+non-overlapping additions remap project scopes and snapshots; removals or overlapping
+additions force a cold load. Index writes use a temporary file and atomic rename.
 
 ## Rebuilding the view
 

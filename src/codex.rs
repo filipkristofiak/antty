@@ -78,30 +78,31 @@ fn rollout_meta(path: &Path) -> Option<RolloutMeta> {
     meta
 }
 
-/// Cached metadata is immutable after the first complete header. Avoid cloning its large
-/// path/labels when polling every historical rollout for a project match.
-fn rollout_matches(path: &Path, project_root: &Path) -> bool {
+/// Cached metadata is immutable after the first complete header. Clone only its cwd
+/// when indexing historical rollouts, not its other paths and labels.
+fn rollout_cwd(path: &Path) -> Option<PathBuf> {
     if let Some(meta) = METAS.lock().unwrap_or_else(PoisonError::into_inner).get(path) {
-        return meta.as_ref().is_some_and(|m| m.cwd == project_root);
+        return meta.as_ref().map(|m| m.cwd.clone());
     }
-    rollout_meta(path).is_some_and(|m| m.cwd == project_root)
+    rollout_meta(path).map(|m| m.cwd)
 }
 
-/// Codex has no project directories: filter rollouts by exact launch cwd and sort so parents
-/// precede their spawned subagents.
-pub fn scan_files(root: &Path, project_root: &Path) -> Vec<PathBuf> {
-    let mut files: Vec<_> = scan_jsonl_files(root)
-        .into_iter()
-        .filter(|p| p.file_name().is_some_and(|name| name.to_string_lossy().starts_with("rollout-")))
-        .filter(|p| rollout_matches(p, project_root))
-        .collect();
-    files.sort();
-    files
-}
-
-/// The sessions root itself is the "project dir"; scanning filters rollouts per project.
-pub fn discover_project_dir(root: &Path, project_root: &Path) -> Option<PathBuf> {
-    (!scan_files(root, project_root).is_empty()).then(|| root.to_path_buf())
+/// Codex has no project directories: group rollouts by exact launch cwd and sort so
+/// parents precede their spawned subagents.
+pub fn rollouts_by_cwd(root: &Path) -> HashMap<PathBuf, Vec<PathBuf>> {
+    let mut rollouts: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+    for path in scan_jsonl_files(root) {
+        if !path.file_name().is_some_and(|name| name.to_string_lossy().starts_with("rollout-")) {
+            continue;
+        }
+        if let Some(cwd) = rollout_cwd(&path) {
+            rollouts.entry(cwd).or_default().push(path);
+        }
+    }
+    for files in rollouts.values_mut() {
+        files.sort();
+    }
+    rollouts
 }
 
 fn thread_name(project_dir: &Path, id: &str) -> Option<String> {
@@ -1108,7 +1109,7 @@ mod tests {
             fs::write(file, records.iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n").unwrap();
         }
         let mut model = Model::new(vec![project.clone()]);
-        crate::sessions::load_initial(
+        crate::sessions::load_blocking(
             &mut model,
             crate::sessions::Harness::Codex,
             &base.join("codex/sessions"),
@@ -1167,10 +1168,9 @@ mod tests {
         let index = base.join("codex/session_index.jsonl");
         fs::write(&index, "{\"id\":\"p1\",\"thread_name\":\"First\"}\n{\"id\":\"p1\",\"thread_name\":\"Renamed\"}\n")
             .unwrap();
-        assert_eq!(discover_project_dir(&sessions, &project), Some(sessions.clone()));
-        assert_eq!(scan_files(&sessions, &project), vec![main.clone(), child.clone()]);
+        assert_eq!(rollouts_by_cwd(&sessions)[&project], vec![main.clone(), child.clone()]);
         File::options().append(true).open(&partial).unwrap().write_all(b"\n").unwrap();
-        assert_eq!(scan_files(&sessions, &project), vec![main.clone(), child.clone(), partial]);
+        assert_eq!(rollouts_by_cwd(&sessions)[&project], vec![main.clone(), child.clone(), partial]);
         let mut model = Model::new(vec![project]);
         let p = ensure_participant(&mut model, &main, &sessions);
         let k = ensure_participant(&mut model, &child, &sessions);

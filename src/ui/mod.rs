@@ -75,6 +75,7 @@ pub struct UiState {
     pub files_view: FilesView,
     pub watch_on: bool,
     pub status_extra: Option<String>,
+    pub loading: Option<(usize, usize)>,
     pub no_color: bool,
     /// The open `:` or `/` line; histories and last successful search live for this session.
     pub cmdline: Option<CmdLine>,
@@ -111,6 +112,7 @@ impl UiState {
             files_view: FilesView::Merged,
             watch_on,
             status_extra: None,
+            loading: None,
             no_color: false,
             cmdline: None,
             command_history: Vec::new(),

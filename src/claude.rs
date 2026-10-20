@@ -1,9 +1,11 @@
 //! Claude Code's on-disk session format: `<projects root>/<project dir>/<sessionId>.jsonl`,
 //! with subagents under `<sessionId>/subagents/agent-<id>.jsonl` (+ `agent-<id>.meta.json`).
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex, PoisonError};
 
 use serde_json::Value;
 
@@ -20,14 +22,22 @@ const FIRST_CWD_SCAN_LINES: usize = 50;
 
 const UNTITLED: &str = "(untitled)";
 
+static FIRST_CWDS: LazyLock<Mutex<HashMap<PathBuf, PathBuf>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
 /// The first `cwd` field in `path`, i.e. the directory Claude Code was launched in (later lines
 /// drift when the agent `cd`s).
 fn read_first_cwd(path: &Path) -> Option<PathBuf> {
+    let mut cache = FIRST_CWDS.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(cwd) = cache.get(path) {
+        return Some(cwd.clone());
+    }
     let f = fs::File::open(path).ok()?;
-    BufReader::new(f).lines().take(FIRST_CWD_SCAN_LINES).map_while(Result::ok).find_map(|line| {
+    let cwd = BufReader::new(f).lines().take(FIRST_CWD_SCAN_LINES).map_while(Result::ok).find_map(|line| {
         let v: Value = serde_json::from_str(&line).ok()?;
         v.get("cwd").and_then(|c| c.as_str()).map(PathBuf::from)
-    })
+    })?;
+    cache.insert(path.to_owned(), cwd.clone());
+    Some(cwd)
 }
 
 /// Top-level non-dotfile `*.jsonl` files directly inside `dir`.
@@ -36,11 +46,12 @@ fn top_level_jsonl(dir: &Path) -> Vec<PathBuf> {
     rd.flatten().map(|e| e.path()).filter(|p| p.is_file() && is_jsonl(p) && !is_dotfile(p)).collect()
 }
 
-/// Find the direct child of `root` whose most-recently-modified session file was launched in
-/// `project_root`. Matches on the logged `cwd`; Claude Code's dir-name encoding is never
-/// recomputed.
-pub fn discover_project_dir(root: &Path, project_root: &Path) -> Option<PathBuf> {
-    let rd = fs::read_dir(root).ok()?;
+/// Map each launch cwd to its first matching direct child of `root` in read-dir order.
+/// Each child's newest session with a cwd determines its checkout; Claude Code's dir-name
+/// encoding is never recomputed.
+pub fn project_dirs(root: &Path) -> HashMap<PathBuf, PathBuf> {
+    let mut dirs = HashMap::new();
+    let Ok(rd) = fs::read_dir(root) else { return dirs };
     for entry in rd.flatten() {
         let dir = entry.path();
         if !dir.is_dir() {
@@ -52,11 +63,9 @@ pub fn discover_project_dir(root: &Path, project_root: &Path) -> Option<PathBuf>
             .collect();
         files.sort_by_key(|a| std::cmp::Reverse(a.0));
         let Some(cwd) = files.iter().find_map(|(_, p)| read_first_cwd(p)) else { continue };
-        if cwd.canonicalize().unwrap_or(cwd) == project_root {
-            return Some(dir);
-        }
+        dirs.entry(cwd.canonicalize().unwrap_or(cwd)).or_insert(dir);
     }
-    None
+    dirs
 }
 
 /// Every transcript for a project dir: top-level session files plus each session's
@@ -640,7 +649,7 @@ mod tests {
         .unwrap();
         fs::write(dir_a.join("s1/tool-results/y.jsonl"), "{}\n").unwrap();
 
-        assert_eq!(discover_project_dir(&root, &project), Some(dir_a.clone()));
+        assert_eq!(project_dirs(&root).get(&project), Some(&dir_a));
         let mut scanned = scan_files(&dir_a);
         scanned.sort();
         let mut expected = vec![dir_a.join("s1.jsonl"), agent.clone()];

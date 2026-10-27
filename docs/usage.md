@@ -14,8 +14,8 @@ antty [OPTIONS]
 | `--omp-dir <OMP_DIR>` | Root directory of omp's session jsonl files (default: `~/.omp/agent/sessions`). |
 | `--claude-dir <CLAUDE_DIR>` | Claude Code projects directory holding its session jsonl files (default: `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects`). |
 | `--codex-dir <CODEX_DIR>` | Codex sessions directory holding rollout jsonl files (default: `$CODEX_HOME/sessions`, else `~/.codex/sessions`). |
-| `--state-dir <STATE_DIR>` | Directory used to persist watcher-observed filesystem changes (default: `$XDG_STATE_HOME/antty`, else `~/.local/state/antty`). |
-| `--no-watch` | Disable the live filesystem watcher. |
+| `--state-dir <STATE_DIR>` | Directory used to persist watcher-observed filesystem changes and the binary session index (default: `$XDG_STATE_HOME/antty`, else `~/.local/state/antty`). |
+| `--no-watch` | Disable the live filesystem watcher; FILES is listed once at startup. |
 | `--no-collapse-gaps` | Keep the timeline linear instead of collapsing idle stretches into `~` breaks. |
 | `--idle-gap <IDLE_GAP>` | Idle gap (seconds) used to merge raw activity intervals into spans. Default: 30. |
 
@@ -26,6 +26,13 @@ Press `w` to switch between the merged tree and separate checkout groups; use
 `--separate-worktrees` to start in separate mode. Worktrees are discovered at startup; restart
 antty after adding one. `--no-worktrees` restores the single-checkout view. Non-Git directories
 retain the single-root view.
+
+The first frame appears while sessions are indexed in the background; the status bar shows
+`indexing N/M`, and keys remain available. The binary index under `<state-dir>/index/`
+lets subsequent launches resume at complete-line log offsets. Changed settings, removed or
+overlapping new worktrees, and deleted, truncated or rewritten log tails trigger a cold load.
+Content baselines for watcher diffs are seeded only for `--project`; in other worktrees,
+the first observed change has no diff unless a tool already recorded the file's contents.
 
 ## Screen layout
 

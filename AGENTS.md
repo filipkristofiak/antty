@@ -21,7 +21,7 @@ Plain `cargo` works wherever it's already on `PATH`.
 - `src/cmdline.rs` — `:`/`/` line editing and in-memory history.
 - `src/delta.rs` — unified patch for an event and the optional `delta` invocation.
 - `src/model.rs` — core data model: participants, sessions, file events, spans, snapshots.
-- `src/sessions.rs` — `Harness` dispatch, omp's `discover_omp_project_dir` (header-`cwd` matching), initial load + live tailer over every harness.
+- `src/sessions.rs` — shared harness discovery indexes, parallel initial parsing and live tailing with progress.
 - `src/parse.rs` — ingests omp jsonl lines into model events; path normalization and scoping.
 - `src/claude.rs` — Claude Code reader: project-dir discovery (first-`cwd` matching), transcript scan, participants, ingest.
 - `src/codex.rs` — Codex CLI reader: rollout discovery (header-`cwd` matching), title index, participants, ingest.
@@ -30,6 +30,8 @@ Plain `cargo` works wherever it's already on `PATH`.
 - `src/worktree.rs` — Git worktree discovery and common-dir resolution.
 - `src/attrib.rs` — attributes watcher events to tool-call windows; persists/replays the JSONL state log.
 - `src/snapshot.rs` — file content snapshots and unified diffs.
+- `src/disk.rs` — background checkout listings, merged disk snapshot cache and project-only content seeding.
+- `src/index.rs` — binary session index, log-tail validation and worktree-root remapping.
 - `src/timeline.rs` — zoom levels, time↔column mapping, idle-gap span merging.
 - `src/tree.rs` — builds the `PARTICIPANTS`/`FILES`/`MOUNTS`/`WEB`/`MCP` row forests.
 - `src/search.rs` — smartcase full-tree search and wrapped match stepping.

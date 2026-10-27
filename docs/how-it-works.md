@@ -3,16 +3,21 @@
 ## Session discovery
 
 Each harness (`sessions::Harness`: omp, Claude Code, Codex CLI) has its own
-root (`--omp-dir`, `--claude-dir`, `--codex-dir`). For omp and Claude Code,
-`discover_project_dir` finds the project directory by matching the logged
-launch `cwd` (omp's header, Claude Code's first `cwd`) to the project root;
-neither harness's directory-name encoding is reimplemented. Codex has no
-project directories: `codex.rs` scans dated rollout files under
-`$CODEX_HOME/sessions` (or `~/.codex/sessions`) and selects files whose
-first-line `session_meta.cwd` matches the project root. Subagents are linked
-by `parent_thread_id`; titles come from the adjacent `session_index.jsonl`.
-Session files are tailed live: `load_initial` reads selected jsonl files
-at startup, and `spawn_tailer` polls for new files and lines once per second.
+root (`--omp-dir`, `--claude-dir`, `--codex-dir`). A shared `RootIndex` maps
+canonical launch cwd to session sources in one pass per harness root, rather
+than scanning again for every worktree. omp matches header cwd; Claude Code
+matches the first cwd in the newest session. Neither directory-name encoding
+is reimplemented. Codex groups dated rollout files by first-line
+`session_meta.cwd`; subagents are linked by `parent_thread_id`, with titles
+from the adjacent `session_index.jsonl`.
+
+`spawn_tailer` discovers and parses sources on background workers, sending parsed
+records in batches of at most 2048. It reports initial indexing progress and then
+polls for new files and appended bytes every second. Incomplete final lines are
+buffered until their newline arrives. `index.rs` saves log-derived model state and
+complete-line offsets under `<state-dir>/index/`. On restart it validates the saved
+log tails and resumes from those offsets; incompatible settings or rewritten tails
+cause a cold load. Watcher history is replayed only after initial records are applied.
 
 ## Parsing tool calls into file events
 
@@ -33,10 +38,14 @@ in their own section; successful calls are read marks because their effects are 
 
 ## Filesystem watcher
 
-`watch.rs` spawns a recursive `notify` watcher on the project root. A
-`GitignoreSet` layers every `.gitignore` found in the tree — not just the
-root's — so a nested crate's own `.gitignore` (e.g. its `target/`) is honored
-even when there's no root-level `.gitignore`.
+`watch.rs` sets up a recursive `notify` watcher for each checkout on bounded
+background workers. A `GitignoreSet` layers every `.gitignore` found in the tree,
+so nested rules are honored even without a root `.gitignore`.
+
+`disk.rs` walks checkouts in parallel, excluding nested checkout roots, and caches
+their listings plus a merged FILES trie. File creation/removal requests coalesced
+relists; `--no-watch` lists only once. Tree rebuilds never walk disk, and only stat
+unlisted event paths in their own checkout. Content seeding reads only `--project`.
 
 ## Attribution of watcher changes to tool-call windows
 

@@ -23,11 +23,11 @@ pub struct RawArgs {
     #[arg(long)]
     pub codex_dir: Option<PathBuf>,
 
-    /// Directory used to persist watcher-observed filesystem changes (default: $XDG_STATE_HOME/antty, else ~/.local/state/antty).
+    /// Directory used to persist watcher-observed filesystem changes and the binary session index (default: $XDG_STATE_HOME/antty, else ~/.local/state/antty).
     #[arg(long)]
     pub state_dir: Option<PathBuf>,
 
-    /// Disable the live filesystem watcher.
+    /// Disable the live filesystem watcher; FILES is listed once at startup.
     #[arg(long)]
     pub no_watch: bool,
     /// Show only --project itself, not the other Git worktrees of its repository.

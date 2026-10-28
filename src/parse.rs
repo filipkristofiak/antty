@@ -331,6 +331,33 @@ fn omp_window_label(tool: &str, args: &Value) -> Option<String> {
     }
 }
 
+/// Leaf name for an omp `eval` cell under its session's `eval/` dir: local start time,
+/// the cell's `title` (else `i`), and an extension from `language`.
+fn eval_cell_name(args: &Value, start: Ts) -> String {
+    let ext = match args.get("language").and_then(Value::as_str) {
+        Some("py") => "py",
+        Some("js") => "js",
+        _ => "txt",
+    };
+    let label: String = ["title", "i"]
+        .into_iter()
+        .filter_map(|key| args.get(key).and_then(Value::as_str))
+        .map(str::trim)
+        .find(|label| !label.is_empty())
+        .unwrap_or("")
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' => '-',
+            c if c.is_control() => ' ',
+            c => c,
+        })
+        .take(60)
+        .collect();
+    let label = label.trim();
+    let time = start.with_timezone(&chrono::Local).format("%H:%M:%S");
+    if label.is_empty() { format!("{time}.{ext}") } else { format!("{time} {label}.{ext}") }
+}
+
 fn ingest_custom(model: &mut Model, who: ParticipantId, v: &Value) {
     match v.get("customType").and_then(|x| x.as_str()).unwrap_or("") {
         "tool_execution_start" => {
@@ -504,6 +531,24 @@ fn ingest_tool_result(model: &mut Model, who: ParticipantId, v: &Value, msg: &Va
         && let Some(script) = pending.args.get("command").and_then(Value::as_str)
     {
         crate::remote::push_inferred(model, who, &tool_call_id, script, pending.start, end_ts);
+    }
+    if pending.tool == "eval"
+        && let Some(s) = model.participants[who.0].session
+        && let Some(code) = pending.args.get("code").and_then(Value::as_str)
+    {
+        let rel =
+            model.sessions[s].file.with_extension("").join("eval").join(eval_cell_name(&pending.args, pending.start));
+        model.events.push(FileEvent {
+            who,
+            rel,
+            scope: Scope::Session(s),
+            kind: TouchKind::Write,
+            source: TouchSource::Tool("eval".to_string()),
+            start: pending.start,
+            end: end_ts,
+            tool_call_id: Some(tool_call_id.clone()),
+            detail: EventDetail::Written { content: code.to_owned() },
+        });
     }
 
     if msg.get("isError").and_then(|x| x.as_bool()).unwrap_or(false) {
@@ -1177,6 +1222,13 @@ mod tests {
                     assert_eq!(event.tool_call_id.as_deref(), Some("t1"));
                     assert_eq!(event.start, parse_ts_iso("2026-01-01T00:00:02.000Z").unwrap());
                     assert_eq!(event.end, parse_ts_iso("2026-01-01T00:00:03.000Z").unwrap());
+                } else if tool == "eval" {
+                    assert_eq!(model.events.len(), 1);
+                    assert_eq!(model.events[0].scope, Scope::Session(0));
+                    match &model.events[0].detail {
+                        EventDetail::Written { content } => assert_eq!(content, expected),
+                        other => panic!("expected Written, got {other:?}"),
+                    }
                 } else {
                     assert!(model.events.is_empty());
                 }
@@ -1493,6 +1545,52 @@ mod tests {
         assert_eq!(model.events[0].rel, Path::new("/tmp/probe.py"));
         assert_eq!(model.events[1].scope, Scope::External);
         assert_eq!(model.events[1].rel, Path::new("/opt/elsewhere/a.txt"));
+    }
+
+    #[test]
+    fn eval_cells_become_session_rows_including_failed_ones() {
+        let (mut model, who) = model_with_main(root());
+        let start = "2026-01-01T00:00:00.000Z";
+        for (id, args, is_error) in [
+            ("e1", serde_json::json!({"language":"py","code":"print(1)\n","title":"Tally a/b"}), false),
+            ("e2", serde_json::json!({"language":"js","code":"1+1","i":"Probe"}), true),
+            ("e3", serde_json::json!({"language":"py","title":"no code"}), false),
+        ] {
+            ingest(
+                &mut model,
+                who,
+                &serde_json::json!({
+                    "type":"custom","customType":"tool_execution_start",
+                    "data":{"toolCallId":id,"toolName":"eval","startedAt":start,"args":args}
+                }),
+                30,
+            );
+            ingest(
+                &mut model,
+                who,
+                &serde_json::json!({
+                    "type":"message",
+                    "message":{
+                        "role":"toolResult","toolCallId":id,"toolName":"eval",
+                        "details":{},"isError":is_error,"timestamp":1767225605000i64
+                    }
+                }),
+                30,
+            );
+        }
+
+        assert_eq!(model.events.len(), 2);
+        for event in &model.events {
+            assert_eq!(event.scope, Scope::Session(0));
+            assert_eq!(event.source, TouchSource::Tool("eval".to_string()));
+        }
+        let time = parse_ts_iso(start).unwrap().with_timezone(&chrono::Local).format("%H:%M:%S");
+        assert_eq!(model.events[0].rel, root().join("session/eval").join(format!("{time} Tally a-b.py")));
+        match &model.events[0].detail {
+            EventDetail::Written { content } => assert_eq!(content, "print(1)\n"),
+            other => panic!("expected Written, got {other:?}"),
+        }
+        assert_eq!(model.events[1].rel, root().join("session/eval").join(format!("{time} Probe.js")));
     }
 
     #[test]

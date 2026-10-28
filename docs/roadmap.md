@@ -78,6 +78,14 @@ inside a shell window. Most of the "how" lives in what the agent ran.
   Detail.
 - [x] Inferred remote targets in MOUNTS from ssh/scp/rsync/docker exec/kubectl
   exec shell commands, labelled "inferred".
+- [x] omp `eval` cells as session rows (`eval/HH:MM:SS <title>.<py|js|txt>`),
+  with their code in Detail, full-screen Diff and delta.
+- [ ] Interpreter heredocs as session rows (low priority): bodies of
+  `python3 - <<'EOF'`-style bash commands, named from the call's `i` and start
+  time, with the extension from the interpreter. Covers omp and Claude Code Bash.
+  Measured at 80 heredocs against 2996 eval cells (Aug–Oct 2026), falling from 39%
+  to 2% of eval volume. Promote if that share stops falling. `-c`/`-e` one-liners
+  and `cat > file <<EOF` stay out: mostly pipe filters, and 3 cases respectively.
 - [ ] Inferred web fetches: URLs from `curl`/`wget`/`gh api`/HTTP clients in
   shell commands, shown in WEB as inferred.
 - [ ] Exploration marks: grep/glob/find/ls (and Codex `parsed_cmd`

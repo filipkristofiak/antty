@@ -16,6 +16,7 @@ pub fn event_kind_label(e: &FileEvent) -> &str {
         TouchSource::Tool(t) if t == "web_search" => "search",
         TouchSource::Tool(t) if t == "read" => "read",
         TouchSource::Tool(t) if t == "mcp" => "mcp",
+        TouchSource::Tool(t) if t == "eval" => "eval",
         TouchSource::Tool(_) => "write",
         TouchSource::Window(t) => t.as_str(),
         TouchSource::Inferred => "inferred",
@@ -44,6 +45,9 @@ pub fn display_target(model: &Model, e: &FileEvent) -> String {
         Scope::Session(_) => match model.session_dir_split(&e.rel) {
             Some((_, rest)) if rest.starts_with("local") => {
                 format!("local://{}", rest.strip_prefix("local").unwrap().display())
+            }
+            Some((_, rest)) if rest.starts_with("eval") => {
+                format!("eval: {}", rest.strip_prefix("eval").unwrap().display())
             }
             _ => tilde_display(&e.rel),
         },
@@ -187,6 +191,10 @@ pub fn detail_lines(app: &AppRef, item: &DetailItem) -> Vec<Line<'static>> {
             }
             match &e.detail {
                 EventDetail::Diff(d) => lines.extend(diff_lines(d)),
+                EventDetail::Written { content } if matches!(&e.source, TouchSource::Tool(t) if t == "eval") => {
+                    lines.push(Line::from(format!("eval cell, {} bytes", content.len())));
+                    lines.extend(diff_lines(&crate::snapshot::unified("", content)));
+                }
                 EventDetail::Written { content } => {
                     lines.push(Line::from(format!("wrote {} bytes", content.len())));
                     match app.model.snapshot_before_with_ts(e.scope, &e.rel, e.start) {

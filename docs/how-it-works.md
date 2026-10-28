@@ -36,6 +36,17 @@ without a mode accept either record shape. Shell, file-mutating device and MCP c
 delimit windows used for watcher attribution. MCP calls appear under server → tool
 in their own section; successful calls are read marks because their effects are unknown.
 
+omp `eval` cells with string code appear beneath their session row as
+`eval/HH:MM:SS <title>.<py|js|txt>`, using local start time and falling back to
+the call's `i` label when the title is blank. Labels replace path separators and
+control characters and are limited to 60 characters; unknown languages use `.txt`.
+Failed cells are included, and subagent cells belong to their parent session.
+Cells sharing the same second, label and extension share a row with separate events.
+Their code is retained as written content without a disk file or content snapshot:
+Detail, full-screen Diff and `D`/delta show the full cell as additions, while `e`
+reports `not a local file`. Existing sessions gain these rows when a version change
+invalidates the binary index and triggers a cold parse.
+
 ## Filesystem watcher
 
 `watch.rs` sets up a recursive `notify` watcher for each checkout on bounded

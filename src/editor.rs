@@ -1,13 +1,14 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use crate::model::{EventDetail, FileEvent, Model, Scope};
+use crate::model::{EventDetail, FileEvent, Model, Scope, TouchSource};
 use crate::snapshot;
 
-/// On-disk path of an event's target; None for remote/web targets.
+/// On-disk path of an event's target; None for remote/web targets and eval cells.
 pub fn event_path(model: &Model, e: &FileEvent) -> Option<PathBuf> {
     match e.scope {
         Scope::Project(i) => Some(model.roots[i].path.join(&e.rel)),
+        Scope::Session(_) if matches!(&e.source, TouchSource::Tool(t) if t == "eval") => None,
         Scope::External | Scope::Session(_) => Some(e.rel.clone()),
         Scope::Remote | Scope::WebSearch | Scope::WebFetch | Scope::Mcp => None,
     }
@@ -187,6 +188,27 @@ pub fn suspend(_terminal: &mut ratatui::DefaultTerminal) -> std::io::Result<Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn eval_cells_have_no_editor_path_but_session_writes_do() {
+        use crate::model::{ParticipantId, TouchKind, TouchSource};
+
+        let model = Model::new(vec![PathBuf::from("/project")]);
+        let mut event = FileEvent {
+            who: ParticipantId(0),
+            rel: PathBuf::from("/sessions/session/eval/12:34:56 Probe.py"),
+            scope: Scope::Session(0),
+            kind: TouchKind::Write,
+            source: TouchSource::Tool("eval".to_string()),
+            start: chrono::Utc::now(),
+            end: chrono::Utc::now(),
+            tool_call_id: None,
+            detail: EventDetail::Written { content: "print(1)\n".to_string() },
+        };
+        assert_eq!(event_path(&model, &event), None);
+        event.source = TouchSource::Tool("write".to_string());
+        assert_eq!(event_path(&model, &event), Some(event.rel.clone()));
+    }
 
     #[test]
     fn parses_first_changed_line() {

@@ -654,15 +654,7 @@ pub fn build_rows(model: &Model, tree: &Tree, state: &ExpandState) -> Vec<Row> {
     rows.push(Row::Section("participants"));
     rows.push(Row::Participant(Model::YOU, 0));
 
-    // Display order only: session indices are keys elsewhere, so `model.sessions` stays in
-    // discovery order. `last_seen` covers every participant of the session; ties fall back to
-    // the newer start, then the transcript path, so the order is the same on every run.
-    let mut order: Vec<usize> = (0..model.sessions.len()).filter(|&s| model.session_visible(s)).collect();
-    order.sort_by(|&a, &b| {
-        let (a, b) = (&model.sessions[a], &model.sessions[b]);
-        b.last_seen.cmp(&a.last_seen).then(b.start.cmp(&a.start)).then_with(|| a.file.cmp(&b.file))
-    });
-    for sidx in order {
+    for sidx in model.sessions_by_latest_activity() {
         rows.push(Row::Participant(model.sessions[sidx].main, 0));
         if state.expanded_sessions.contains(&sidx) {
             for (pidx, p) in model.participants.iter().enumerate() {

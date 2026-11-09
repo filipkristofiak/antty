@@ -364,6 +364,38 @@ impl Model {
         1 + (n % 7)
     }
 
+    /// Visible session indices in display order: most recently active first. `last_seen`
+    /// covers every participant of the session; ties fall back to the newer start, then the
+    /// transcript path, so the order is the same on every run. Display order only: session
+    /// indices are keys elsewhere, so `sessions` itself stays in discovery order.
+    pub fn sessions_by_latest_activity(&self) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..self.sessions.len()).filter(|&s| self.session_visible(s)).collect();
+        order.sort_by(|&a, &b| {
+            let (a, b) = (&self.sessions[a], &self.sessions[b]);
+            b.last_seen.cmp(&a.last_seen).then(b.start.cmp(&a.start)).then_with(|| a.file.cmp(&b.file))
+        });
+        order
+    }
+
+    /// Reassign agent colours from the display order so adjacent session rows never share a
+    /// colour: the session ranked `r` gets palette slot `1 + r % 7` (slot 0 is You), and its
+    /// subagents cycle through the other six slots. Hidden sessions keep their last colours.
+    pub fn recolor(&mut self) {
+        let rank: HashMap<usize, usize> =
+            self.sessions_by_latest_activity().into_iter().enumerate().map(|(r, s)| (s, r)).collect();
+        let mut subagents_seen: HashMap<usize, usize> = HashMap::new();
+        for (pidx, p) in self.participants.iter_mut().enumerate() {
+            let Some(&r) = p.session.and_then(|s| rank.get(&s)) else { continue };
+            if pidx == self.sessions[p.session.unwrap_or_default()].main.0 {
+                p.color_idx = 1 + r % 7;
+            } else {
+                let j = subagents_seen.entry(r).or_default();
+                p.color_idx = 1 + (r + 1 + *j % 6) % 7;
+                *j += 1;
+            }
+        }
+    }
+
     /// Register a participant for `file` if it isn't already known. Idempotent.
     pub fn get_or_create_participant(
         &mut self,
@@ -449,6 +481,50 @@ impl Model {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recolor_follows_latest_activity_order() {
+        let root = PathBuf::from("/tmp/antty-model-test-recolor");
+        let mut model = Model::new(vec![root.clone()]);
+        let t0 = chrono::Utc::now();
+        // Discovery order s0..s7; activity puts s0 first and s7 right after it. Creation-order
+        // colours gave both slot 1, so the two top rows shared a colour.
+        let activity = [80, 10, 20, 30, 40, 50, 60, 70];
+        let mut mains = Vec::new();
+        for (i, secs) in activity.into_iter().enumerate() {
+            let file = root.join(format!("s{i}.jsonl"));
+            let who = model.get_or_create_participant(&file, ParticipantKind::Main, "main".into(), None, None);
+            model.participants[who.0].session = Some(model.sessions.len());
+            model.sessions.push(Session {
+                file,
+                id: String::new(),
+                title: format!("s{i}"),
+                cwd: root.clone(),
+                start: t0,
+                last_seen: t0 + chrono::Duration::seconds(secs),
+                end: None,
+                main: who,
+            });
+            mains.push(who);
+        }
+        let sub = model.get_or_create_participant(
+            &root.join("s0/sub.jsonl"),
+            ParticipantKind::Subagent,
+            "sub".into(),
+            Some(0),
+            Some(mains[0]),
+        );
+
+        model.recolor();
+
+        let order = model.sessions_by_latest_activity();
+        assert_eq!(order, vec![0, 7, 6, 5, 4, 3, 2, 1]);
+        let colors: Vec<usize> =
+            order.iter().map(|&s| model.participants[model.sessions[s].main.0].color_idx).collect();
+        assert_eq!(colors, vec![1, 2, 3, 4, 5, 6, 7, 1]);
+        assert_ne!(model.participants[sub.0].color_idx, model.participants[mains[0].0].color_idx);
+        assert_ne!(model.participants[sub.0].color_idx, 0, "slot 0 is reserved for You");
+    }
 
     #[test]
     fn reset_clears_transcript_events_but_keeps_watcher_events_and_calls() {

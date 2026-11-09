@@ -125,6 +125,7 @@ impl App {
             Some(Row::Node(idx)) => Some(self.tree.nodes[idx].key.clone()),
             _ => None,
         };
+        self.model.recolor();
         self.tree = Tree::build(&self.model, self.ui.files_view);
         self.view.set_activity(timeline::visible_activity(&self.model));
         // A background data refresh, not a cursor movement: recompute `auto_open` from the

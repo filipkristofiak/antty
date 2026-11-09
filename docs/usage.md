@@ -38,7 +38,7 @@ the first observed change has no diff unless a tool already recorded the file's 
 
 Left pane, top to bottom:
 
-- `PARTICIPANTS` — you, plus each session (and its subagents)
+- `PARTICIPANTS` — you, plus each session (and its subagents), most recently active first
 - `FILES` — the project's file tree, merged across worktrees by default, or grouped by checkout with `w`
 - `MOUNTS` — external/remote paths touched outside the project, plus inferred ssh/scp/rsync/docker/kubectl targets
 - `WEB` — search queries and fetched URLs

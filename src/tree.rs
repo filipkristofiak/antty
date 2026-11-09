@@ -645,20 +645,25 @@ fn push_node_rows(model: &Model, tree: &Tree, state: &ExpandState, idx: usize, e
     }
 }
 
-/// Build the shared row list: participants section (you + one row per visible session, with
-/// subagent/advisor rows and the session's own touched-temp-files tree nested beneath an
-/// expanded session), then FILES (always shown), then MOUNTS/WEB (only when either has any
-/// visible event, since most projects never touch a mount or the web).
+/// Build the shared row list: participants section (you + one row per visible session, most
+/// recently active first, with subagent/advisor rows and the session's own touched-temp-files
+/// tree nested beneath an expanded session), then FILES (always shown), then MOUNTS/WEB (only
+/// when either has any visible event, since most projects never touch a mount or the web).
 pub fn build_rows(model: &Model, tree: &Tree, state: &ExpandState) -> Vec<Row> {
     let mut rows = Vec::new();
     rows.push(Row::Section("participants"));
     rows.push(Row::Participant(Model::YOU, 0));
 
-    for (sidx, session) in model.sessions.iter().enumerate() {
-        if !model.visible(session.main) {
-            continue;
-        }
-        rows.push(Row::Participant(session.main, 0));
+    // Display order only: session indices are keys elsewhere, so `model.sessions` stays in
+    // discovery order. `last_seen` covers every participant of the session; ties fall back to
+    // the newer start, then the transcript path, so the order is the same on every run.
+    let mut order: Vec<usize> = (0..model.sessions.len()).filter(|&s| model.session_visible(s)).collect();
+    order.sort_by(|&a, &b| {
+        let (a, b) = (&model.sessions[a], &model.sessions[b]);
+        b.last_seen.cmp(&a.last_seen).then(b.start.cmp(&a.start)).then_with(|| a.file.cmp(&b.file))
+    });
+    for sidx in order {
+        rows.push(Row::Participant(model.sessions[sidx].main, 0));
         if state.expanded_sessions.contains(&sidx) {
             for (pidx, p) in model.participants.iter().enumerate() {
                 if p.session == Some(sidx) && matches!(p.kind, ParticipantKind::Subagent | ParticipantKind::Advisor) {
@@ -1162,5 +1167,60 @@ mod tests {
             Some(Row::Participant(model.sessions[0].main, 0))
         );
         assert!(state.expanded_sessions.is_empty());
+    }
+
+    #[test]
+    fn participant_rows_order_sessions_by_latest_activity() {
+        let root = temp_root("latest-activity");
+        let mut model = Model::new(vec![root.clone()]);
+        let t0 = chrono::Utc::now();
+        let at = |secs| t0 + chrono::Duration::seconds(secs);
+        let mut push = |name: &str, start, last_seen| {
+            let file = root.join(format!("{name}.jsonl"));
+            let who = model.get_or_create_participant(&file, ParticipantKind::Main, "main".into(), None, None);
+            model.participants[who.0].session = Some(model.sessions.len());
+            model.sessions.push(Session {
+                file,
+                id: String::new(),
+                title: name.into(),
+                cwd: root.clone(),
+                start,
+                last_seen,
+                end: None,
+                main: who,
+            });
+            who
+        };
+        // Discovery order deliberately differs from activity order.
+        let old = push("old", at(0), at(10));
+        let newest = push("newest", at(0), at(30));
+        let never = push("never", at(40), chrono::DateTime::<chrono::Utc>::MIN_UTC);
+        let tie_older_start = push("tie-a", at(0), at(20));
+        let tie_newer_start = push("tie-b", at(5), at(20));
+        let sub = model.get_or_create_participant(
+            &root.join("newest/sub.jsonl"),
+            ParticipantKind::Subagent,
+            "sub".into(),
+            Some(1),
+            Some(newest),
+        );
+        let tree = Tree::build(&model, FilesView::Merged);
+        let mut state = ExpandState::default();
+        state.expanded_sessions.insert(1);
+
+        let participants: Vec<Row> =
+            build_rows(&model, &tree, &state).into_iter().filter(|r| matches!(r, Row::Participant(..))).collect();
+        assert_eq!(
+            participants,
+            vec![
+                Row::Participant(Model::YOU, 0),
+                Row::Participant(newest, 0),
+                Row::Participant(sub, 1),
+                Row::Participant(tie_newer_start, 0),
+                Row::Participant(tie_older_start, 0),
+                Row::Participant(old, 0),
+                Row::Participant(never, 0),
+            ]
+        );
     }
 }

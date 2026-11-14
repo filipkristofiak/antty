@@ -26,10 +26,8 @@ impl Harness {
             Harness::Codex => crate::codex::rollouts_by_cwd(root)
                 .into_iter()
                 .map(|(cwd, paths)| {
-                    let files = paths
-                        .into_iter()
-                        .map(|path| SessionFile { project_dir: root.to_path_buf(), path })
-                        .collect();
+                    let files =
+                        paths.into_iter().map(|path| SessionFile { project_dir: root.to_path_buf(), path }).collect();
                     (cwd, files)
                 })
                 .collect(),
@@ -94,10 +92,9 @@ impl RootIndex {
                 Harness::Claude => crate::claude::subagent_files(&session.path),
                 Harness::Codex => unreachable!(),
             };
-            files.extend(subagents.into_iter().map(|path| SessionFile {
-                project_dir: session.project_dir.clone(),
-                path,
-            }));
+            files.extend(
+                subagents.into_iter().map(|path| SessionFile { project_dir: session.project_dir.clone(), path }),
+            );
         }
         files
     }
@@ -512,12 +509,7 @@ mod tests {
         let half_written = "{\"type\":\"title_change\"".to_string();
         fs::write(&file, format!("{title_line}{header_line}{half_written}")).unwrap();
 
-        let mut src = TailSource {
-            harness: Harness::Omp,
-            root: sessions_root,
-            project_root,
-            states: HashMap::new(),
-        };
+        let mut src = TailSource { harness: Harness::Omp, root: sessions_root, project_root, states: HashMap::new() };
         let (tx, rx) = std::sync::mpsc::sync_channel(16);
         let files = vec![SessionFile { project_dir, path: file.clone() }];
         assert!(poll_source(&mut src, files.clone(), &tx));

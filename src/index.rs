@@ -73,11 +73,7 @@ pub fn tails(sources: &[TailSource]) -> Result<Vec<CachedTail>, String> {
                     Ok(CachedFile { path: path.clone(), offset, tail })
                 })
                 .collect::<Result<_, String>>()?;
-            Ok(CachedTail {
-                harness: src.harness,
-                project_root: src.project_root.clone(),
-                files,
-            })
+            Ok(CachedTail { harness: src.harness, project_root: src.project_root.clone(), files })
         })
         .collect()
 }

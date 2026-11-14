@@ -2,6 +2,7 @@
 name = "antty"
 version = "0.2.24"
 edition = "2024"
+default-run = "antty"
 license = "MIT OR Apache-2.0"
 
 [dependencies]

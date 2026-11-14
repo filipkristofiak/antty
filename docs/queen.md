@@ -8,7 +8,7 @@ sessions, rather than antty's single-project view.
 - Grain is project → sessions. No file breakdown; that stays in antty.
   Subagent files fold into their parent session's row.
 - A project is a session's canonical launch cwd. Cwds that are worktrees of
-  one repository (`worktree::discover`) fold into one project. Nothing walks
+  one repository (`worktree::git_common_dir`) fold into one project. Nothing walks
   up to a git toplevel: a session launched in a subdirectory is its own
   project, matching antty, which only loads sessions whose cwd equals a
   worktree root (`RootIndex::files`).
@@ -132,10 +132,10 @@ checks; the version bump happens once, when queen lands.
 
 ### Bundle A: discovery (steps 1–2)
 
-1. **Binary skeleton.** `src/bin/queen.rs` with antty's harness-root and
-   state-dir flags, resolved through `antty::dirs`.
+1. **Binary skeleton.** `src/bin/queen.rs` with antty's harness-root flags,
+   resolved through `antty::dirs` (`--state-dir` arrives with the cache in bundle C).
 2. **Project list.** `Harness::index_root` for every harness, cwds from
-   `RootIndex::cwds()`, worktree cwds folded via `worktree::discover`, missing
+   `RootIndex::cwds()`, worktree cwds folded by `worktree::git_common_dir`, missing
    or repo-less cwds kept as their own projects. Plain-text output: project,
    cwds, session counts per harness.
 

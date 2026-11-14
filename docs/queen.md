@@ -123,6 +123,58 @@ weak at catching agents blocked on the user, consider optional harness hooks
 (not model instructions) that write a small state file such as
 `<state-dir>/live/<session-id>.json`, which queen reads when present.
 
+## Build plan
+
+Queen stays local on `feat/queen` until finished: no pushes, no PRs. Library
+changes it needs land on the same branch. Rebase onto `origin/main` whenever
+it moves. Each bundle ends in a local commit that builds and passes the CI
+checks; the version bump happens once, when queen lands.
+
+### Bundle A: discovery (steps 1–2)
+
+1. **Binary skeleton.** `src/bin/queen.rs` with antty's harness-root and
+   state-dir flags, resolved through `antty::dirs`.
+2. **Project list.** `Harness::index_root` for every harness, cwds from
+   `RootIndex::cwds()`, worktree cwds folded via `worktree::discover`, missing
+   or repo-less cwds kept as their own projects. Plain-text output: project,
+   cwds, session counts per harness.
+
+Done when the printed projects and counts match the local logs, including the
+raw-cwd projects (27 of 38 omp cwds, 12 of 14 Claude Code cwds today). This
+checks the project model before any UI exists.
+
+### Bundle B: first screen (steps 3–4)
+
+3. **Startup reads.** Per top-level session: header and tail only, for start,
+   last-seen, omp's end and titles (Claude Code `(untitled)` until cached).
+   Subagent files folded into their parent row via `ensure_participant` in
+   `RootIndex::files` order.
+4. **TUI.** Project → session rows with one not-yet-indexed bar per session,
+   on `timeline` zoom and column mapping. Drill-down runs
+   `antty --project <most recently active worktree>`; no drill-down for
+   missing cwds.
+
+Done when queen opens in under a second on the local logs and drill-down
+lands in antty showing the same sessions as the row.
+
+### Bundle C: real activity (steps 5–6)
+
+5. **Activity cache.** Worker pool, highest last-seen first, ingests each file
+   into a scratch `Model` and stores per-minute buckets from `raw_intervals`
+   under `<state-dir>/queen/`, with offset and trailing-byte validation. Bars
+   switch to real activity as results arrive; progress in the status bar.
+6. **Live.** Once a second: re-run `Harness::index_root` for new sessions and
+   ingest only appended lines of grown files, keeping their scratch `Model`.
+
+Done when a cold first scan is measured (open question below), a warm start
+reuses every unchanged file, and an active session's bar grows without a
+restart.
+
+### Landing
+
+Docs (`docs/usage.md`, `AGENTS.md` module map), help keys, version bump, then
+the first public push.
+
 ## Open questions
 
 - Cold-cache first-scan cost.

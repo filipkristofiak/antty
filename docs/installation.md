@@ -3,7 +3,7 @@
 ## Prerequisites
 
 A Rust toolchain via [rustup](https://rustup.rs), 1.88 or newer (edition 2024
-plus let-chains, used in `src/cli.rs`).
+plus let-chains, used in `src/dirs.rs`).
 
 ## Install
 

@@ -1,28 +1,15 @@
-mod attrib;
-mod claude;
 mod cli;
 mod cmdline;
-mod codex;
 mod delta;
-mod disk;
 mod editor;
-mod index;
 mod keys;
-mod model;
-mod parse;
-mod remote;
 mod search;
-mod sessions;
-mod snapshot;
-mod timeline;
-mod tree;
 mod ui;
-mod watch;
-mod worktree;
 
 use std::sync::mpsc;
 use std::time::Duration;
 
+use antty::{attrib, disk, index, model, sessions, timeline, tree, watch, worktree};
 use crossterm::event::{self, Event, KeyEventKind};
 use ratatui::layout::Rect;
 

@@ -1,5 +1,5 @@
-use crate::model::Model;
-use crate::tree::{self, ExpandState, Row, Tree};
+use antty::model::Model;
+use antty::tree::{self, ExpandState, Row, Tree};
 
 pub fn is_match(label: &str, query: &str) -> bool {
     if query.is_empty() {

@@ -4,9 +4,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::App;
 use crate::cmdline::{self, CmdKind, CmdLine};
-use crate::timeline;
-use crate::tree::Row;
 use crate::ui::{self, Mode};
+use antty::timeline;
+use antty::tree::Row;
 
 /// Largest accepted Normal-mode count; further digits are ignored.
 const MAX_COUNT: usize = 9999;
@@ -352,16 +352,16 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::attrib::Attributor;
-    use crate::model::{EventDetail, FileEvent, Model, Scope, TouchKind, TouchSource};
-    use crate::timeline::View;
-    use crate::tree::{self, FilesView, Tree};
     use crate::ui::UiState;
+    use antty::attrib::Attributor;
+    use antty::model::{EventDetail, FileEvent, Model, Scope, TouchKind, TouchSource};
+    use antty::timeline::View;
+    use antty::tree::{self, FilesView, Tree};
     use ratatui::layout::Rect;
 
     fn test_app(root: &std::path::Path, state_dir: &std::path::Path) -> App {
         let mut model = Model::new(vec![root.to_path_buf()]);
-        crate::disk::list_now(&mut model);
+        antty::disk::list_now(&mut model);
         let tree = Tree::build(&model, FilesView::Merged);
         let ui = UiState::new(false);
         let rows = tree::build_rows(&model, &tree, &ui.expand);
@@ -387,8 +387,8 @@ mod tests {
             pending_seed: None,
             needs_rebuild: false,
             state_dir: state_dir.to_path_buf(),
-            index_spec: crate::index::Spec {
-                path: crate::index::path_for(state_dir, root),
+            index_spec: antty::index::Spec {
+                path: antty::index::path_for(state_dir, root),
                 harness_roots: Vec::new(),
                 idle_gap: 30,
                 roots: vec![root.to_path_buf()],
@@ -576,7 +576,7 @@ mod tests {
         std::fs::write(b.join("shared.rs"), "b").unwrap();
         let mut app = test_app(&a, &state_dir);
         app.model = Model::new(vec![a.clone(), b.clone()]);
-        crate::disk::list_now(&mut app.model);
+        antty::disk::list_now(&mut app.model);
         let now = chrono::Utc::now();
         for (root, line, end) in [(0, 42, now), (1, 7, now - chrono::Duration::seconds(1))] {
             app.model.events.push(FileEvent {
@@ -598,7 +598,7 @@ mod tests {
         assert_eq!(app.selected_file_target().unwrap(), (b.join("shared.rs"), Some(7)));
 
         std::fs::write(a.join("shared.rs"), "a").unwrap();
-        crate::disk::list_now(&mut app.model);
+        antty::disk::list_now(&mut app.model);
         app.rebuild();
         assert_eq!(app.selected_file_target().unwrap(), (a.join("shared.rs"), Some(42)));
         drop(app);

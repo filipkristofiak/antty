@@ -17,7 +17,7 @@ pub struct DiskSnapshot {
     /// Per checkout; `None` until that checkout has been walked.
     pub listings: Vec<Option<Arc<Listing>>>,
     /// Merged-view FILES disk trie, available once every checkout has been walked.
-    pub merged: Option<crate::tree::Trie>,
+    pub(crate) merged: Option<crate::tree::Trie>,
 }
 
 impl DiskSnapshot {
@@ -117,8 +117,7 @@ pub fn spawn_lister(roots: Vec<(PathBuf, Vec<PathBuf>)>, seed: bool, tx: SyncSen
     request_tx
 }
 
-/// Populate cached disk listings synchronously for tests that construct a model directly.
-#[cfg(test)]
+/// Populate cached disk listings synchronously, for callers that build a model without the background lister.
 pub fn list_now(model: &mut crate::model::Model) {
     let listings = model
         .roots

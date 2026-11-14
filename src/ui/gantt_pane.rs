@@ -6,9 +6,9 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders};
 
-use crate::model::{Model, ParticipantId, ParticipantKind, TouchKind, Ts};
-use crate::timeline::Column;
-use crate::tree::Row;
+use antty::model::{Model, ParticipantId, ParticipantKind, TouchKind, Ts};
+use antty::timeline::Column;
+use antty::tree::Row;
 
 use super::{AppRef, CURSOR_BG, HIGHLIGHT_FG, SELECTED_BG, color_for, palette_color};
 

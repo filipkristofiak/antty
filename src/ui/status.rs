@@ -34,8 +34,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
     }
     if app.model.roots.len() > 1 {
         right.push_str(match app.ui.files_view {
-            crate::tree::FilesView::Merged => " · worktrees:merged",
-            crate::tree::FilesView::Separate => " · worktrees:separate",
+            antty::tree::FilesView::Merged => " · worktrees:merged",
+            antty::tree::FilesView::Separate => " · worktrees:separate",
         });
     }
     if let Some(err) = &app.ui.status_extra {

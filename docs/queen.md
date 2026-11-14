@@ -1,0 +1,119 @@
+# queen (working name)
+
+A companion binary to antty: an overview of **all** projects with coding-agent
+sessions, rather than antty's single-project view.
+
+## Scope
+
+- Grain is project → sessions. No file breakdown; that stays in antty.
+  Subagent files fold into their parent session's row.
+- A project is a session's canonical launch cwd. Cwds that are worktrees of
+  one repository (`worktree::discover`) fold into one project. Nothing walks
+  up to a git toplevel: a session launched in a subdirectory is its own
+  project, matching antty, which only loads sessions whose cwd equals a
+  worktree root (`RootIndex::project_dir`).
+- Cwds with no git repo, or that no longer exist, are their own projects keyed
+  by the raw cwd. This is the common case, not an edge: in local logs,
+  27 of 38 omp cwds and 12 of 14 Claude Code cwds.
+- Drill-down runs `antty --project <cwd>`. For a folded worktree project, use
+  the worktree whose session was most recently active.
+
+## Packaging
+
+- Same repo, one package: extract `src/lib.rs`, keep `src/main.rs` as antty,
+  and add `src/bin/queen.rs`.
+- Extracting the lib is a separate PR that lands before any queen code.
+- The lib must be closed under `crate::` imports. Today's graph has
+  `sessions` → `claude`/`codex`/`parse`/`index`/`disk`/`watch`,
+  `model` → `disk` → `tree`, `index` → `attrib` and `watch` → `sessions`, so
+  the lib is every module except `main`, `keys`, `cli`, `cmdline`, `ui/*`,
+  `delta`, `editor` and `search`. Shrinking it needs decoupling first, which
+  is not part of the extraction PR.
+- The harness-root and state-dir defaults (`default_claude_dir`,
+  `default_codex_dir`, `default_state_dir`, the omp default) move from
+  `cli.rs` into the lib, so both binaries share them.
+- One version and the existing bump rule. Move to a Cargo workspace only if
+  release cadences or dependencies diverge.
+- Cache lives under the antty state root (e.g. `~/.local/state/antty/queen/`).
+
+## Relation to issue #13
+
+Not a prerequisite. Queen reads every session file's header itself, which
+gives a complete cwd → sessions map without `RootIndex`. #13 matters only for
+drill-down parity: until it lands, antty can miss sessions that queen lists
+when two session dirs share a cwd or one dir mixes cwds (no local
+occurrences).
+
+## Session discovery
+
+- omp: a file is a session only if physical line 2 is
+  `{"type":"session",…}`. Session dirs also hold non-session JSONL
+  artifacts (e.g. `<session>/local/*.jsonl` metrics logs).
+- Claude Code: the files from `claude::scan_files`, with cwd from the first
+  `cwd` field (`claude::read_first_cwd` rule).
+- Codex CLI: `rollout-*.jsonl` files, with cwd from the `session_meta`
+  header.
+- Compressed Codex rollouts (`*.jsonl.zst`) are skipped by antty and queen
+  alike.
+
+## Data flow
+
+1. Startup (synchronous, fast): read each session's header and seek to its
+   tail. That gives cwd, start, last-seen (the last line in the tail that has
+   a top-level `timestamp`) and, for omp, the end (a `session_exit` record).
+   Titles: omp from the line-1 title slot, Codex from `session_index.jsonl`
+   (`thread_name`), Claude Code from the cache when present, else
+   `(untitled)`, because its `custom-title`/`ai-title` records can be anywhere
+   in the file. Render one solid bar per session, marked as not yet indexed
+   (dimmed/outlined), unless the cache already has the file's buckets.
+2. Background indexing: a worker pool scans files that are missing from the
+   cache or fail validation, highest last-seen first. Each file sends its
+   result when done and its bar switches to real activity. Progress is shown
+   in the status bar (same pattern as antty's `Msg::Progress`).
+3. Live: a watcher on the harness roots only (never on the repos) triggers
+   incremental reads of files that grew.
+
+## Activity cache
+
+- Activity has the same meaning as in antty. Each file is ingested with the
+  existing harness readers (`Harness::ensure_participant` +
+  `Harness::ingest`) into a scratch `Model`, and its `raw_intervals` (before
+  `flush_dirty_spans`) are converted to per-minute buckets. A minute is active
+  if any raw interval overlaps it. The scratch `Model` is then dropped. Line
+  timestamps alone are not enough: a long tool call writes no lines between
+  its call and its result, so it would show as idle.
+- Raw intervals come from model start → `completedAt` and tool call → result
+  (omp), previous entry → assistant entry (Claude Code), and turn start → event
+  (Codex CLI).
+- Spans are merged from the buckets at draw time using the idle gap, so
+  changing the idle gap or the zoom never needs a rescan. Because the grain is
+  one minute, idle gaps under 60 s have no effect in queen.
+- Each cached file stores its buckets, title, byte offset (trimmed back to the
+  last full line) and the bytes just before that offset. On startup, a file
+  whose length still equals the offset and whose stored bytes still match is
+  reused as is. Any other file is rescanned from 0, because ingest state such
+  as open tool calls is not cached.
+- While queen runs, each file that grows keeps its scratch `Model` in memory,
+  and only the appended lines are ingested.
+- omp rewrites its padded line-1 title slot in place, so omp titles are
+  re-read from the header and never served from the cache.
+
+## Cost (measured)
+
+Local logs, warm page cache, single-threaded Python: 749 files, 560 MB, 147k
+lines. A full JSON parse of every line took 2.8 s; extracting only the
+timestamps took 0.7 s. The largest file is 27.8 MB. Cold-cache cost has not
+been measured.
+
+## Harness integration
+
+None. Antty stays a read-only observer. Only omp records a session end;
+Claude Code and Codex CLI liveness is last-activity only. If that proves too
+weak at catching agents blocked on the user, consider optional harness hooks
+(not model instructions) that write a small state file such as
+`<state-dir>/live/<session-id>.json`, which queen reads when present.
+
+## Open questions
+
+- Cold-cache first-scan cost.
+- Whether Codex `*.jsonl.zst` rollouts should be read (affects antty too).

@@ -7,7 +7,8 @@ use crate::search;
 use antty::model::ParticipantKind;
 use antty::tree::{self, Row};
 
-use super::{AppRef, HIGHLIGHT_FG, SELECTED_BG, TOUCHED_BG, color_for, truncate};
+use super::{AppRef, TOUCHED_BG, color_for};
+use antty::tui::{HIGHLIGHT_FG, SELECTED_BG, truncate};
 
 fn row_text_and_style(app: &AppRef, row: Row, touched: &[bool], folded: &[usize]) -> (String, Style) {
     let label = tree::row_label(app.model, app.tree, row);

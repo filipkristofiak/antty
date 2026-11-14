@@ -22,7 +22,7 @@ sessions, rather than antty's single-project view.
 ## Packaging
 
 - Same repo, one package: extract `src/lib.rs`, keep `src/main.rs` as antty,
-  and add `src/bin/queen.rs`.
+  and add `src/bin/queen/main.rs` with `discover.rs`, `app.rs` and `ui.rs`.
 - Extracting the lib is a separate PR that lands before any queen code.
 - The lib must be closed under `crate::` imports. Today's graph has
   `sessions` → `claude`/`codex`/`parse`/`index`/`disk`/`watch`,
@@ -33,6 +33,8 @@ sessions, rather than antty's single-project view.
 - The harness-root and state-dir defaults (`default_claude_dir`,
   `default_codex_dir`, `default_state_dir`, the omp default) move from
   `cli.rs` into the lib, so both binaries share them.
+- `antty::tui` shares highlight colours, the timeline ruler and terminal handoff
+  between both binaries.
 - One version and the existing bump rule. Move to a Cargo workspace only if
   release cadences or dependencies diverge.
 - Cache lives under the antty state root (e.g. `~/.local/state/antty/queen/`).
@@ -70,10 +72,10 @@ sessions, rather than antty's single-project view.
    That gives cwd, start, last-seen (the last line in the tail that has a
    top-level `timestamp`) and, for omp, the end (a `session_exit` record).
    Titles: omp from the line-1 title slot, Codex from `session_index.jsonl`
-   (`thread_name`), Claude Code from the cache when present, else
-   `(untitled)`, because its `custom-title`/`ai-title` records can be anywhere
-   in the file. Render one solid bar per session, marked as not yet indexed
-   (dimmed/outlined), unless the cache already has the file's buckets.
+   (`thread_name`), Claude Code from `custom-title`/`ai-title` when encountered
+   in the header or tail, else `(untitled)`. Render one `▒` bar per session,
+   marked as not yet indexed, with `▓` union bars on project and directory rows.
+   Startup does not yet read an activity cache.
 2. Background indexing: a worker pool scans files that are missing from the
    cache or fail validation, highest last-seen first. Each file sends its
    result when done and its bar switches to real activity. Progress is shown
@@ -145,8 +147,13 @@ checks the project model before any UI exists.
 
 ### Bundle B: first screen (steps 3–4)
 
+Implemented locally. `queen` opens collapsed projects in recent-activity order;
+`o` switches to an alphabetical path trie. `queen --list` retains bundle A's
+plain-text output. See [usage](usage.md#queen) for controls. Discovery runs only
+at startup in this bundle.
+
 3. **Startup reads.** Per top-level session: header and tail only, for start,
-   last-seen, omp's end and titles (Claude Code `(untitled)` until cached).
+   last-seen, omp's end and titles. Claude Code titles are used when encountered.
    Subagent files folded into their parent row via `ensure_participant` in
    `RootIndex::files` order.
 4. **TUI.** Project → session rows with one not-yet-indexed bar per session,
@@ -156,6 +163,11 @@ checks the project model before any UI exists.
 
 Done when queen opens in under a second on the local logs and drill-down
 lands in antty showing the same sessions as the row.
+
+Header reads stop at the first timestamped record or 50 lines. Tail reads start
+with 64 KiB and double up to 8 MiB until finding a timestamped record (or reaching
+the header). Only newline-terminated records are ingested; subagent logs are
+registered but not read. An explicit session end wins over last-seen.
 
 ### Bundle C: real activity (steps 5–6)
 

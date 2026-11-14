@@ -105,7 +105,7 @@ struct App {
     /// Wheel scrolling may leave the selected row outside the shared tree/Gantt viewport.
     wheel_view: bool,
     session_budget: usize,
-    launch: Option<editor::Invocation>,
+    launch: Option<antty::tui::Invocation>,
     suspend: bool,
     disk_tx: Option<mpsc::Sender<usize>>,
     walk_pending: std::collections::HashSet<usize>,
@@ -965,14 +965,14 @@ fn run_loop(
                         }
                         if let Some(inv) = app.launch.take() {
                             app.ui.flash = if inv.suspend {
-                                mouse.hand_off(|| editor::run(terminal, &inv))?
+                                mouse.hand_off(|| antty::tui::run(terminal, &inv))?
                             } else {
-                                editor::run(terminal, &inv)?
+                                antty::tui::run(terminal, &inv)?
                             };
                         }
                         let suspended = std::mem::take(&mut app.suspend);
                         if suspended {
-                            app.ui.flash = mouse.hand_off(|| editor::suspend(terminal))?;
+                            app.ui.flash = mouse.hand_off(|| antty::tui::suspend(terminal))?;
                         }
                         if layout_before != (app.ui.view_mode(), app.ui.stats_panel) {
                             app.update_layout(root);

@@ -206,3 +206,33 @@ With an action filter (`F`) active, PARTICIPANTS keeps `you` and sessions with a
 - `-` zooms out (paired with `+`); it does not open the parent directory as in oil.nvim/vim-vinegar. On a file, `zc` closes and selects its parent dir.
 - `H`/`L` pan the timeline by half the pane width; they do not jump to the top/bottom visible row. Use `zt`/`zb` to place the selected row instead.
 - `c` toggles gap collapsing; it is not vim's change operator.
+
+## Queen
+
+`queen [--omp-dir <PATH>] [--claude-dir <PATH>] [--codex-dir <PATH>] [--list]`
+shows all discovered projects. Harness-root flags and defaults match antty;
+`--list` prints per-project, per-cwd and total session counts instead of the TUI.
+
+Projects start collapsed, newest activity first. `o` toggles an alphabetical
+path tree; expansion keys are shared between both orders. `▓` bars are merged
+project/directory spans; `▒` bars are not-yet-indexed session spans. Session
+colours identify the harness. Missing projects are dimmed. `NO_COLOR` works
+as in antty.
+
+| Key | Queen action |
+| --- | --- |
+| `[count]j/k`, `↓/↑`, `gg/G`, `Ctrl-d/u` | Navigate rows; counts select/repeat as in antty |
+| `[count]h/l`, `←/→`, `H/L` | Move the time cursor / half-pane pan |
+| `[count]+/-`, `=`, `t`, `f`, `c` | Zoom, now, fit, toggle collapsed gaps |
+| `o` | Toggle recent/path-tree order |
+| `Space/za` | Toggle node; on a session, close and select its project |
+| `zo/zc`, `zR/zM` | Open/close node; expand/collapse all |
+| `Enter` | Open session cwd, or project's most recently active existing cwd, in antty; directory-only nodes toggle |
+| `:q⏎`, `:q!`, `:qa`, `:qa!`, `:quit`, `ZZ/ZQ` | Quit (colon commands require Enter) |
+| `Ctrl-c`, `Ctrl-z` | Quit hint / suspend to shell |
+| `Esc`, `Ctrl-c`, `Backspace` in `:` | Cancel the line / erase a character |
+
+Returning from antty restores queen's selection and view. Missing cwds show an
+error instead of launching. The companion antty binary is resolved beside queen
+first, then on PATH. Session discovery and header/tail metadata are a startup
+snapshot; no background indexing, activity cache or live updates ship yet.

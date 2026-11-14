@@ -1,4 +1,3 @@
-use crate::editor;
 use antty::model::{EventDetail, FileEvent, Model};
 use antty::snapshot;
 
@@ -117,8 +116,8 @@ pub fn event_patch(model: &Model, e: &FileEvent) -> Result<String, &'static str>
     Ok(format!("--- {label}\n+++ {label}\n{hunks}"))
 }
 
-pub fn invocation(patch: String) -> editor::Invocation {
-    editor::Invocation {
+pub fn invocation(patch: String) -> antty::tui::Invocation {
+    antty::tui::Invocation {
         program: "delta".into(),
         args: vec!["--paging".into(), "always".into()],
         suspend: true,

@@ -5,7 +5,8 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState};
 
 use antty::filter::{ActionKey, SCRIPT_EXTS, label};
 
-use super::{ActionRow, AppRef, HIGHLIGHT_FG, SELECTED_BG};
+use super::{ActionRow, AppRef};
+use antty::tui::{HIGHLIGHT_FG, SELECTED_BG};
 
 pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
     f.render_widget(Clear, area);

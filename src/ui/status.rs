@@ -5,7 +5,8 @@ use ratatui::widgets::Paragraph;
 
 use antty::filter::{Action, ActionKey, label};
 
-use super::{AppRef, truncate};
+use super::AppRef;
+use antty::tui::truncate;
 
 pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
     if let Some(line) = &app.ui.cmdline {

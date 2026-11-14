@@ -12,7 +12,7 @@ use std::collections::HashSet;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier};
+use ratatui::style::Color;
 use ratatui::widgets::Clear;
 
 use crate::cmdline::CmdLine;
@@ -20,14 +20,9 @@ use antty::model::{Model, ParticipantId, ParticipantKind};
 use antty::timeline::View;
 use antty::tree::{ExpandState, FilesView, Row, Tree};
 
-pub const SELECTED_BG: Color = Color::Rgb(50, 70, 130);
-pub const CURSOR_BG: Color = Color::Rgb(40, 40, 60);
 /// Soft row tint for participants that touched the selected file/dir. Dark slate-teal so the
 /// participant's palette foreground stays readable and it differs from CURSOR_BG's column.
 pub const TOUCHED_BG: Color = Color::Rgb(32, 48, 62);
-/// Text drawn on SELECTED_BG/CURSOR_BG. Explicit RGB so it stays light when the terminal's
-/// default foreground is dark (light themes).
-pub const HIGHLIGHT_FG: Color = Color::Rgb(235, 235, 235);
 pub const STATS_PANEL_WIDTH: u16 = 34;
 pub const STATS_MIN_WIDTH: u16 = 110;
 
@@ -180,14 +175,6 @@ pub struct AppRef<'a> {
     pub ui: &'a UiState,
 }
 
-pub fn truncate(s: &str, width: usize) -> String {
-    if s.chars().count() <= width {
-        s.to_string()
-    } else {
-        s.chars().take(width.saturating_sub(1)).collect::<String>() + "…"
-    }
-}
-
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let vertical = Layout::default()
         .direction(Direction::Vertical)
@@ -311,29 +298,13 @@ pub fn draw(f: &mut Frame, app: &AppRef) {
         help::render(f, layout.help_area, app.ui.help_scroll);
     }
     if app.ui.no_color {
-        strip_colors(f.buffer_mut());
-    }
-}
-
-/// NO_COLOR: drop every fg/bg colour. Background highlights become reverse video,
-/// and DarkGray text (deleted files, advisors, collapsed-session bars) becomes dim.
-fn strip_colors(buf: &mut ratatui::buffer::Buffer) {
-    for cell in &mut buf.content {
-        if cell.bg != Color::Reset {
-            cell.modifier.insert(Modifier::REVERSED);
-        }
-        if cell.fg == Color::DarkGray {
-            cell.modifier.insert(Modifier::DIM);
-        }
-        cell.fg = Color::Reset;
-        cell.bg = Color::Reset;
+        antty::tui::strip_colors(f.buffer_mut());
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::buffer::Buffer;
 
     #[test]
     fn session_budget_leaves_room_for_files() {
@@ -357,20 +328,5 @@ mod tests {
         let detail_pane = detail.detail_area.unwrap();
         assert_eq!(detail.stats_area.unwrap().bottom(), detail_pane.y);
         assert_eq!(detail_pane.width, root.width);
-    }
-
-    #[test]
-    fn strip_colors_turns_highlights_into_modifiers() {
-        let mut buf = Buffer::empty(Rect::new(0, 0, 3, 1));
-        buf[(0, 0)].set_bg(SELECTED_BG).set_fg(Color::Cyan);
-        buf[(1, 0)].set_fg(Color::DarkGray);
-        strip_colors(&mut buf);
-        for cell in &buf.content {
-            assert_eq!(cell.fg, Color::Reset);
-            assert_eq!(cell.bg, Color::Reset);
-        }
-        assert!(buf[(0, 0)].modifier.contains(Modifier::REVERSED));
-        assert!(buf[(1, 0)].modifier.contains(Modifier::DIM));
-        assert!(buf[(2, 0)].modifier.is_empty());
     }
 }

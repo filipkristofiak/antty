@@ -15,5 +15,6 @@ pub mod snapshot;
 pub mod stats;
 pub mod timeline;
 pub mod tree;
+pub mod tui;
 pub mod watch;
 pub mod worktree;

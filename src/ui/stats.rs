@@ -8,7 +8,8 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use antty::model::Ts;
 use antty::stats::{Stats, Subject, compute, subject_for};
 
-use super::{AppRef, gantt_pane::fmt_span, truncate};
+use super::AppRef;
+use antty::tui::{fmt_span, truncate};
 
 /// One comparison per frame, shared when the panel is visible behind the popup.
 pub(super) struct Comparison {

@@ -11,12 +11,13 @@ sessions, rather than antty's single-project view.
   one repository (`worktree::discover`) fold into one project. Nothing walks
   up to a git toplevel: a session launched in a subdirectory is its own
   project, matching antty, which only loads sessions whose cwd equals a
-  worktree root (`RootIndex::project_dir`).
+  worktree root (`RootIndex::files`).
 - Cwds with no git repo, or that no longer exist, are their own projects keyed
   by the raw cwd. This is the common case, not an edge: in local logs,
   27 of 38 omp cwds and 12 of 14 Claude Code cwds.
 - Drill-down runs `antty --project <cwd>`. For a folded worktree project, use
-  the worktree whose session was most recently active.
+  the worktree whose session was most recently active. Cwds that no longer
+  exist have no drill-down: antty rejects a missing `--project` path.
 
 ## Packaging
 
@@ -36,31 +37,38 @@ sessions, rather than antty's single-project view.
   release cadences or dependencies diverge.
 - Cache lives under the antty state root (e.g. `~/.local/state/antty/queen/`).
 
-## Relation to issue #13
-
-Not a prerequisite. Queen reads every session file's header itself, which
-gives a complete cwd → sessions map without `RootIndex`. #13 matters only for
-drill-down parity: until it lands, antty can miss sessions that queen lists
-when two session dirs share a cwd or one dir mixes cwds (no local
-occurrences).
-
 ## Session discovery
 
-- omp: a file is a session only if physical line 2 is
-  `{"type":"session",…}`. Session dirs also hold non-session JSONL
-  artifacts (e.g. `<session>/local/*.jsonl` metrics logs).
-- Claude Code: the files from `claude::scan_files`, with cwd from the first
-  `cwd` field (`claude::read_first_cwd` rule).
-- Codex CLI: `rollout-*.jsonl` files, with cwd from the `session_meta`
-  header.
+- Reuse antty's index. `Harness::index_root` maps every canonical launch cwd
+  to its top-level session files across all session dirs of a harness root,
+  so its keys are queen's cwds and `antty --project <cwd>` loads exactly the
+  sessions queen lists. The lib-extraction PR adds the one missing accessor,
+  `RootIndex::cwds()`, iterating the keys; `RootIndex::files(cwd)` already
+  lists each top-level session followed by its subagent logs.
+- Cwd rules come with the index: omp reads each top-level file's line-2
+  header `cwd`; Claude Code takes the first `cwd` within a transcript's first
+  50 lines; Codex CLI groups `rollout-*.jsonl` by `session_meta.cwd`. A file
+  without a readable cwd is skipped and picked up by a later index pass.
+- Row membership: register every file of a cwd with
+  `Harness::ensure_participant`, in `RootIndex::files` order, into one
+  per-cwd `Model` (header reads only). A file belongs to the row of its
+  participant's `Session`. The order matters for Codex CLI: a subagent
+  rollout finds its parent only when the parent is registered first, and
+  `RootIndex::files` lists parents first.
+- omp subagent discovery scans `<stem>/` recursively, so it also lists
+  non-session JSONL such as `<stem>/local/sessionize-*.jsonl` metrics logs.
+  Their records have no `type`, so ingest yields no activity from them and
+  queen needs no filter.
 - Compressed Codex rollouts (`*.jsonl.zst`) are skipped by antty and queen
   alike.
 
 ## Data flow
 
-1. Startup (synchronous, fast): read each session's header and seek to its
-   tail. That gives cwd, start, last-seen (the last line in the tail that has
-   a top-level `timestamp`) and, for omp, the end (a `session_exit` record).
+1. Startup (synchronous, fast): run `Harness::index_root` for each harness
+   root, register each cwd's files (see Session discovery), then read each
+   top-level session's header and seek to its tail.
+   That gives cwd, start, last-seen (the last line in the tail that has a
+   top-level `timestamp`) and, for omp, the end (a `session_exit` record).
    Titles: omp from the line-1 title slot, Codex from `session_index.jsonl`
    (`thread_name`), Claude Code from the cache when present, else
    `(untitled)`, because its `custom-title`/`ai-title` records can be anywhere
@@ -70,8 +78,10 @@ occurrences).
    cache or fail validation, highest last-seen first. Each file sends its
    result when done and its bar switches to real activity. Progress is shown
    in the status bar (same pattern as antty's `Msg::Progress`).
-3. Live: a watcher on the harness roots only (never on the repos) triggers
-   incremental reads of files that grew.
+3. Live: poll every second like antty's `spawn_tailer`: re-run
+   `Harness::index_root` (cwd lookups are cached per file) to find new
+   sessions, and read appended bytes of files that grew. Nothing watches the
+   harness roots or the repos.
 
 ## Activity cache
 

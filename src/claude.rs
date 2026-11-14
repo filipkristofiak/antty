@@ -14,7 +14,7 @@ use crate::model::{
     TouchSource, Ts,
 };
 use crate::parse::{locate, mcp_label, parse_ts_iso, push_mcp_event, push_raw_interval, split_mcp_name};
-use crate::sessions::{is_dotfile, is_jsonl};
+use crate::sessions::{SessionFile, is_dotfile, is_jsonl};
 
 /// The launch `cwd` appears within the first few lines; bound the scan so a file without one
 /// never gets read in full.
@@ -36,6 +36,7 @@ fn read_first_cwd(path: &Path) -> Option<PathBuf> {
         let v: Value = serde_json::from_str(&line).ok()?;
         v.get("cwd").and_then(|c| c.as_str()).map(PathBuf::from)
     })?;
+    let cwd = cwd.canonicalize().unwrap_or(cwd);
     cache.insert(path.to_owned(), cwd.clone());
     Some(cwd)
 }
@@ -46,41 +47,30 @@ fn top_level_jsonl(dir: &Path) -> Vec<PathBuf> {
     rd.flatten().map(|e| e.path()).filter(|p| p.is_file() && is_jsonl(p) && !is_dotfile(p)).collect()
 }
 
-/// Map each launch cwd to its first matching direct child of `root` in read-dir order.
-/// Each child's newest session with a cwd determines its checkout; Claude Code's dir-name
-/// encoding is never recomputed.
-pub fn project_dirs(root: &Path) -> HashMap<PathBuf, PathBuf> {
-    let mut dirs = HashMap::new();
-    let Ok(rd) = fs::read_dir(root) else { return dirs };
+/// Map canonical launch cwd to every top-level session whose first cwd names it.
+/// Claude Code's directory-name encoding is never recomputed.
+pub fn sessions_by_cwd(root: &Path) -> HashMap<PathBuf, Vec<SessionFile>> {
+    let mut sessions: HashMap<PathBuf, Vec<SessionFile>> = HashMap::new();
+    let Ok(rd) = fs::read_dir(root) else { return sessions };
     for entry in rd.flatten() {
         let dir = entry.path();
         if !dir.is_dir() {
             continue;
         }
-        let mut files: Vec<(std::time::SystemTime, PathBuf)> = top_level_jsonl(&dir)
-            .into_iter()
-            .filter_map(|p| Some((fs::metadata(&p).ok()?.modified().ok()?, p)))
-            .collect();
-        files.sort_by_key(|a| std::cmp::Reverse(a.0));
-        let Some(cwd) = files.iter().find_map(|(_, p)| read_first_cwd(p)) else { continue };
-        dirs.entry(cwd.canonicalize().unwrap_or(cwd)).or_insert(dir);
+        let mut files = top_level_jsonl(&dir);
+        files.sort();
+        for path in files {
+            let Some(cwd) = read_first_cwd(&path) else { continue };
+            sessions.entry(cwd).or_default().push(SessionFile { project_dir: dir.clone(), path });
+        }
     }
-    dirs
+    sessions
 }
 
-/// Every transcript for a project dir: top-level session files plus each session's
-/// `<sessionId>/subagents/*.jsonl`. `tool-results/`, `memory/` etc. are not transcripts.
-pub fn scan_files(project_dir: &Path) -> Vec<PathBuf> {
-    let mut out = top_level_jsonl(project_dir);
-    let Ok(rd) = fs::read_dir(project_dir) else { return out };
-    for entry in rd.flatten() {
-        let d = entry.path();
-        if is_dotfile(&d) || !d.is_dir() {
-            continue;
-        }
-        out.extend(top_level_jsonl(&d.join("subagents")));
-    }
-    out
+/// `<sessionId>/subagents/*.jsonl` for a top-level `<sessionId>.jsonl`;
+/// `tool-results/`, `memory/` etc. are not transcripts.
+pub fn subagent_files(session: &Path) -> Vec<PathBuf> {
+    top_level_jsonl(&session.with_extension("").join("subagents"))
 }
 
 /// Subagent label from its sibling `agent-<id>.meta.json`: `description`, else `agentType`,
@@ -649,8 +639,8 @@ mod tests {
         .unwrap();
         fs::write(dir_a.join("s1/tool-results/y.jsonl"), "{}\n").unwrap();
 
-        assert_eq!(project_dirs(&root).get(&project), Some(&dir_a));
-        let mut scanned = scan_files(&dir_a);
+        let mut scanned: Vec<_> =
+            crate::sessions::Harness::Claude.index_root(&root).files(&project).into_iter().map(|f| f.path).collect();
         scanned.sort();
         let mut expected = vec![dir_a.join("s1.jsonl"), agent.clone()];
         expected.sort();
@@ -668,5 +658,50 @@ mod tests {
         assert!(p.session.is_some());
 
         let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn mixed_cwd_project_dir_splits_sessions_by_cwd() {
+        let base = std::env::temp_dir().join(format!("antty-claude-test-mixed-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("a")).unwrap();
+        fs::create_dir_all(base.join("b")).unwrap();
+        let a = base.join("a").canonicalize().unwrap();
+        let b = base.join("b").canonicalize().unwrap();
+        let root = base.join("cc");
+        let dir = root.join("-x");
+        fs::create_dir_all(dir.join("s1/subagents")).unwrap();
+        let user = |cwd: &Path| {
+            json!({"type":"user","timestamp":"2026-01-01T00:00:00.000Z","cwd":cwd,
+            "message":{"role":"user","content":"hi"}})
+        };
+        let s1 = dir.join("s1.jsonl");
+        let agent = dir.join("s1/subagents/agent-1.jsonl");
+        let s2 = dir.join("s2.jsonl");
+        let s3 = dir.join("s3.jsonl");
+        fs::write(&s1, format!("{}\n", user(&a))).unwrap();
+        fs::write(&agent, format!("{}\n", user(&a))).unwrap();
+        fs::write(&s2, format!("{}\n", user(&b))).unwrap();
+        fs::write(&s3, "{\"type\":\"mode\"}\n").unwrap();
+
+        let index = crate::sessions::Harness::Claude.index_root(&root);
+        let files_a = index.files(&a);
+        let files_b = index.files(&b);
+        assert!(files_a.iter().chain(&files_b).all(|file| file.project_dir == dir));
+        let mut paths_a: Vec<_> = files_a.into_iter().map(|file| file.path).collect();
+        paths_a.sort();
+        let mut expected = vec![s1.clone(), agent.clone()];
+        expected.sort();
+        assert_eq!(paths_a, expected);
+        assert_eq!(files_b.into_iter().map(|file| file.path).collect::<Vec<_>>(), vec![s2.clone()]);
+
+        let mut model = Model::new(vec![a.clone()]);
+        crate::sessions::load_blocking(&mut model, crate::sessions::Harness::Claude, &root, &a, 30);
+        assert_eq!(model.sessions.len(), 1);
+        assert!(model.file_participant.contains_key(&s1));
+        assert!(model.file_participant.contains_key(&agent));
+        assert!(!model.file_participant.contains_key(&s2));
+        assert!(!model.file_participant.contains_key(&s3));
+        fs::remove_dir_all(base).unwrap();
     }
 }

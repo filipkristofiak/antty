@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::model::{Model, Scope};
 use crate::sessions::{Harness, TailSource};
 
-const FORMAT: u32 = 1;
+const FORMAT: u32 = 2;
 const TAIL_BYTES: u64 = 256;
 
 #[derive(Clone)]
@@ -22,7 +22,6 @@ pub struct Spec {
 pub struct CachedTail {
     pub harness: Harness,
     pub project_root: PathBuf,
-    pub project_dir: PathBuf,
     pub files: Vec<CachedFile>,
 }
 
@@ -62,8 +61,8 @@ pub fn path_for(state_dir: &Path, project: &Path) -> PathBuf {
 pub fn tails(sources: &[TailSource]) -> Result<Vec<CachedTail>, String> {
     sources
         .iter()
-        .filter_map(|src| src.project_dir.as_ref().map(|dir| (src, dir)))
-        .map(|(src, dir)| {
+        .filter(|src| !src.states.is_empty())
+        .map(|src| {
             let files = src
                 .states
                 .iter()
@@ -74,12 +73,7 @@ pub fn tails(sources: &[TailSource]) -> Result<Vec<CachedTail>, String> {
                     Ok(CachedFile { path: path.clone(), offset, tail })
                 })
                 .collect::<Result<_, String>>()?;
-            Ok(CachedTail {
-                harness: src.harness,
-                project_root: src.project_root.clone(),
-                project_dir: dir.clone(),
-                files,
-            })
+            Ok(CachedTail { harness: src.harness, project_root: src.project_root.clone(), files })
         })
         .collect()
 }
@@ -225,7 +219,6 @@ mod tests {
             harness: Harness::Omp,
             root: base.clone(),
             project_root: project,
-            project_dir: Some(base.clone()),
             states: HashMap::from([(log.clone(), TailState { offset: bytes.len() as u64, partial: Vec::new() })]),
         }];
         let tails = tails(&sources).unwrap();
@@ -280,7 +273,6 @@ mod tests {
             harness: Harness::Omp,
             root: base.clone(),
             project_root: base.clone(),
-            project_dir: Some(base.clone()),
             states: HashMap::from([(log.clone(), TailState { offset: 16, partial: b"partial".to_vec() })]),
         }];
         let cached = tails(&sources).unwrap();

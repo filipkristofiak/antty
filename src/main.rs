@@ -659,7 +659,6 @@ fn main() -> anyhow::Result<()> {
                 harness: *harness,
                 root: (*dir).clone(),
                 project_root: root.clone(),
-                project_dir: None,
                 states: Default::default(),
             });
         }

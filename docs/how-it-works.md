@@ -4,20 +4,25 @@
 
 Each harness (`sessions::Harness`: omp, Claude Code, Codex CLI) has its own
 root (`--omp-dir`, `--claude-dir`, `--codex-dir`). A shared `RootIndex` maps
-canonical launch cwd to session sources in one pass per harness root, rather
-than scanning again for every worktree. omp matches header cwd; Claude Code
-matches the first cwd in the newest session. Neither directory-name encoding
-is reimplemented. Codex groups dated rollout files by first-line
-`session_meta.cwd`; subagents are linked by `parent_thread_id`, with titles
-from the adjacent `session_index.jsonl`.
+canonical launch cwd to session files in one pass per harness root on every
+one-second tick, rather than scanning again for every worktree. omp matches each
+top-level session's header cwd; Claude Code matches each transcript's first cwd
+within its first 50 lines. Both group every matching file across directories,
+without reimplementing directory-name encodings. Sessions without a readable cwd
+are skipped and retried next tick, never assigned to a fallback project.
+Subagent logs follow their top-level session: omp scans `<stem>/` recursively;
+Claude Code scans `<sessionId>/subagents/*.jsonl`. Orphan subdirectories are ignored.
+Codex groups dated rollout files by first-line `session_meta.cwd`; subagents are
+linked by `parent_thread_id`, with titles from the adjacent `session_index.jsonl`.
 
 `spawn_tailer` discovers and parses sources on background workers, sending parsed
 records in batches of at most 2048. It reports initial indexing progress and then
 polls for new files and appended bytes every second. Incomplete final lines are
 buffered until their newline arrives. `index.rs` saves log-derived model state and
 complete-line offsets under `<state-dir>/index/`. On restart it validates the saved
-log tails and resumes from those offsets; incompatible settings or rewritten tails
-cause a cold load. Watcher history is replayed only after initial records are applied.
+log tails and resumes from those offsets while still discovering new files and
+directories; incompatible settings or rewritten tails cause a cold load.
+Watcher history is replayed only after initial records are applied.
 
 ## Parsing tool calls into file events
 

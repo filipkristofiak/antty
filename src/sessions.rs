@@ -20,11 +20,19 @@ pub enum Harness {
 
 impl Harness {
     pub fn index_root(self, root: &Path) -> RootIndex {
-        match self {
-            Harness::Omp => RootIndex::Dirs(omp_project_dirs(root)),
-            Harness::Claude => RootIndex::Dirs(crate::claude::project_dirs(root)),
-            Harness::Codex => RootIndex::Rollouts(crate::codex::rollouts_by_cwd(root)),
-        }
+        let sessions = match self {
+            Harness::Omp => omp_sessions_by_cwd(root),
+            Harness::Claude => crate::claude::sessions_by_cwd(root),
+            Harness::Codex => crate::codex::rollouts_by_cwd(root)
+                .into_iter()
+                .map(|(cwd, paths)| {
+                    let files =
+                        paths.into_iter().map(|path| SessionFile { project_dir: root.to_path_buf(), path }).collect();
+                    (cwd, files)
+                })
+                .collect(),
+        };
+        RootIndex { harness: self, sessions }
     }
 
     /// Register `file`'s participant (and its ancestors) in `model`; idempotent.
@@ -54,29 +62,41 @@ impl Harness {
     }
 }
 
-/// One shared pass over a harness session root, keyed by canonical launch cwd.
-pub enum RootIndex {
-    Dirs(HashMap<PathBuf, PathBuf>),
-    Rollouts(HashMap<PathBuf, Vec<PathBuf>>),
+/// A session log to tail and the harness project dir its participant resolves against
+/// (Codex: the sessions root, used for the title index).
+#[derive(Clone)]
+pub struct SessionFile {
+    pub project_dir: PathBuf,
+    pub path: PathBuf,
+}
+
+/// One shared pass over a harness session root: canonical launch cwd → that checkout's
+/// top-level session logs (Codex: every rollout, parents first).
+pub struct RootIndex {
+    harness: Harness,
+    sessions: HashMap<PathBuf, Vec<SessionFile>>,
 }
 
 impl RootIndex {
-    pub fn project_dir(&self, harness_root: &Path, project_root: &Path) -> Option<PathBuf> {
-        match self {
-            Self::Dirs(dirs) => dirs.get(project_root).cloned(),
-            Self::Rollouts(files) => files.contains_key(project_root).then(|| harness_root.to_path_buf()),
+    /// Every log to tail for `project_root`: each indexed session followed by its subagent logs.
+    pub fn files(&self, project_root: &Path) -> Vec<SessionFile> {
+        let Some(sessions) = self.sessions.get(project_root) else { return Vec::new() };
+        if self.harness == Harness::Codex {
+            return sessions.clone();
         }
-    }
-}
-
-fn source_files(src: &TailSource, dir: &Path, index: Option<&RootIndex>) -> Vec<PathBuf> {
-    match src.harness {
-        Harness::Omp => scan_jsonl_files(dir),
-        Harness::Claude => crate::claude::scan_files(dir),
-        Harness::Codex => match index {
-            Some(RootIndex::Rollouts(files)) => files.get(&src.project_root).cloned().unwrap_or_default(),
-            _ => Vec::new(),
-        },
+        let mut files = Vec::new();
+        for session in sessions {
+            files.push(session.clone());
+            let subagents = match self.harness {
+                Harness::Omp => scan_jsonl_files(&session.path.with_extension("")),
+                Harness::Claude => crate::claude::subagent_files(&session.path),
+                Harness::Codex => unreachable!(),
+            };
+            files.extend(
+                subagents.into_iter().map(|path| SessionFile { project_dir: session.project_dir.clone(), path }),
+            );
+        }
+        files
     }
 }
 
@@ -189,10 +209,10 @@ pub(crate) fn is_dotfile(path: &Path) -> bool {
 
 static OMP_HEADER_CWDS: LazyLock<Mutex<HashMap<PathBuf, PathBuf>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Map canonical launch cwd to its first matching project directory.
-fn omp_project_dirs(sessions_root: &Path) -> HashMap<PathBuf, PathBuf> {
-    let mut dirs = HashMap::new();
-    let Ok(rd) = fs::read_dir(sessions_root) else { return dirs };
+/// Map canonical launch cwd to every top-level session whose header names it.
+fn omp_sessions_by_cwd(sessions_root: &Path) -> HashMap<PathBuf, Vec<SessionFile>> {
+    let mut sessions: HashMap<PathBuf, Vec<SessionFile>> = HashMap::new();
+    let Ok(rd) = fs::read_dir(sessions_root) else { return sessions };
     for entry in rd.flatten() {
         let dir = entry.path();
         if !dir.is_dir() {
@@ -205,19 +225,20 @@ fn omp_project_dirs(sessions_root: &Path) -> HashMap<PathBuf, PathBuf> {
         let mut top: Vec<PathBuf> =
             inner.flatten().map(|e| e.path()).filter(|p| p.is_file() && is_jsonl(p) && !is_dotfile(p)).collect();
         top.sort();
-        let Some(last) = top.last() else { continue };
         let mut cache = OMP_HEADER_CWDS.lock().unwrap_or_else(PoisonError::into_inner);
-        let cwd = if let Some(cwd) = cache.get(last) {
-            cwd.clone()
-        } else {
-            let Some(cwd) = read_header_cwd(last) else { continue };
-            let cwd = cwd.canonicalize().unwrap_or(cwd);
-            cache.insert(last.clone(), cwd.clone());
-            cwd
-        };
-        dirs.entry(cwd).or_insert(dir);
+        for path in top {
+            let cwd = if let Some(cwd) = cache.get(&path) {
+                cwd.clone()
+            } else {
+                let Some(cwd) = read_header_cwd(&path) else { continue };
+                let cwd = cwd.canonicalize().unwrap_or(cwd);
+                cache.insert(path.clone(), cwd.clone());
+                cwd
+            };
+            sessions.entry(cwd).or_default().push(SessionFile { project_dir: dir.clone(), path });
+        }
     }
-    dirs
+    sessions
 }
 
 fn scan_jsonl_files_rec(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -276,8 +297,6 @@ pub struct TailSource {
     pub root: PathBuf,
     /// Canonical checkout whose sessions this source tails.
     pub project_root: PathBuf,
-    /// The checkout's dir under the harness session root, once discovered.
-    pub project_dir: Option<PathBuf>,
     pub states: HashMap<PathBuf, TailState>,
 }
 
@@ -298,24 +317,23 @@ pub fn apply_records(
 
 const RECORDS_PER_MSG: usize = 2048;
 
-fn poll_source(src: &mut TailSource, files: Vec<PathBuf>, tx: &SyncSender<Msg>) -> bool {
-    let Some(dir) = &src.project_dir else { return true };
-    for f in files {
-        let Ok(meta) = fs::metadata(&f) else { continue };
-        let state = src.states.entry(f.clone()).or_insert(TailState { offset: 0, partial: Vec::new() });
+fn poll_source(src: &mut TailSource, files: Vec<SessionFile>, tx: &SyncSender<Msg>) -> bool {
+    for file in files {
+        let Ok(meta) = fs::metadata(&file.path) else { continue };
+        let state = src.states.entry(file.path.clone()).or_insert(TailState { offset: 0, partial: Vec::new() });
         if meta.len() < state.offset {
             state.offset = 0;
             state.partial.clear();
-            if tx.send(Msg::Reset(f.clone())).is_err() {
+            if tx.send(Msg::Reset(file.path.clone())).is_err() {
                 return false;
             }
         }
         if meta.len() > state.offset
-            && let Ok(mut file) = fs::File::open(&f)
-            && file.seek(SeekFrom::Start(state.offset)).is_ok()
+            && let Ok(mut log) = fs::File::open(&file.path)
+            && log.seek(SeekFrom::Start(state.offset)).is_ok()
         {
             let mut buf = Vec::new();
-            if let Ok(n) = file.read_to_end(&mut buf) {
+            if let Ok(n) = log.read_to_end(&mut buf) {
                 let (lines, partial) = split_lines(std::mem::take(&mut state.partial), &buf);
                 // Count actual bytes read: a live file may grow after the stat.
                 state.offset += n as u64;
@@ -326,8 +344,8 @@ fn poll_source(src: &mut TailSource, files: Vec<PathBuf>, tx: &SyncSender<Msg>) 
                     if tx
                         .send(Msg::Records {
                             harness: src.harness,
-                            project_dir: dir.clone(),
-                            participant_file: f.clone(),
+                            project_dir: file.project_dir.clone(),
+                            participant_file: file.path.clone(),
                             records: chunk,
                         })
                         .is_err()
@@ -341,7 +359,7 @@ fn poll_source(src: &mut TailSource, files: Vec<PathBuf>, tx: &SyncSender<Msg>) 
     true
 }
 
-/// Discover once per harness root and parse sources on bounded background workers.
+/// Discover once per harness root each tick and parse sources on bounded background workers.
 pub fn spawn_tailer(
     mut sources: Vec<TailSource>,
     cache: Option<crate::index::Spec>,
@@ -360,7 +378,6 @@ pub fn spawn_tailer(
                             .iter_mut()
                             .find(|s| s.harness == tail.harness && s.project_root == tail.project_root)
                         {
-                            src.project_dir = Some(tail.project_dir);
                             src.states = tail
                                 .files
                                 .into_iter()
@@ -381,16 +398,7 @@ pub fn spawn_tailer(
         loop {
             let mut indexes = HashMap::new();
             for src in &sources {
-                if src.harness == Harness::Codex || src.project_dir.is_none() {
-                    indexes.entry((src.harness, src.root.clone())).or_insert_with(|| src.harness.index_root(&src.root));
-                }
-            }
-            for src in &mut sources {
-                if src.project_dir.is_none() {
-                    src.project_dir = indexes
-                        .get(&(src.harness, src.root.clone()))
-                        .and_then(|i| i.project_dir(&src.root, &src.project_root));
-                }
+                indexes.entry((src.harness, src.root.clone())).or_insert_with(|| src.harness.index_root(&src.root));
             }
             let total = sources.len();
             let done = AtomicUsize::new(0);
@@ -406,9 +414,9 @@ pub fn spawn_tailer(
                                 let Some(src) = queue.lock().unwrap_or_else(PoisonError::into_inner).pop() else {
                                     break;
                                 };
-                                let files = src.project_dir.as_ref().map_or_else(Vec::new, |dir| {
-                                    source_files(src, dir, indexes.get(&(src.harness, src.root.clone())))
-                                });
+                                let files = indexes
+                                    .get(&(src.harness, src.root.clone()))
+                                    .map_or_else(Vec::new, |i| i.files(&src.project_root));
                                 if !poll_source(src, files, tx)
                                     || (first
                                         && tx
@@ -432,7 +440,7 @@ pub fn spawn_tailer(
             if first {
                 if tx
                     .send(Msg::Loaded {
-                        found: sources.iter().any(|s| s.project_dir.is_some()),
+                        found: sources.iter().any(|s| !s.states.is_empty()),
                         tails: crate::index::tails(&sources),
                     })
                     .is_err()
@@ -452,14 +460,13 @@ pub fn spawn_tailer(
 #[cfg(test)]
 pub fn load_blocking(model: &mut Model, harness: Harness, root: &Path, project_root: &Path, idle_gap: i64) {
     let index = harness.index_root(root);
+    let files = index.files(project_root);
     let mut src = TailSource {
         harness,
         root: root.to_path_buf(),
         project_root: project_root.to_path_buf(),
-        project_dir: index.project_dir(root, project_root),
         states: HashMap::new(),
     };
-    let files = src.project_dir.as_ref().map_or_else(Vec::new, |dir| source_files(&src, dir, Some(&index)));
     let (tx, rx) = std::sync::mpsc::sync_channel(4096);
     thread::scope(|scope| {
         scope.spawn(move || {
@@ -502,15 +509,10 @@ mod tests {
         let half_written = "{\"type\":\"title_change\"".to_string();
         fs::write(&file, format!("{title_line}{header_line}{half_written}")).unwrap();
 
-        let mut src = TailSource {
-            harness: Harness::Omp,
-            root: sessions_root,
-            project_root,
-            project_dir: Some(project_dir),
-            states: HashMap::new(),
-        };
+        let mut src = TailSource { harness: Harness::Omp, root: sessions_root, project_root, states: HashMap::new() };
         let (tx, rx) = std::sync::mpsc::sync_channel(16);
-        assert!(poll_source(&mut src, vec![file.clone()], &tx));
+        let files = vec![SessionFile { project_dir, path: file.clone() }];
+        assert!(poll_source(&mut src, files.clone(), &tx));
         for _ in rx.try_iter() {}
 
         // The writer finishes the line and appends more, exactly like a live tailer tick would see.
@@ -519,7 +521,7 @@ mod tests {
         f.write_all(rest.as_bytes()).unwrap();
         drop(f);
 
-        assert!(poll_source(&mut src, vec![file], &tx));
+        assert!(poll_source(&mut src, files, &tx));
         let records: Vec<_> = rx
             .try_iter()
             .flat_map(|msg| match msg {
@@ -529,5 +531,51 @@ mod tests {
             .collect();
         assert_eq!(records.len(), 1, "the completed record must appear exactly once");
         assert_eq!(records[0]["title"], "Real Title");
+    }
+
+    #[test]
+    fn omp_sessions_load_from_every_dir_sharing_a_canonical_cwd() {
+        let base = std::env::temp_dir().join(format!("antty-sessions-test-dirs-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("proj")).unwrap();
+        fs::create_dir_all(base.join("other")).unwrap();
+        let project = base.join("proj").canonicalize().unwrap();
+        let sessions_root = base.join("sessions");
+        let dir_a = sessions_root.join("-a-");
+        let dir_b = sessions_root.join("-b-");
+        fs::create_dir_all(&dir_a).unwrap();
+        fs::create_dir_all(dir_b.join("B")).unwrap();
+        let write_session = |path: &Path, cwd: &Path| {
+            let title = "{\"type\":\"title\",\"title\":\"t\"}\n";
+            let header = format!(
+                "{{\"type\":\"session\",\"version\":3,\"id\":\"x\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":{:?}}}\n",
+                cwd.to_string_lossy()
+            );
+            fs::write(path, format!("{title}{header}")).unwrap();
+        };
+        let a = dir_a.join("A.jsonl");
+        let b = dir_b.join("B.jsonl");
+        let sub = dir_b.join("B/sub.jsonl");
+        let c = dir_a.join("C.jsonl");
+        let d = dir_a.join("D.jsonl");
+        write_session(&a, &project);
+        write_session(&b, &project.join("..").join("proj"));
+        fs::write(&sub, "{}\n").unwrap();
+        write_session(&c, &base.join("other"));
+        fs::write(&d, "{\"type\":\"title\",\"title\":\"t\"}\n").unwrap();
+
+        let mut model = Model::new(vec![project.clone()]);
+        load_blocking(&mut model, Harness::Omp, &sessions_root, &project, 30);
+        assert_eq!(model.sessions.len(), 2);
+        for file in [&a, &b, &sub] {
+            assert!(model.file_participant.contains_key(file));
+        }
+        for file in [&c, &d] {
+            assert!(!model.file_participant.contains_key(file));
+        }
+        let participant = &model.participants[model.file_participant[&sub].0];
+        assert_eq!(participant.kind, ParticipantKind::Subagent);
+        assert_eq!(participant.parent, Some(model.file_participant[&b]));
+        fs::remove_dir_all(base).unwrap();
     }
 }

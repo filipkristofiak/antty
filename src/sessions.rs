@@ -78,6 +78,11 @@ pub struct RootIndex {
 }
 
 impl RootIndex {
+    /// Every canonical launch cwd with at least one indexed session, in no particular order.
+    pub fn cwds(&self) -> impl Iterator<Item = &Path> + '_ {
+        self.sessions.keys().map(PathBuf::as_path)
+    }
+
     /// Every log to tail for `project_root`: each indexed session followed by its subagent logs.
     pub fn files(&self, project_root: &Path) -> Vec<SessionFile> {
         let Some(sessions) = self.sessions.get(project_root) else { return Vec::new() };

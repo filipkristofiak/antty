@@ -3,9 +3,9 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders};
 
-use crate::model::ParticipantKind;
 use crate::search;
-use crate::tree::{self, Row};
+use antty::model::ParticipantKind;
+use antty::tree::{self, Row};
 
 use super::{AppRef, HIGHLIGHT_FG, SELECTED_BG, color_for, truncate};
 

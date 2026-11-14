@@ -14,9 +14,9 @@ use ratatui::style::{Color, Modifier};
 use ratatui::widgets::Clear;
 
 use crate::cmdline::CmdLine;
-use crate::model::{Model, ParticipantId, ParticipantKind};
-use crate::timeline::View;
-use crate::tree::{ExpandState, FilesView, Row, Tree};
+use antty::model::{Model, ParticipantId, ParticipantKind};
+use antty::timeline::View;
+use antty::tree::{ExpandState, FilesView, Row, Tree};
 
 pub const SELECTED_BG: Color = Color::Rgb(50, 70, 130);
 pub const CURSOR_BG: Color = Color::Rgb(40, 40, 60);
@@ -60,8 +60,8 @@ pub enum Mode {
 #[derive(Clone)]
 pub enum DetailItem {
     Event(usize),
-    Span { who: ParticipantId, start: crate::model::Ts, end: crate::model::Ts },
-    Prompt { at: crate::model::Ts },
+    Span { who: ParticipantId, start: antty::model::Ts, end: antty::model::Ts },
+    Prompt { at: antty::model::Ts },
 }
 
 pub struct UiState {

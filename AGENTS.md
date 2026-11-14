@@ -15,9 +15,11 @@ Plain `cargo` works wherever it's already on `PATH`.
 
 ## Module map
 
+- `src/lib.rs` — library root; declares the modules shared with other binaries.
 - `src/main.rs` — event loop, `App` state and actions, startup wiring.
 - `src/keys.rs` — per-mode key dispatch and Normal-mode vim grammar.
-- `src/cli.rs` — `RawArgs`/`Args`: flag parsing, tilde expansion, defaults.
+- `src/cli.rs` — `RawArgs`/`Args`: flag parsing and resolution.
+- `src/dirs.rs` — default harness session roots, state dir and `~` expansion.
 - `src/cmdline.rs` — `:`/`/` line editing and in-memory history.
 - `src/delta.rs` — unified patch for an event and the optional `delta` invocation.
 - `src/model.rs` — core data model: participants, sessions, file events, spans, snapshots.
@@ -48,7 +50,7 @@ Plain `cargo` works wherever it's already on `PATH`.
 
 - Harness-agnostic naming: "omp"/"Claude Code"/"Codex CLI" appear only when
   describing that harness's on-disk format (`parse.rs`, `claude.rs`, `codex.rs`,
-  `sessions.rs`, the `--omp-dir`/`--claude-dir`/`--codex-dir` flags and defaults).
+  `sessions.rs`, `dirs.rs`, the `--omp-dir`/`--claude-dir`/`--codex-dir` flags and defaults).
 - Any change that affects the built binary (`src/`, `Cargo.toml`
   dependency/feature/profile changes, `build.rs`) bumps the `version` in
   `Cargo.toml`, then runs `cargo build` (or `cargo update -p antty`) in the

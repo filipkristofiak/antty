@@ -4,7 +4,7 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState};
 
-use crate::model::{Model, ParticipantKind, Session, Ts};
+use antty::model::{Model, ParticipantKind, Session, Ts};
 
 use super::{AppRef, HIGHLIGHT_FG, SELECTED_BG};
 

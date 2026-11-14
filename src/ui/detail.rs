@@ -6,8 +6,8 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span as TSpan};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
-use crate::model::{EventDetail, FileEvent, Model, ParticipantKind, Scope, TouchSource, Ts};
-use crate::tree::Row;
+use antty::model::{EventDetail, FileEvent, Model, ParticipantKind, Scope, TouchSource, Ts};
+use antty::tree::Row;
 
 use super::{AppRef, DetailItem, HIGHLIGHT_FG, SELECTED_BG};
 
@@ -193,7 +193,7 @@ pub fn detail_lines(app: &AppRef, item: &DetailItem) -> Vec<Line<'static>> {
                 EventDetail::Diff(d) => lines.extend(diff_lines(d)),
                 EventDetail::Written { content } if matches!(&e.source, TouchSource::Tool(t) if t == "eval") => {
                     lines.push(Line::from(format!("eval cell, {} bytes", content.len())));
-                    lines.extend(diff_lines(&crate::snapshot::unified("", content)));
+                    lines.extend(diff_lines(&antty::snapshot::unified("", content)));
                 }
                 EventDetail::Written { content } => {
                     lines.push(Line::from(format!("wrote {} bytes", content.len())));
@@ -203,11 +203,11 @@ pub fn detail_lines(app: &AppRef, item: &DetailItem) -> Vec<Line<'static>> {
                                 "diff vs earlier content from {}",
                                 local(t).format("%H:%M:%S")
                             )));
-                            lines.extend(diff_lines(&crate::snapshot::unified(prev, content)));
+                            lines.extend(diff_lines(&antty::snapshot::unified(prev, content)));
                         }
                         None => {
                             lines.push(Line::from("no earlier content known — full written content"));
-                            lines.extend(diff_lines(&crate::snapshot::unified("", content)));
+                            lines.extend(diff_lines(&antty::snapshot::unified("", content)));
                         }
                     }
                 }

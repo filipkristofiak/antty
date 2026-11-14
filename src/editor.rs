@@ -1,8 +1,8 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use crate::model::{EventDetail, FileEvent, Model, Scope, TouchSource};
-use crate::snapshot;
+use antty::model::{EventDetail, FileEvent, Model, Scope, TouchSource};
+use antty::snapshot;
 
 /// On-disk path of an event's target; None for remote/web targets and eval cells.
 pub fn event_path(model: &Model, e: &FileEvent) -> Option<PathBuf> {
@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn eval_cells_have_no_editor_path_but_session_writes_do() {
-        use crate::model::{ParticipantId, TouchKind, TouchSource};
+        use antty::model::{ParticipantId, TouchKind, TouchSource};
 
         let model = Model::new(vec![PathBuf::from("/project")]);
         let mut event = FileEvent {

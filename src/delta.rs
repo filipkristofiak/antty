@@ -1,6 +1,6 @@
 use crate::editor;
-use crate::model::{EventDetail, FileEvent, Model};
-use crate::snapshot;
+use antty::model::{EventDetail, FileEvent, Model};
+use antty::snapshot;
 
 /// Convert omp's numbered edit lines into unified hunks. Context numbers refer to old
 /// lines, additions to new lines; blank lines or skipped line numbers separate hunks.
@@ -111,7 +111,7 @@ pub fn event_patch(model: &Model, e: &FileEvent) -> Result<String, &'static str>
         return Err("no changes to show");
     }
     let label = match e.scope {
-        crate::model::Scope::Project(i) => model.project_display(i, &e.rel),
+        antty::model::Scope::Project(i) => model.project_display(i, &e.rel),
         _ => e.rel.to_string_lossy().into_owned(),
     };
     Ok(format!("--- {label}\n+++ {label}\n{hunks}"))
@@ -129,7 +129,7 @@ pub fn invocation(patch: String) -> editor::Invocation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{FsChange, ParticipantId, Scope, TouchKind, TouchSource};
+    use antty::model::{FsChange, ParticipantId, Scope, TouchKind, TouchSource};
     use std::path::PathBuf;
 
     fn event(detail: EventDetail) -> FileEvent {

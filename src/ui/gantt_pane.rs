@@ -10,9 +10,9 @@ use antty::model::{Model, ParticipantId, ParticipantKind, TouchKind, Ts};
 use antty::timeline::Column;
 use antty::tree::Row;
 
-use super::{AppRef, CURSOR_BG, HIGHLIGHT_FG, SELECTED_BG, color_for, palette_color};
+use super::{AppRef, CURSOR_BG, HIGHLIGHT_FG, SELECTED_BG, TOUCHED_BG, color_for, palette_color};
 
-pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
+pub fn render(f: &mut Frame, area: Rect, app: &AppRef, touched: &[bool]) {
     let block = Block::default().borders(Borders::ALL).title("Gantt Chart Timeline");
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -21,7 +21,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
     }
     render_header(f, Rect { height: 2, ..inner }, app);
     let body = Rect { y: inner.y + 2, height: inner.height.saturating_sub(2), ..inner };
-    render_body(f, body, app);
+    render_body(f, body, app, touched);
 }
 
 fn is_boundary(start: Ts, end: Ts, col_secs: i64) -> bool {
@@ -248,7 +248,7 @@ fn glyph_for_node(app: &AppRef, idx: usize, bs: Ts, be: Ts) -> (char, Option<Col
     (' ', None)
 }
 
-fn render_body(f: &mut Frame, area: Rect, app: &AppRef) {
+fn render_body(f: &mut Frame, area: Rect, app: &AppRef, touched: &[bool]) {
     let width = area.width as i64;
     let cols: Vec<Column> = (0..width).map(|c| app.view.column(c)).collect();
     let cursor_col = app.view.col_for(app.view.cursor);
@@ -263,6 +263,7 @@ fn render_body(f: &mut Frame, area: Rect, app: &AppRef) {
         }
         let row = app.rows[row_idx];
         let is_selected = row_idx == app.ui.selected;
+        let touched_row = !app.ui.no_color && matches!(row, Row::Participant(pid, _) if touched[pid.0]);
         let y = area.y + r;
         for (col, &column) in cols.iter().enumerate() {
             let col = col as i64;
@@ -279,6 +280,8 @@ fn render_body(f: &mut Frame, area: Rect, app: &AppRef) {
                 style = style.bg(SELECTED_BG);
             } else if col == cursor_col {
                 style = style.bg(CURSOR_BG);
+            } else if touched_row {
+                style = style.bg(TOUCHED_BG);
             }
             let x = area.x + col as u16;
             let out = if matches!(column, Column::Time { .. })

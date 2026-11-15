@@ -7,9 +7,9 @@ use crate::search;
 use antty::model::ParticipantKind;
 use antty::tree::{self, Row};
 
-use super::{AppRef, HIGHLIGHT_FG, SELECTED_BG, color_for, truncate};
+use super::{AppRef, HIGHLIGHT_FG, SELECTED_BG, TOUCHED_BG, color_for, truncate};
 
-fn row_text_and_style(app: &AppRef, row: Row) -> (String, Style) {
+fn row_text_and_style(app: &AppRef, row: Row, touched: &[bool]) -> (String, Style) {
     let label = tree::row_label(app.model, app.tree, row);
     let highlighted = app.ui.search.as_deref().is_some_and(|query| search::is_match(&label, query));
     let (text, mut style) = match row {
@@ -26,7 +26,11 @@ fn row_text_and_style(app: &AppRef, row: Row) -> (String, Style) {
             } else {
                 ""
             };
-            (format!("{indent}{marker}{label}"), Style::default().fg(color_for(app.model, pid)))
+            let mut style = Style::default().fg(color_for(app.model, pid));
+            if touched[pid.0] {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            (format!("{indent}{marker}{label}"), style)
         }
         Row::Node(idx) => {
             let node = &app.tree.nodes[idx];
@@ -56,7 +60,7 @@ fn row_text_and_style(app: &AppRef, row: Row) -> (String, Style) {
     (text, style)
 }
 
-pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
+pub fn render(f: &mut Frame, area: Rect, app: &AppRef, touched: &[bool]) {
     let block = Block::default().borders(Borders::ALL).title("files");
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -74,13 +78,16 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
             break;
         }
         let row = app.rows[row_idx];
-        let (text, mut style) = row_text_and_style(app, row);
+        let (text, mut style) = row_text_and_style(app, row, touched);
         let is_selected = row_idx == app.ui.selected;
         if is_selected {
             if matches!(style.fg, None | Some(Color::DarkGray)) {
                 style = style.fg(HIGHLIGHT_FG);
             }
-            style = style.bg(SELECTED_BG);
+            style = style.bg(SELECTED_BG).add_modifier(Modifier::BOLD);
+            buf.set_string(inner.x, body_y + r, " ".repeat(width), style);
+        } else if !app.ui.no_color && matches!(row, Row::Participant(pid, _) if touched[pid.0]) {
+            style = style.bg(TOUCHED_BG);
             buf.set_string(inner.x, body_y + r, " ".repeat(width), style);
         }
         buf.set_string(inner.x, body_y + r, truncate(&text, width), style);

@@ -628,6 +628,26 @@ pub fn auto_open_nodes(model: &Model, tree: &Tree, focus: &[ParticipantId]) -> H
         .collect()
 }
 
+/// Participants to embolden while `row` is selected, indexed by `ParticipantId.0`: for a
+/// `Row::Node` (a file, or a dir via its aggregated descendant `events`), every visible
+/// participant with an event on it plus that participant's session Main, so a collapsed
+/// session row still shows the touch. Any other row, or none, marks nothing.
+pub fn touching_participants(model: &Model, tree: &Tree, row: Option<Row>) -> Vec<bool> {
+    let mut touched = vec![false; model.participants.len()];
+    let Some(Row::Node(idx)) = row else { return touched };
+    for &i in &tree.nodes[idx].events {
+        let who = model.events[i].who;
+        if touched[who.0] || !model.visible(who) {
+            continue;
+        }
+        touched[who.0] = true;
+        if let Some(s) = model.participants[who.0].session {
+            touched[model.sessions[s].main.0] = true;
+        }
+    }
+    touched
+}
+
 fn node_has_visible_events(model: &Model, node: &Node) -> bool {
     node.events.iter().any(|&i| model.visible(model.events[i].who))
 }
@@ -846,6 +866,50 @@ mod tests {
             tool_call_id: None,
             detail: EventDetail::None,
         });
+    }
+
+    #[test]
+    fn touching_participants_marks_toucher_and_its_session_main() {
+        let root = temp_root("touching");
+        let (mut model, main) = model_with_main(root.clone());
+        let sub = model.get_or_create_participant(
+            &root.join("sub.jsonl"),
+            ParticipantKind::Subagent,
+            "sub".into(),
+            Some(0),
+            Some(main),
+        );
+        model.participants[sub.0].session = Some(0);
+        let file = root.join("other.jsonl");
+        let other = model.get_or_create_participant(&file, ParticipantKind::Main, "other".into(), None, None);
+        model.participants[other.0].session = Some(1);
+        let now = chrono::Utc::now();
+        model.sessions.push(Session {
+            file,
+            id: String::new(),
+            title: "other".into(),
+            cwd: root.clone(),
+            start: now,
+            last_seen: now,
+            end: None,
+            main: other,
+        });
+        push_event(&mut model, sub, PathBuf::from("src/ui/b.rs"), Scope::Project(0));
+        let tree = Tree::build(&model, FilesView::Merged);
+        let file_row = Row::Node(tree.find_by_key("f0:src/ui/b.rs").unwrap());
+        let touched = touching_participants(&model, &tree, Some(file_row));
+        assert!(touched[sub.0]);
+        assert!(touched[main.0]);
+        assert!(!touched[other.0]);
+        assert!(!touched[Model::YOU.0]);
+        let dir_row = Row::Node(tree.find_by_key("f0:src").unwrap());
+        assert_eq!(touching_participants(&model, &tree, Some(dir_row)), touched);
+        for row in [Some(Row::Section("files")), Some(Row::Participant(main, 0)), None] {
+            assert!(touching_participants(&model, &tree, row).iter().all(|&marked| !marked));
+        }
+        model.session_filter = HashSet::from([1]);
+        assert!(touching_participants(&model, &tree, Some(file_row)).iter().all(|&marked| !marked));
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn node_names(tree: &Tree, rows: &[Row]) -> Vec<String> {

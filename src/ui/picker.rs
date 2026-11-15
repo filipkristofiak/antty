@@ -1,6 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState};
 
@@ -65,6 +65,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
 
     let mut state = ListState::default();
     state.select(Some(app.ui.picker_cursor));
-    let list = List::new(items).highlight_style(Style::default().bg(SELECTED_BG).fg(HIGHLIGHT_FG));
+    let list =
+        List::new(items).highlight_style(Style::default().bg(SELECTED_BG).fg(HIGHLIGHT_FG).add_modifier(Modifier::BOLD));
     f.render_stateful_widget(list, inner, &mut state);
 }

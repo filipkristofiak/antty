@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span as TSpan};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
@@ -268,7 +268,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
     let list_items: Vec<ListItem> = items.iter().map(|it| ListItem::new(item_line(app, it))).collect();
     let mut state = ListState::default();
     state.select(Some(selected));
-    let list = List::new(list_items).highlight_style(Style::default().bg(SELECTED_BG).fg(HIGHLIGHT_FG));
+    let list = List::new(list_items)
+        .highlight_style(Style::default().bg(SELECTED_BG).fg(HIGHLIGHT_FG).add_modifier(Modifier::BOLD));
     f.render_stateful_widget(list, cols[0], &mut state);
 
     if let Some(item) = selected_item(app) {

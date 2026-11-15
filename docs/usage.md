@@ -49,6 +49,12 @@ Runs of six or more columns idle across all visible sessions collapse into three
 
 Bottom: a status bar with key hints and current zoom/session/watch/gap-collapse state, plus the worktree view when multiple roots are shown.
 
+The selected row is bold in the tree, Detail event list, and session picker.
+Selecting a file or directory also bolds the visible participants that touched it
+and their session rows, even when collapsed. Directories include descendant events;
+sessions excluded by the session filter do not contribute. Selecting a participant
+does not bold file rows. Bold highlighting is retained with `NO_COLOR`.
+
 ## Overlays
 
 - **Detail** (`Enter`) — event/span list for the selected row

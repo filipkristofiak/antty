@@ -20,6 +20,9 @@ use antty::tree::{ExpandState, FilesView, Row, Tree};
 
 pub const SELECTED_BG: Color = Color::Rgb(50, 70, 130);
 pub const CURSOR_BG: Color = Color::Rgb(40, 40, 60);
+/// Soft row tint for participants that touched the selected file/dir. Dark slate-teal so the
+/// participant's palette foreground stays readable and it differs from CURSOR_BG's column.
+pub const TOUCHED_BG: Color = Color::Rgb(32, 48, 62);
 /// Text drawn on SELECTED_BG/CURSOR_BG. Explicit RGB so it stays light when the terminal's
 /// default foreground is dark (light themes).
 pub const HIGHLIGHT_FG: Color = Color::Rgb(235, 235, 235);
@@ -234,8 +237,9 @@ pub fn draw(f: &mut Frame, app: &AppRef) {
     if let Some(area) = layout.detail_area {
         detail::render(f, area, app);
     }
-    tree_pane::render(f, layout.tree_area, app);
-    gantt_pane::render(f, layout.gantt_area, app);
+    let touched = antty::tree::touching_participants(app.model, app.tree, app.rows.get(app.ui.selected).copied());
+    tree_pane::render(f, layout.tree_area, app, &touched);
+    gantt_pane::render(f, layout.gantt_area, app, &touched);
     status::render(f, layout.status_area, app);
 
     match app.ui.view_mode() {

@@ -7,7 +7,7 @@ use crate::search;
 use antty::model::ParticipantKind;
 use antty::tree::{self, Row};
 
-use super::{AppRef, HIGHLIGHT_FG, SELECTED_BG, color_for, truncate};
+use super::{AppRef, HIGHLIGHT_FG, SELECTED_BG, TOUCHED_BG, color_for, truncate};
 
 fn row_text_and_style(app: &AppRef, row: Row, touched: &[bool]) -> (String, Style) {
     let label = tree::row_label(app.model, app.tree, row);
@@ -60,7 +60,7 @@ fn row_text_and_style(app: &AppRef, row: Row, touched: &[bool]) -> (String, Styl
     (text, style)
 }
 
-pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
+pub fn render(f: &mut Frame, area: Rect, app: &AppRef, touched: &[bool]) {
     let block = Block::default().borders(Borders::ALL).title("files");
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -72,20 +72,22 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
     let body_height = inner.height.saturating_sub(2);
     let width = inner.width as usize;
     let buf = f.buffer_mut();
-    let touched = tree::touching_participants(app.model, app.tree, app.rows.get(app.ui.selected).copied());
     for r in 0..body_height {
         let row_idx = app.ui.scroll + r as usize;
         if row_idx >= app.rows.len() {
             break;
         }
         let row = app.rows[row_idx];
-        let (text, mut style) = row_text_and_style(app, row, &touched);
+        let (text, mut style) = row_text_and_style(app, row, touched);
         let is_selected = row_idx == app.ui.selected;
         if is_selected {
             if matches!(style.fg, None | Some(Color::DarkGray)) {
                 style = style.fg(HIGHLIGHT_FG);
             }
             style = style.bg(SELECTED_BG).add_modifier(Modifier::BOLD);
+            buf.set_string(inner.x, body_y + r, " ".repeat(width), style);
+        } else if !app.ui.no_color && matches!(row, Row::Participant(pid, _) if touched[pid.0]) {
+            style = style.bg(TOUCHED_BG);
             buf.set_string(inner.x, body_y + r, " ".repeat(width), style);
         }
         buf.set_string(inner.x, body_y + r, truncate(&text, width), style);

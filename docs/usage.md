@@ -51,9 +51,11 @@ Bottom: a status bar with key hints and current zoom/session/watch/gap-collapse 
 
 The selected row is bold in the tree, Detail event list, and session picker.
 Selecting a file or directory also bolds the visible participants that touched it
-and their session rows, even when collapsed. Directories include descendant events;
-sessions excluded by the session filter do not contribute. Selecting a participant
-does not bold file rows. Bold highlighting is retained with `NO_COLOR`.
+and their session rows, even when collapsed, with a soft background tint across the
+tree row and Gantt lane. Selection and the time-cursor column take precedence over
+the tint. Directories include descendant events; sessions excluded by the session
+filter do not contribute. Selecting a participant does not highlight file rows.
+With `NO_COLOR`, touched rows stay bold without the tint.
 
 ## Overlays
 

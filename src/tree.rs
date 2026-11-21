@@ -990,16 +990,12 @@ mod tests {
             assert!(unfiltered.contains(&pid));
         }
 
-        model.action_filter = Some(crate::filter::ActionFilter {
-            actions: [crate::filter::Action::Read].into(),
-            ..Default::default()
-        });
+        model.action_filter =
+            Some(crate::filter::ActionFilter { actions: [crate::filter::Action::Read].into(), ..Default::default() });
         assert_eq!(participants(&model), vec![Model::YOU, main, sub]);
 
-        model.action_filter = Some(crate::filter::ActionFilter {
-            actions: [crate::filter::Action::Eval].into(),
-            ..Default::default()
-        });
+        model.action_filter =
+            Some(crate::filter::ActionFilter { actions: [crate::filter::Action::Eval].into(), ..Default::default() });
         assert_eq!(participants(&model), vec![Model::YOU]);
         fs::remove_dir_all(root).unwrap();
     }

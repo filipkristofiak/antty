@@ -37,6 +37,7 @@ Plain `cargo` works wherever it's already on `PATH`.
 - `src/timeline.rs` — zoom levels, time↔column mapping, idle-gap span merging.
 - `src/tree.rs` — builds the `PARTICIPANTS`/`FILES`/`MOUNTS`/`WEB`/`MCP` row forests.
 - `src/search.rs` — smartcase full-tree search and wrapped match stepping.
+- `src/stats.rs` — stats subjects for tree rows; tool-call, file and time totals with visibility and time-range filters.
 - `src/ui/mod.rs` — `Mode`, layout math, top-level `draw`.
 - `src/ui/tree_pane.rs` — left pane: sections, participants, file tree rows.
 - `src/ui/gantt_pane.rs` — right pane: the Gantt timeline.
@@ -44,6 +45,7 @@ Plain `cargo` works wherever it's already on `PATH`.
 - `src/ui/detail.rs` — Detail overlay: event/span list and diff text.
 - `src/ui/diff_view.rs` — full-screen diff overlay.
 - `src/ui/picker.rs` — session picker overlay.
+- `src/ui/stats.rs` — stats side panel and popup: KPI rows and tool-call bar chart.
 - `src/ui/help.rs` — help overlay and `KEYS` table.
 
 ## Conventions

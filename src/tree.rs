@@ -669,20 +669,38 @@ fn push_node_rows(model: &Model, tree: &Tree, state: &ExpandState, idx: usize, e
     }
 }
 
-/// Build the shared row list: participants section (you + one row per visible session, most
-/// recently active first, with subagent/advisor rows and the session's own touched-temp-files
-/// tree nested beneath an expanded session), then FILES (always shown), then MOUNTS/WEB (only
-/// when either has any visible event, since most projects never touch a mount or the web).
+/// Build the shared row list: participants section (YOU + sessions, most recently active
+/// first, with subagents, advisors, and touched temp files nested under expanded sessions).
+/// An action filter keeps only sessions and subagent/advisor rows with a matching event.
+/// FILES is always shown; MOUNTS, WEB, and MCP need at least one visible event.
 pub fn build_rows(model: &Model, tree: &Tree, state: &ExpandState) -> Vec<Row> {
     let mut rows = Vec::new();
+    // None means there is no action filter, so every participant is shown.
+    let active: Option<Vec<bool>> = model.action_filter.as_ref().map(|_| {
+        let mut active = vec![false; model.participants.len()];
+        for e in model.events.iter().filter(|e| model.event_visible(e)) {
+            active[e.who.0] = true;
+        }
+        active
+    });
+    let shown = |pid: usize| active.as_ref().is_none_or(|a| a[pid]);
+
     rows.push(Row::Section("participants"));
     rows.push(Row::Participant(Model::YOU, 0));
 
     for sidx in model.sessions_by_latest_activity() {
+        if active.is_some()
+            && !model.participants.iter().enumerate().any(|(pidx, p)| p.session == Some(sidx) && shown(pidx))
+        {
+            continue;
+        }
         rows.push(Row::Participant(model.sessions[sidx].main, 0));
         if state.expanded_sessions.contains(&sidx) {
             for (pidx, p) in model.participants.iter().enumerate() {
-                if p.session == Some(sidx) && matches!(p.kind, ParticipantKind::Subagent | ParticipantKind::Advisor) {
+                if p.session == Some(sidx)
+                    && matches!(p.kind, ParticipantKind::Subagent | ParticipantKind::Advisor)
+                    && shown(pidx)
+                {
                     rows.push(Row::Participant(ParticipantId(pidx), 1));
                 }
             }
@@ -913,6 +931,76 @@ mod tests {
         }
         model.session_filter = HashSet::from([1]);
         assert!(touching_participants(&model, &tree, Some(file_row)).iter().all(|&marked| !marked));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn action_filter_hides_sessions_and_subagents_without_matching_events() {
+        let root = temp_root("action-filter-rows");
+        let (mut model, main) = model_with_main(root.clone());
+        let sub = model.get_or_create_participant(
+            &root.join("sub.jsonl"),
+            ParticipantKind::Subagent,
+            "sub".into(),
+            Some(0),
+            Some(main),
+        );
+        model.participants[sub.0].session = Some(0);
+        let idle = model.get_or_create_participant(
+            &root.join("idle.jsonl"),
+            ParticipantKind::Advisor,
+            "idle".into(),
+            Some(0),
+            Some(main),
+        );
+        model.participants[idle.0].session = Some(0);
+        let file = root.join("other.jsonl");
+        let other = model.get_or_create_participant(&file, ParticipantKind::Main, "other".into(), None, None);
+        model.participants[other.0].session = Some(1);
+        let now = chrono::Utc::now();
+        model.sessions.push(Session {
+            file,
+            id: String::new(),
+            title: "other".into(),
+            cwd: root.clone(),
+            start: now,
+            last_seen: now,
+            end: None,
+            main: other,
+        });
+        push_event(&mut model, sub, PathBuf::from("src/ui/b.rs"), Scope::Project(0));
+        push_event(&mut model, other, PathBuf::from("Cargo.toml"), Scope::Project(0));
+        model.events.last_mut().unwrap().source = TouchSource::Tool("write".into());
+
+        let tree = Tree::build(&model, FilesView::Merged);
+        let mut state = ExpandState::default();
+        state.expanded_sessions.insert(0);
+        let participants = |model: &Model| {
+            build_rows(model, &tree, &state)
+                .into_iter()
+                .filter_map(|row| match row {
+                    Row::Participant(pid, _) => Some(pid),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let unfiltered = participants(&model);
+        for pid in [Model::YOU, main, sub, idle, other] {
+            assert!(unfiltered.contains(&pid));
+        }
+
+        model.action_filter = Some(crate::filter::ActionFilter {
+            actions: [crate::filter::Action::Read].into(),
+            ..Default::default()
+        });
+        assert_eq!(participants(&model), vec![Model::YOU, main, sub]);
+
+        model.action_filter = Some(crate::filter::ActionFilter {
+            actions: [crate::filter::Action::Eval].into(),
+            ..Default::default()
+        });
+        assert_eq!(participants(&model), vec![Model::YOU]);
         fs::remove_dir_all(root).unwrap();
     }
 

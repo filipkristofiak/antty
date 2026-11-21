@@ -130,6 +130,8 @@ are not traced.
 
 In Normal mode, letter keys act only when typed without Ctrl/Alt; unlisted Ctrl chords do nothing.
 
+With an action filter (`F`) active, PARTICIPANTS keeps `you` and sessions with at least one matching action from the main agent, a subagent, or an advisor. Expanded sessions hide subagents and advisors with no matching actions.
+
 `$EDITOR` is split on whitespace; antty adds `+<line>` when known and suspends the TUI until it exits. When `$NVIM` is non-empty, antty asks that Neovim instance to open the file instead. Unset `$EDITOR` without `$NVIM` shows an error. `NO_COLOR` (non-empty) disables foreground/background colours, retaining selection as reverse video.
 
 `D` pipes the selected event's diff to `delta --paging always` and suspends antty until delta's pager exits. delta chooses its pager from `DELTA_PAGER`, then `PAGER`, then `less`. After the pager exits, press any key to return to antty; this keeps short diffs visible even when the pager quits automatically. delta is optional; if it is not on PATH, `D` shows an error. omp edit diffs are converted from their recorded numbered lines, including when full before/after file contents are unavailable. Events without a unified diff show an error.

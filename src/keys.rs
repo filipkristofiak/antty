@@ -54,6 +54,7 @@ impl App {
             Mode::Diff => self.handle_key_diff(key),
             Mode::Picker => self.handle_key_picker(key),
             Mode::Actions => self.handle_key_actions(key),
+            Mode::Stats => self.handle_key_stats(key),
             Mode::Help => {
                 if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('?')) {
                     self.ui.mode = self.ui.help_return;
@@ -243,8 +244,23 @@ impl App {
             KeyCode::Char('w') => self.toggle_files_view(),
             KeyCode::Char('s') => self.open_picker(),
             KeyCode::Char('F') => self.open_actions(),
+            KeyCode::Char('i') => self.ui.stats_panel = !self.ui.stats_panel,
+            KeyCode::Char('I') => self.ui.mode = Mode::Stats,
+            KeyCode::Char('v') => self.ui.stats_window = !self.ui.stats_window,
             KeyCode::Char('?') => self.open_help(),
             KeyCode::Esc => self.ui.search = None,
+            _ => {}
+        }
+        false
+    }
+
+    fn handle_key_stats(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Char('q' | 'I') | KeyCode::Esc => self.ui.mode = Mode::Normal,
+            KeyCode::Char('?') => self.open_help(),
+            KeyCode::Char('v') => self.ui.stats_window = !self.ui.stats_window,
+            KeyCode::Char('j') | KeyCode::Down => self.move_selected(1),
+            KeyCode::Char('k') | KeyCode::Up => self.move_selected(-1),
             _ => {}
         }
         false
@@ -400,7 +416,7 @@ mod tests {
         let tree = Tree::build(&model, FilesView::Merged);
         let ui = UiState::new(false);
         let rows = tree::build_rows(&model, &tree, &ui.expand);
-        let layout = ui::compute_layout(Rect::new(0, 0, 200, 50), Mode::Normal);
+        let layout = ui::compute_layout(Rect::new(0, 0, 200, 50), Mode::Normal, false);
         let now = chrono::Utc::now();
         let mut view = View::new(true);
         view.fit(now - chrono::Duration::hours(1), now, layout.gantt_width as usize);
@@ -430,6 +446,38 @@ mod tests {
             },
             tx,
         }
+    }
+
+    #[test]
+    fn stats_keys_toggle_panel_and_navigate_popup() {
+        let root = std::env::temp_dir().join(format!("antty-keys-test-stats-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut app = test_app(&root, &root.join("state"));
+        let press = |app: &mut App, c| app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        assert!(!app.ui.stats_panel);
+        assert!(!app.ui.stats_window);
+        press(&mut app, 'v');
+        assert!(app.ui.stats_window);
+        press(&mut app, 'i');
+        assert!(app.ui.stats_panel);
+        press(&mut app, 'I');
+        assert_eq!(app.ui.mode, Mode::Stats);
+        let selected = app.ui.selected;
+        press(&mut app, 'j');
+        assert_eq!(app.ui.selected, selected + 1);
+        press(&mut app, 'v');
+        assert!(!app.ui.stats_window);
+        press(&mut app, '?');
+        assert_eq!(app.ui.mode, Mode::Help);
+        assert_eq!(app.ui.view_mode(), Mode::Stats);
+        press(&mut app, 'q');
+        assert_eq!(app.ui.mode, Mode::Stats);
+        press(&mut app, 'q');
+        assert_eq!(app.ui.mode, Mode::Normal);
+        press(&mut app, 'i');
+        assert!(!app.ui.stats_panel);
+        drop(app);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

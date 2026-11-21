@@ -177,6 +177,24 @@ fn content_blocks(v: &Value) -> Option<&Vec<Value>> {
     v.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array())
 }
 
+fn claude_tool_name(tool: &str) -> std::borrow::Cow<'_, str> {
+    let name = match tool {
+        "Read" => "read",
+        "Write" => "write",
+        "Edit" | "MultiEdit" | "NotebookEdit" => "edit",
+        "Bash" => "bash",
+        "Grep" => "grep",
+        "Glob" => "glob",
+        "WebSearch" => "web_search",
+        "WebFetch" => "web_fetch",
+        "Task" | "Agent" => "task",
+        "TodoWrite" => "todo",
+        _ if tool.starts_with("mcp__") => "mcp",
+        _ => return tool.to_lowercase().into(),
+    };
+    name.into()
+}
+
 /// Assistant records carry no completion time, so the time since the previous user/assistant
 /// entry counts as generation activity.
 fn ingest_assistant(model: &mut Model, who: ParticipantId, v: &Value, ts: Ts) {
@@ -198,6 +216,7 @@ fn ingest_assistant(model: &mut Model, who: ParticipantId, v: &Value, ts: Ts) {
             continue;
         }
         let tool = block.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        model.record_tool_call(who, id, &claude_tool_name(&tool), ts);
         let args = block.get("input").cloned().unwrap_or(Value::Null);
         if tool == "Bash" {
             let input = args.get("command").and_then(Value::as_str).unwrap_or("").to_string();
@@ -421,6 +440,25 @@ mod tests {
 
     fn t(s: &str) -> Ts {
         parse_ts_iso(&format!("2026-01-01T00:00:{s}Z")).unwrap()
+    }
+
+    #[test]
+    fn claude_tool_stats_normalize_and_dedup_tool_uses() {
+        let dir = Path::new("/cc/-proj");
+        let mut model = Model::new(vec![PathBuf::from("/Users/x/proj")]);
+        let who = ensure_participant(&mut model, &dir.join("stats.jsonl"), dir);
+        let assistant = json!({
+            "type":"assistant","timestamp":"2026-01-01T00:00:05Z",
+            "message":{"content":[
+                {"type":"tool_use","id":"g1","name":"Grep"},
+                {"type":"tool_use","id":"m1","name":"mcp__srv__x"}
+            ]}
+        });
+        ingest(&mut model, who, &assistant);
+        ingest(&mut model, who, &assistant);
+        assert_eq!(model.tool_calls.len(), 2);
+        assert_eq!(model.tool_calls[&(who.0, "g1".into())].tool, "grep");
+        assert_eq!(model.tool_calls[&(who.0, "m1".into())].tool, "mcp");
     }
 
     #[test]

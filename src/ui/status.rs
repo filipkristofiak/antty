@@ -76,14 +76,23 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
     if !showcmd.is_empty() {
         right = format!("{showcmd} · {right}");
     }
+    // Keep the stats state readable even when the narrow layout clips the other status text.
+    let stats = match (app.ui.stats_window, app.ui.stats_panel && area.width < super::STATS_MIN_WIDTH) {
+        (true, true) => " · stats:range · stats:narrow",
+        (true, false) => " · stats:range",
+        (false, true) => " · stats:narrow",
+        (false, false) => "",
+    };
+    let width = width.saturating_sub(stats.chars().count());
     let left = truncate(hints, width);
     let left_len = left.chars().count();
     let right_len = right.chars().count();
-    let text = if left_len + right_len + 2 <= width {
+    let mut text = if left_len + right_len + 2 <= width {
         let pad = width - left_len - right_len;
         format!("{left}{}{right}", " ".repeat(pad))
     } else {
         truncate(&format!("{left}  {right}"), width)
     };
+    text.push_str(stats);
     f.render_widget(Paragraph::new(text), area);
 }

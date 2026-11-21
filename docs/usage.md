@@ -45,6 +45,7 @@ Left pane, top to bottom:
 - `MCP` — tool calls grouped by server, then tool
 
 Right pane: the Gantt timeline, one lane per participant.
+`i` adds a stats panel on the far right (hidden below 110 columns).
 Runs of six or more columns idle across all visible sessions collapse into three display columns (` ~ `) by default, with the marker centered between two blank columns. The header shows `~<duration>` when it fits; closely spaced breaks retain a bare `~` rather than a truncated duration. Press `c` to toggle collapsing without moving the time cursor.
 
 Bottom: a status bar with key hints and current zoom/session/watch/gap-collapse state, plus the worktree view when multiple roots are shown.
@@ -63,7 +64,11 @@ With `NO_COLOR`, touched rows stay bold without the tint.
 - **Diff** — full-screen scrollable diff or detail of the selected event (`Enter` again from Detail)
 - **Picker** (`s`) — session list, sorted by start time
 - **Actions** (`F`) — choose which action types to show
+- **Stats** (`I`) — tool-call bars and totals for the selected row next to all visible activity
 - **Help** (`?` from any view) — the key table below; closing it returns to the view it was opened from
+
+Stats cover all time by default. Press `v` in Normal mode or in the Stats popup to count
+only the time shown in the Gantt timeline. The panel and time-range setting reset on launch.
 
 In Actions, `Space` toggles the highlighted checkbox, `a` checks every action, and `n` unchecks
 every action. `Enter` applies; `q` or `Esc` cancels. The separate **scripts only** checkbox narrows
@@ -121,6 +126,9 @@ are not traced.
 | `w` | worktrees: merged/separate FILES view |
 | `s` | session picker |
 | `F` | action filter: show only chosen actions; script-files toggle |
+| `i` | stats panel on/off: tool calls and totals, selection vs all |
+| `I` | stats popup; j/k move the selection underneath |
+| `v` | stats: visible time range only on/off |
 | `?` | this help, from any view; closing returns there |
 | `:q⏎, ZZ/ZQ` | quit |
 | `Ctrl-C` | hint: quit with :q⏎ |

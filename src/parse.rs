@@ -358,6 +358,10 @@ fn eval_cell_name(args: &Value, start: Ts) -> String {
     if label.is_empty() { format!("{time}.{ext}") } else { format!("{time} {label}.{ext}") }
 }
 
+fn omp_tool_name(tool: &str) -> &str {
+    if tool.starts_with("mcp__") { "mcp" } else { tool }
+}
+
 fn ingest_custom(model: &mut Model, who: ParticipantId, v: &Value) {
     match v.get("customType").and_then(|x| x.as_str()).unwrap_or("") {
         "tool_execution_start" => {
@@ -372,6 +376,7 @@ fn ingest_custom(model: &mut Model, who: ParticipantId, v: &Value) {
                 .and_then(parse_ts_iso)
                 .or_else(|| v.get("timestamp").and_then(|x| x.as_str()).and_then(parse_ts_iso))
                 .unwrap_or_else(chrono::Utc::now);
+            model.record_tool_call(who, tool_call_id, omp_tool_name(&tool), started_at);
             let new_args = data.get("args").cloned().unwrap_or(Value::Null);
             let key = (who.0, tool_call_id.to_string());
             // Assistant arguments are authoritative; start records can contain only
@@ -442,6 +447,7 @@ fn ingest_assistant(model: &mut Model, who: ParticipantId, v: &Value, msg: &Valu
             continue;
         }
         let tool = block.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        model.record_tool_call(who, id, omp_tool_name(&tool), entry_ts);
         let args = block.get("arguments").cloned().unwrap_or(Value::Null);
         model.pending_tools.insert(key, Pending { tool, args, start: entry_ts });
     }
@@ -910,6 +916,29 @@ mod tests {
         });
         model.participants[who.0].session = Some(idx);
         (model, who)
+    }
+
+    #[test]
+    fn omp_tool_stats_count_assistant_and_start_records_once() {
+        let (mut model, who) = model_with_main(root());
+        let assistant = serde_json::json!({
+            "type":"message","timestamp":"2026-01-01T00:00:00Z",
+            "message":{"role":"assistant","content":[
+                {"type":"toolCall","id":"t1","name":"bash"},
+                {"type":"toolCall","id":"t2","name":"mcp__github__create_issue"}
+            ]}
+        });
+        let start = serde_json::json!({
+            "type":"custom","customType":"tool_execution_start",
+            "data":{"toolCallId":"t1","toolName":"bash","startedAt":"2026-01-01T00:00:01Z"}
+        });
+        ingest(&mut model, who, &assistant, 30);
+        ingest(&mut model, who, &start, 30);
+        assert_eq!(model.tool_calls.len(), 2);
+        let bash = &model.tool_calls[&(who.0, "t1".into())];
+        assert_eq!(bash.tool, "bash");
+        assert_eq!(bash.start, parse_ts_iso("2026-01-01T00:00:00Z").unwrap());
+        assert_eq!(model.tool_calls[&(who.0, "t2".into())].tool, "mcp");
     }
 
     #[test]

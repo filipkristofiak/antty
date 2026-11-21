@@ -194,6 +194,9 @@ pub struct Model {
     /// empty = all sessions visible
     #[serde(skip)]
     pub session_filter: HashSet<usize>,
+    /// None = every action shown.
+    #[serde(skip)]
+    pub action_filter: Option<crate::filter::ActionFilter>,
 
     /// glue: resolve a jsonl file path to its participant.
     pub file_participant: HashMap<PathBuf, ParticipantId>,
@@ -255,6 +258,7 @@ impl Model {
             window_keys: HashSet::new(),
             calls: HashMap::new(),
             session_filter: HashSet::new(),
+            action_filter: None,
             file_participant: HashMap::new(),
             pending_tools: HashMap::new(),
             raw_intervals: HashMap::new(),
@@ -357,6 +361,11 @@ impl Model {
     /// A session is visible under the current filter iff its Main participant is.
     pub fn session_visible(&self, session_idx: usize) -> bool {
         self.session_filter.is_empty() || self.session_filter.contains(&session_idx)
+    }
+
+    /// The participant is visible and the event passes the action filter, if set.
+    pub fn event_visible(&self, e: &FileEvent) -> bool {
+        self.visible(e.who) && self.action_filter.as_ref().is_none_or(|f| f.matches(e))
     }
 
     fn next_color_idx(&self) -> usize {

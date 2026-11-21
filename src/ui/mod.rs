@@ -1,3 +1,4 @@
+pub mod actions;
 pub mod detail;
 pub mod diff_view;
 pub mod gantt_pane;
@@ -56,6 +57,7 @@ pub enum Mode {
     Detail,
     Diff,
     Picker,
+    Actions,
     Help,
 }
 
@@ -65,6 +67,13 @@ pub enum DetailItem {
     Event(usize),
     Span { who: ParticipantId, start: antty::model::Ts, end: antty::model::Ts },
     Prompt { at: antty::model::Ts },
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub enum ActionRow {
+    Fixed(antty::filter::Action, usize),
+    FsDuring(String, usize),
+    ScriptsOnly,
 }
 
 pub struct UiState {
@@ -102,6 +111,12 @@ pub struct UiState {
     // Picker mode: working selection, applied to model.session_filter on Enter.
     pub picker_selected: HashSet<usize>,
     pub picker_cursor: usize,
+
+    // Actions mode: rows snapshotted on open and working selection applied on Enter.
+    pub actions_rows: Vec<ActionRow>,
+    pub actions_checked: HashSet<usize>, // indices into actions_rows
+    pub actions_scripts: bool,
+    pub actions_cursor: usize,
 }
 
 impl UiState {
@@ -129,6 +144,10 @@ impl UiState {
             diff_scroll: 0,
             picker_selected: HashSet::new(),
             picker_cursor: 0,
+            actions_rows: Vec::new(),
+            actions_checked: HashSet::new(),
+            actions_scripts: false,
+            actions_cursor: 0,
         }
     }
 
@@ -184,7 +203,7 @@ pub struct LayoutInfo {
     pub body_height: u16,
     /// number of timeline columns in the gantt pane.
     pub gantt_width: u16,
-    /// centered session-picker overlay; its inner height sizes picker half-page moves.
+    /// Centered picker overlays; inner height determines half-page moves.
     pub picker_area: Rect,
 }
 
@@ -244,6 +263,7 @@ pub fn draw(f: &mut Frame, app: &AppRef) {
 
     match app.ui.view_mode() {
         Mode::Picker => picker::render(f, layout.picker_area, app),
+        Mode::Actions => actions::render(f, layout.picker_area, app),
         Mode::Diff => {
             let area = Rect { height: root.height.saturating_sub(1), ..root };
             f.render_widget(Clear, area);

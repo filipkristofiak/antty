@@ -43,20 +43,22 @@ pub fn visible_activity(model: &Model) -> Vec<(i64, i64)> {
     let mut activity: Vec<_> = model
         .events
         .iter()
-        .filter(|e| model.visible(e.who))
+        .filter(|e| model.event_visible(e))
         .map(|e| (e.start.timestamp().min(e.end.timestamp()), e.start.timestamp().max(e.end.timestamp())))
-        .chain(
+        .collect();
+    if model.action_filter.is_none() {
+        activity.extend(
             model
                 .spans
                 .iter()
                 .filter(|s| model.visible(s.who))
                 .map(|s| (s.start.timestamp().min(s.end.timestamp()), s.start.timestamp().max(s.end.timestamp()))),
-        )
-        .chain(model.prompts.iter().filter(|p| model.session_visible(p.session)).map(|p| {
+        );
+        activity.extend(model.prompts.iter().filter(|p| model.session_visible(p.session)).map(|p| {
             let at = p.at.timestamp();
             (at, at)
-        }))
-        .collect();
+        }));
+    }
     activity.sort_unstable();
     let mut merged: Vec<(i64, i64)> = Vec::with_capacity(activity.len());
     for (start, end) in activity {
@@ -403,6 +405,7 @@ mod tests {
 
     #[test]
     fn visible_activity_merges_sources_and_excludes_filtered_sessions() {
+        use crate::filter::{Action, ActionFilter};
         use crate::model::{
             EventDetail, FileEvent, Participant, ParticipantId, ParticipantKind, Prompt, Scope, Span, TouchKind,
             TouchSource,
@@ -441,6 +444,17 @@ mod tests {
         // The picker represents "show none" with an impossible session index; YOU remains visible.
         model.session_filter.insert(usize::MAX);
         assert_eq!(visible_activity(&model), vec![(t0, t0 + 50)]);
+
+        model.events.push(FileEvent {
+            source: TouchSource::Tool("write".into()),
+            start: at(200),
+            end: at(210),
+            ..model.events[0].clone()
+        });
+        model.action_filter = Some(ActionFilter { actions: [Action::Fs].into(), ..Default::default() });
+        assert_eq!(visible_activity(&model), vec![(t0, t0 + 20)]);
+        model.session_filter.clear();
+        assert_eq!(visible_activity(&model), vec![(t0, t0 + 20), (t0 + 420, t0 + 470)]);
     }
 
     #[test]

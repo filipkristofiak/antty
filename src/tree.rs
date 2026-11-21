@@ -622,7 +622,10 @@ pub fn auto_open_nodes(model: &Model, tree: &Tree, focus: &[ParticipantId]) -> H
         .enumerate()
         .filter(|(_, n)| {
             n.is_dir
-                && n.events.iter().any(|&i| focus.contains(&model.events[i].who) && model.visible(model.events[i].who))
+                && n.events.iter().any(|&i| {
+                    let e = &model.events[i];
+                    focus.contains(&e.who) && model.event_visible(e)
+                })
         })
         .map(|(idx, _)| idx)
         .collect()
@@ -636,8 +639,9 @@ pub fn touching_participants(model: &Model, tree: &Tree, row: Option<Row>) -> Ve
     let mut touched = vec![false; model.participants.len()];
     let Some(Row::Node(idx)) = row else { return touched };
     for &i in &tree.nodes[idx].events {
-        let who = model.events[i].who;
-        if touched[who.0] || !model.visible(who) {
+        let e = &model.events[i];
+        let who = e.who;
+        if touched[who.0] || !model.event_visible(e) {
             continue;
         }
         touched[who.0] = true;
@@ -649,12 +653,12 @@ pub fn touching_participants(model: &Model, tree: &Tree, row: Option<Row>) -> Ve
 }
 
 fn node_has_visible_events(model: &Model, node: &Node) -> bool {
-    node.events.iter().any(|&i| model.visible(model.events[i].who))
+    node.events.iter().any(|&i| model.event_visible(&model.events[i]))
 }
 
 fn push_node_rows(model: &Model, tree: &Tree, state: &ExpandState, idx: usize, events_only: bool, rows: &mut Vec<Row>) {
     let node = &tree.nodes[idx];
-    if (state.touched_only || events_only) && !node_has_visible_events(model, node) {
+    if (state.touched_only || events_only || model.action_filter.is_some()) && !node_has_visible_events(model, node) {
         return;
     }
     rows.push(Row::Node(idx));

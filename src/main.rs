@@ -6,9 +6,11 @@ mod keys;
 mod search;
 mod ui;
 
+use std::collections::BTreeMap;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use antty::filter::{Action, ActionFilter, ActionKey, action_key};
 use antty::{attrib, disk, index, model, sessions, timeline, tree, watch, worktree};
 use crossterm::event::{self, Event, KeyEventKind};
 use ratatui::layout::Rect;
@@ -19,10 +21,18 @@ use model::{Model, Ts};
 use sessions::{Harness, Msg};
 use timeline::View;
 use tree::{Row, Tree};
-use ui::{AppRef, Mode, UiState};
+use ui::{ActionRow, AppRef, Mode, UiState};
 
-/// Earliest/latest timestamp across everything currently in the model, for the initial "fit".
+/// Earliest/latest timestamp for fit, restricted to matching events when filtered.
 fn model_time_range(model: &Model) -> Option<(Ts, Ts)> {
+    if model.action_filter.is_some() {
+        return model
+            .events
+            .iter()
+            .filter(|e| model.event_visible(e))
+            .map(|e| (e.start, e.end))
+            .reduce(|(min, max), (start, end)| (min.min(start), max.max(end)));
+    }
     let mut min: Option<Ts> = None;
     let mut max: Option<Ts> = None;
     let bump = |t: Ts, min: &mut Option<Ts>, max: &mut Option<Ts>| {
@@ -305,7 +315,7 @@ impl App {
             .iter()
             .map(|&idx| &self.model.events[idx])
             .filter(|e| {
-                self.model.visible(e.who) && project_root.is_none_or(|root| e.scope == model::Scope::Project(root))
+                self.model.event_visible(e) && project_root.is_none_or(|root| e.scope == model::Scope::Project(root))
             })
             .collect();
         events.sort_by_key(|e| std::cmp::Reverse(e.end));
@@ -469,14 +479,88 @@ impl App {
         self.rebuild();
     }
 
+    fn open_actions(&mut self) {
+        let filter = self.model.action_filter.as_ref();
+        let mut fixed = [0; Action::ALL.len()];
+        let mut fs_during = BTreeMap::new();
+        for e in self.model.events.iter().filter(|e| self.model.visible(e.who)) {
+            match action_key(e) {
+                ActionKey::Fixed(action) => fixed[action as usize] += 1,
+                ActionKey::FsDuring(tool) => *fs_during.entry(tool).or_default() += 1,
+            }
+        }
+        if let Some(filter) = filter {
+            for tool in &filter.fs_during {
+                fs_during.entry(tool.as_str()).or_default();
+            }
+        }
+        self.ui.actions_rows = Action::ALL
+            .into_iter()
+            .filter_map(|action| {
+                let count = fixed[action as usize];
+                (count > 0 || filter.is_some_and(|f| f.actions.contains(&action)))
+                    .then_some(ActionRow::Fixed(action, count))
+            })
+            .chain(fs_during.into_iter().map(|(tool, count)| ActionRow::FsDuring(tool.to_owned(), count)))
+            .chain(std::iter::once(ActionRow::ScriptsOnly))
+            .collect();
+        self.ui.actions_checked = self
+            .ui
+            .actions_rows
+            .iter()
+            .enumerate()
+            .filter_map(|(i, row)| {
+                match row {
+                    ActionRow::Fixed(action, _) => filter.is_none_or(|f| f.actions.contains(action)),
+                    ActionRow::FsDuring(tool, _) => filter.is_none_or(|f| f.fs_during.contains(tool)),
+                    ActionRow::ScriptsOnly => false,
+                }
+                .then_some(i)
+            })
+            .collect();
+        self.ui.actions_scripts = filter.is_some_and(|f| f.scripts_only);
+        self.ui.actions_cursor = 0;
+        self.ui.mode = Mode::Actions;
+    }
+
+    fn apply_actions(&mut self) {
+        let scripts_only = self.ui.actions_scripts;
+        self.model.action_filter = if !scripts_only && self.ui.actions_checked.len() == self.ui.actions_rows.len() - 1 {
+            None
+        } else {
+            let mut filter = ActionFilter { scripts_only, ..ActionFilter::default() };
+            for &i in &self.ui.actions_checked {
+                match &self.ui.actions_rows[i] {
+                    ActionRow::Fixed(action, _) => {
+                        filter.actions.insert(*action);
+                    }
+                    ActionRow::FsDuring(tool, _) => {
+                        filter.fs_during.insert(tool.clone());
+                    }
+                    ActionRow::ScriptsOnly => {}
+                }
+            }
+            Some(filter)
+        };
+        self.ui.mode = Mode::Normal;
+        self.rebuild();
+    }
+
     fn jump_to_activity(&mut self, forward: bool, n: usize) {
         let Some(row) = self.selected_row() else { return };
         let mut times: Vec<Ts> = match row {
             Row::Node(idx) => self.tree.nodes[idx]
                 .events
                 .iter()
-                .filter(|&&i| self.model.visible(self.model.events[i].who))
+                .filter(|&&i| self.model.event_visible(&self.model.events[i]))
                 .map(|&i| self.model.events[i].start)
+                .collect(),
+            Row::Participant(pid, _) if self.model.action_filter.is_some() => self
+                .model
+                .events
+                .iter()
+                .filter(|e| e.who == pid && self.model.event_visible(e))
+                .map(|e| e.start)
                 .collect(),
             Row::Participant(pid, _) => self.model.spans.iter().filter(|s| s.who == pid).map(|s| s.start).collect(),
             Row::Section(_) => Vec::new(),

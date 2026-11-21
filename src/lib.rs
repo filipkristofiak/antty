@@ -5,6 +5,7 @@ mod claude;
 mod codex;
 pub mod dirs;
 pub mod disk;
+pub mod filter;
 pub mod index;
 pub mod model;
 mod parse;

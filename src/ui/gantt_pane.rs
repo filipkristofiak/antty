@@ -175,15 +175,42 @@ fn render_header(f: &mut Frame, area: Rect, app: &AppRef) {
 }
 
 /// (glyph, color) for one row's cell at time bucket `[bs, be)`.
-fn glyph_for_row(app: &AppRef, row: Row, bs: Ts, be: Ts) -> (char, Option<Color>) {
+fn glyph_for_row(app: &AppRef, row: Row, bs: Ts, be: Ts, lanes: Option<&[Vec<(Ts, Ts)>]>) -> (char, Option<Color>) {
     match row {
         Row::Section(_) => (' ', None),
-        Row::Participant(pid, _) => glyph_for_participant(app, pid, bs, be),
+        Row::Participant(pid, _) => glyph_for_participant(app, pid, bs, be, lanes),
         Row::Node(idx) => glyph_for_node(app, idx, bs, be),
     }
 }
 
-fn glyph_for_participant(app: &AppRef, pid: ParticipantId, bs: Ts, be: Ts) -> (char, Option<Color>) {
+fn glyph_for_participant(
+    app: &AppRef,
+    pid: ParticipantId,
+    bs: Ts,
+    be: Ts,
+    lanes: Option<&[Vec<(Ts, Ts)>]>,
+) -> (char, Option<Color>) {
+    if let Some(lanes) = lanes {
+        let hit = |lane: &[(Ts, Ts)]| lane.iter().any(|&(s, e)| s < be && e >= bs);
+        if hit(&lanes[pid.0]) {
+            let color = if pid == Model::YOU { palette_color(0) } else { color_for(app.model, pid) };
+            return ('█', Some(color));
+        }
+        let p = &app.model.participants[pid.0];
+        if p.kind == ParticipantKind::Main
+            && let Some(sidx) = p.session
+            && !app.ui.expand.expanded_sessions.contains(&sidx)
+            && app
+                .model
+                .participants
+                .iter()
+                .enumerate()
+                .any(|(i, q)| i != pid.0 && q.session == Some(sidx) && hit(&lanes[i]))
+        {
+            return ('▓', Some(Color::DarkGray));
+        }
+        return (' ', None);
+    }
     if pid == Model::YOU {
         let has_prompt =
             app.model.prompts.iter().any(|p| p.at >= bs && p.at < be && app.model.session_visible(p.session));
@@ -221,7 +248,7 @@ fn glyph_for_node(app: &AppRef, idx: usize, bs: Ts, be: Ts) -> (char, Option<Col
     let mut last_read: Option<(Ts, ParticipantId)> = None;
     for &ei in &node.events {
         let e = &app.model.events[ei];
-        if !app.model.visible(e.who) {
+        if !app.model.event_visible(e) {
             continue;
         }
         if e.start < be && e.end >= bs {
@@ -255,6 +282,13 @@ fn render_body(f: &mut Frame, area: Rect, app: &AppRef, touched: &[bool]) {
     let now = chrono::Utc::now();
     let now_col = app.view.col_for(now);
     let buf = f.buffer_mut();
+    let lanes = app.model.action_filter.as_ref().map(|_| {
+        let mut lanes = vec![Vec::new(); app.model.participants.len()];
+        for e in app.model.events.iter().filter(|e| app.model.event_visible(e)) {
+            lanes[e.who.0].push((e.start, e.end));
+        }
+        lanes
+    });
 
     for r in 0..area.height {
         let row_idx = app.ui.scroll + r as usize;
@@ -270,7 +304,7 @@ fn render_body(f: &mut Frame, area: Rect, app: &AppRef, touched: &[bool]) {
             let (ch, color) = match column {
                 Column::Break { .. } => ('~', Some(Color::DarkGray)),
                 Column::GapPad { .. } => (' ', None),
-                Column::Time { start, end } => glyph_for_row(app, row, start, end),
+                Column::Time { start, end } => glyph_for_row(app, row, start, end, lanes.as_deref()),
             };
             let mut style = Style::default();
             if let Some(c) = color {

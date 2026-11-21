@@ -32,6 +32,7 @@ const KEYS: &[(&str, &str)] = &[
     ("T", "touched-only"),
     ("w", "worktrees: merged/separate FILES view"),
     ("s", "session picker"),
+    ("F", "action filter: show only chosen actions; script-files toggle"),
     ("?", "this help, from any view; closing returns there"),
     (":q⏎, ZZ/ZQ", "quit"),
     ("Ctrl-C", "hint: quit with :q⏎"),

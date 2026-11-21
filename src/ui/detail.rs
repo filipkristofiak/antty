@@ -63,8 +63,16 @@ pub fn resolve_items(app: &AppRef) -> Vec<DetailItem> {
         Row::Node(idx) => app.tree.nodes[idx]
             .events
             .iter()
-            .filter(|&&i| app.model.visible(app.model.events[i].who))
+            .filter(|&&i| app.model.event_visible(&app.model.events[i]))
             .map(|&i| (app.model.events[i].end, DetailItem::Event(i)))
+            .collect(),
+        Row::Participant(pid, _) if app.model.action_filter.is_some() => app
+            .model
+            .events
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.who == pid && app.model.event_visible(e))
+            .map(|(i, e)| (e.end, DetailItem::Event(i)))
             .collect(),
         Row::Participant(pid, _) => {
             let mut v: Vec<(Ts, DetailItem)> = app

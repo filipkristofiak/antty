@@ -62,7 +62,18 @@ With `NO_COLOR`, touched rows stay bold without the tint.
 - **Detail** (`Enter`) — event/span list for the selected row
 - **Diff** — full-screen scrollable diff or detail of the selected event (`Enter` again from Detail)
 - **Picker** (`s`) — session list, sorted by start time
+- **Actions** (`F`) — choose which action types to show
 - **Help** (`?` from any view) — the key table below; closing it returns to the view it was opened from
+
+In Actions, `Space` toggles the highlighted checkbox, `a` checks every action, and `n` unchecks
+every action. `Enter` applies; `q` or `Esc` cancels. The separate **scripts only** checkbox narrows
+file-path actions to the listed extensions without hiding evals, web searches, fetches, or MCP
+calls that you checked. To see only evals, press `F`, `n`, `Space` on the eval row, then `Enter`.
+
+An active filter hides file and directory rows without matching events. The Gantt timeline,
+Detail, `n`/`N` activity jumps, idle gaps, and `f` fit use only matching events. The status bar
+lists the selection. To clear it, check all actions with `a`, turn off **scripts only** if checked,
+and apply. The filter is not saved between launches.
 
 Detail and full-screen Diff show the command/code behind watcher events attributed to
 a tool-call window, and JSON arguments for MCP calls. The watcher state log retains
@@ -109,6 +120,7 @@ are not traced.
 | `T` | touched-only |
 | `w` | worktrees: merged/separate FILES view |
 | `s` | session picker |
+| `F` | action filter: show only chosen actions; script-files toggle |
 | `?` | this help, from any view; closing returns there |
 | `:q⏎, ZZ/ZQ` | quit |
 | `Ctrl-C` | hint: quit with :q⏎ |
@@ -117,6 +129,8 @@ are not traced.
 | `q/Esc` | close overlay; Esc also cancels a count/prefix and clears the search |
 
 In Normal mode, letter keys act only when typed without Ctrl/Alt; unlisted Ctrl chords do nothing.
+
+With an action filter (`F`) active, PARTICIPANTS keeps `you` and sessions with at least one matching action from the main agent, a subagent, or an advisor. Expanded sessions hide subagents and advisors with no matching actions.
 
 `$EDITOR` is split on whitespace; antty adds `+<line>` when known and suspends the TUI until it exits. When `$NVIM` is non-empty, antty asks that Neovim instance to open the file instead. Unset `$EDITOR` without `$NVIM` shows an error. `NO_COLOR` (non-empty) disables foreground/background colours, retaining selection as reverse video.
 

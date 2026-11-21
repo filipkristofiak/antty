@@ -3,6 +3,8 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::widgets::Paragraph;
 
+use antty::filter::{Action, ActionKey, label};
+
 use super::{AppRef, truncate};
 
 pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
@@ -37,6 +39,29 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
             antty::tree::FilesView::Merged => " · worktrees:merged",
             antty::tree::FilesView::Separate => " · worktrees:separate",
         });
+    }
+    if let Some(filter) = &app.model.action_filter {
+        right.push_str(" · filter:");
+        let mut tools: Vec<_> = filter.fs_during.iter().map(String::as_str).collect();
+        tools.sort_unstable();
+        let keys = Action::ALL
+            .into_iter()
+            .filter(|a| filter.actions.contains(a))
+            .map(ActionKey::Fixed)
+            .chain(tools.into_iter().map(ActionKey::FsDuring));
+        let label_start = right.len();
+        for key in keys {
+            if right.len() != label_start {
+                right.push(',');
+            }
+            right.push_str(&label(key));
+        }
+        if right.len() == label_start {
+            right.push_str("none");
+        }
+        if filter.scripts_only {
+            right.push_str(",+scripts");
+        }
     }
     if let Some(err) = &app.ui.status_extra {
         right = format!("{right} · {err}");

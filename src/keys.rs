@@ -53,6 +53,7 @@ impl App {
             Mode::Detail => self.handle_key_detail(key),
             Mode::Diff => self.handle_key_diff(key),
             Mode::Picker => self.handle_key_picker(key),
+            Mode::Actions => self.handle_key_actions(key),
             Mode::Help => {
                 if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('?')) {
                     self.ui.mode = self.ui.help_return;
@@ -241,6 +242,7 @@ impl App {
             }
             KeyCode::Char('w') => self.toggle_files_view(),
             KeyCode::Char('s') => self.open_picker(),
+            KeyCode::Char('F') => self.open_actions(),
             KeyCode::Char('?') => self.open_help(),
             KeyCode::Esc => self.ui.search = None,
             _ => {}
@@ -342,6 +344,39 @@ impl App {
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.ui.picker_cursor = self.ui.picker_cursor.saturating_sub(half)
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn handle_key_actions(&mut self, key: KeyEvent) -> bool {
+        // ScriptsOnly is always the last row and uses a separate checkbox.
+        let last = self.ui.actions_rows.len() - 1;
+        let half = (self.layout.picker_area.height.saturating_sub(2) / 2).max(1) as usize;
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => self.ui.mode = Mode::Normal,
+            KeyCode::Char('?') => self.open_help(),
+            KeyCode::Enter => self.apply_actions(),
+            KeyCode::Char('a') => self.ui.actions_checked = (0..last).collect(),
+            KeyCode::Char('n') => self.ui.actions_checked.clear(),
+            KeyCode::Char(' ') => {
+                let cursor = self.ui.actions_cursor;
+                if cursor == last {
+                    self.ui.actions_scripts = !self.ui.actions_scripts;
+                } else if !self.ui.actions_checked.remove(&cursor) {
+                    self.ui.actions_checked.insert(cursor);
+                }
+            }
+            KeyCode::Char('j') | KeyCode::Down => self.ui.actions_cursor = (self.ui.actions_cursor + 1).min(last),
+            KeyCode::Char('k') | KeyCode::Up => self.ui.actions_cursor = self.ui.actions_cursor.saturating_sub(1),
+            KeyCode::Char('g') => self.ui.actions_cursor = 0,
+            KeyCode::Char('G') => self.ui.actions_cursor = last,
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.ui.actions_cursor = (self.ui.actions_cursor + half).min(last);
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.ui.actions_cursor = self.ui.actions_cursor.saturating_sub(half);
             }
             _ => {}
         }

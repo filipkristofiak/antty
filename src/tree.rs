@@ -408,6 +408,8 @@ pub fn equivalent_node(tree: &Tree, roots: usize, key: &str) -> Option<usize> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Row {
     Section(&'static str),
+    /// Older sessions folded out of PARTICIPANTS; one strip row.
+    Fold,
     Participant(ParticipantId, usize),
     Node(usize),
 }
@@ -416,6 +418,7 @@ pub enum Row {
 pub fn row_label(model: &Model, tree: &Tree, row: Row) -> String {
     match row {
         Row::Section(name) => name.to_uppercase(),
+        Row::Fold => "older sessions".to_string(),
         Row::Participant(pid, _) => {
             let p = &model.participants[pid.0];
             if pid == Model::YOU {
@@ -436,6 +439,15 @@ pub fn row_label(model: &Model, tree: &Tree, row: Row) -> String {
     }
 }
 
+/// How many session rows PARTICIPANTS may show before older sessions fold into `Row::Fold`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionFold {
+    /// Session rows allowed; live sessions are always shown even past this.
+    pub budget: usize,
+    /// Sessions with `last_seen >= live_since` are live and always shown.
+    pub live_since: crate::model::Ts,
+}
+
 pub struct ExpandState {
     /// explicit user toggles, keyed by `Node.key`; always wins over `auto_open`/`all_open`.
     pub dir_overrides: HashMap<String, bool>,
@@ -443,6 +455,8 @@ pub struct ExpandState {
     pub all_open: bool,
     /// session indices explicitly expanded (sessions are collapsed by default).
     pub expanded_sessions: HashSet<usize>,
+    /// None shows every session (the `p` toggle, and search's full row list).
+    pub session_fold: Option<SessionFold>,
     pub touched_only: bool,
     /// cursor-on-session auto-expansion enabled (`a` toggles).
     pub auto_follow: bool,
@@ -464,6 +478,7 @@ impl Default for ExpandState {
             dir_overrides: HashMap::new(),
             all_open: false,
             expanded_sessions: HashSet::new(),
+            session_fold: None,
             touched_only: false,
             auto_follow: true,
             auto_open: HashSet::new(),
@@ -669,31 +684,55 @@ fn push_node_rows(model: &Model, tree: &Tree, state: &ExpandState, idx: usize, e
     }
 }
 
+fn active_participants(model: &Model) -> Option<Vec<bool>> {
+    // None means there is no action filter, so every participant is shown.
+    model.action_filter.as_ref().map(|_| {
+        let mut active = vec![false; model.participants.len()];
+        for e in model.events.iter().filter(|e| model.event_visible(e)) {
+            active[e.who.0] = true;
+        }
+        active
+    })
+}
+
+/// PARTICIPANTS session indices in display order (latest activity first), split into rows
+/// and folded sessions. The action filter drops sessions first. Live sessions sort first by
+/// definition, so the shown part is the first `max(budget, live)` sessions.
+pub fn session_rows(model: &Model, state: &ExpandState) -> (Vec<usize>, Vec<usize>) {
+    split_sessions(model, state, active_participants(model).as_deref())
+}
+
+fn split_sessions(model: &Model, state: &ExpandState, active: Option<&[bool]>) -> (Vec<usize>, Vec<usize>) {
+    let mut order = model.sessions_by_latest_activity();
+    if let Some(active) = active {
+        let mut active_sessions = vec![false; model.sessions.len()];
+        for (p, &shown) in model.participants.iter().zip(active) {
+            if shown && let Some(s) = p.session {
+                active_sessions[s] = true;
+            }
+        }
+        order.retain(|&s| active_sessions[s]);
+    }
+    let Some(fold) = state.session_fold else { return (order, Vec::new()) };
+    let live = order.iter().take_while(|&&s| model.sessions[s].last_seen >= fold.live_since).count();
+    let folded = order.split_off(fold.budget.max(live).min(order.len()));
+    (order, folded)
+}
+
 /// Build the shared row list: participants section (YOU + sessions, most recently active
 /// first, with subagents, advisors, and touched temp files nested under expanded sessions).
 /// An action filter keeps only sessions and subagent/advisor rows with a matching event.
 /// FILES is always shown; MOUNTS, WEB, and MCP need at least one visible event.
 pub fn build_rows(model: &Model, tree: &Tree, state: &ExpandState) -> Vec<Row> {
     let mut rows = Vec::new();
-    // None means there is no action filter, so every participant is shown.
-    let active: Option<Vec<bool>> = model.action_filter.as_ref().map(|_| {
-        let mut active = vec![false; model.participants.len()];
-        for e in model.events.iter().filter(|e| model.event_visible(e)) {
-            active[e.who.0] = true;
-        }
-        active
-    });
+    let active = active_participants(model);
     let shown = |pid: usize| active.as_ref().is_none_or(|a| a[pid]);
 
     rows.push(Row::Section("participants"));
     rows.push(Row::Participant(Model::YOU, 0));
 
-    for sidx in model.sessions_by_latest_activity() {
-        if active.is_some()
-            && !model.participants.iter().enumerate().any(|(pidx, p)| p.session == Some(sidx) && shown(pidx))
-        {
-            continue;
-        }
+    let (shown_sessions, folded) = split_sessions(model, state, active.as_deref());
+    for sidx in shown_sessions {
         rows.push(Row::Participant(model.sessions[sidx].main, 0));
         if state.expanded_sessions.contains(&sidx) {
             for (pidx, p) in model.participants.iter().enumerate() {
@@ -710,6 +749,9 @@ pub fn build_rows(model: &Model, tree: &Tree, state: &ExpandState) -> Vec<Row> {
                 }
             }
         }
+    }
+    if !folded.is_empty() {
+        rows.push(Row::Fold);
     }
 
     rows.push(Row::Section("files"));
@@ -888,6 +930,69 @@ mod tests {
             tool_call_id: None,
             detail: EventDetail::None,
         });
+    }
+
+    fn fold_fixture() -> (Model, crate::model::Ts) {
+        let root = PathBuf::from("/project");
+        let mut model = Model::new(vec![root.clone()]);
+        let now = chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+        for i in 0..20 {
+            let title = format!("s{i}");
+            let file = root.join(format!("{title}.jsonl"));
+            let at = now - chrono::Duration::hours(i + 1);
+            let main =
+                model.get_or_create_participant(&file, ParticipantKind::Main, title.clone(), Some(i as usize), None);
+            model.sessions.push(Session {
+                file,
+                id: String::new(),
+                title,
+                cwd: root.clone(),
+                start: at,
+                last_seen: at,
+                end: None,
+                main,
+            });
+        }
+        (model, now)
+    }
+
+    #[test]
+    fn session_fold_respects_budget_and_live_window() {
+        let (model, now) = fold_fixture();
+        let tree = Tree::build(&model, FilesView::Merged);
+        for (budget, minutes, keep) in [(12, 1440, 20), (12, 90, 12), (0, 150, 2)] {
+            let session_fold = Some(SessionFold { budget, live_since: now - chrono::Duration::minutes(minutes) });
+            let state = ExpandState { session_fold, ..Default::default() };
+            assert_eq!(session_rows(&model, &state), ((0..keep).collect(), (keep..20).collect()));
+            let rows = build_rows(&model, &tree, &state);
+            let folds: Vec<_> = rows.iter().enumerate().filter_map(|(i, r)| (*r == Row::Fold).then_some(i)).collect();
+            if keep == 20 {
+                assert!(folds.is_empty());
+            } else {
+                assert_eq!(folds, [2 + keep]);
+                assert_eq!(rows[folds[0] + 1], Row::Section("files"));
+            }
+        }
+        let state = ExpandState::default();
+        assert_eq!(session_rows(&model, &state), ((0..20).collect(), Vec::new()));
+        assert!(!build_rows(&model, &tree, &state).contains(&Row::Fold));
+    }
+
+    #[test]
+    fn session_fold_applies_action_filter_before_budget() {
+        let (mut model, now) = fold_fixture();
+        let main = model.sessions[15].main;
+        push_event(&mut model, main, PathBuf::from("Cargo.toml"), Scope::Project(0));
+        model.action_filter =
+            Some(crate::filter::ActionFilter { actions: [crate::filter::Action::Read].into(), ..Default::default() });
+        let state = ExpandState {
+            session_fold: Some(SessionFold { budget: 12, live_since: now - chrono::Duration::minutes(90) }),
+            ..Default::default()
+        };
+        assert_eq!(session_rows(&model, &state), (vec![15], Vec::new()));
+        let tree = Tree::build(&model, FilesView::Merged);
+        let rows = build_rows(&model, &tree, &state);
+        assert_eq!(&rows[1..4], &[Row::Participant(Model::YOU, 0), Row::Participant(main, 0), Row::Section("files")]);
     }
 
     #[test]

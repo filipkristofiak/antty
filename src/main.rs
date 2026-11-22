@@ -23,6 +23,9 @@ use timeline::View;
 use tree::{Row, Tree};
 use ui::{ActionRow, AppRef, Mode, UiState};
 
+/// Sessions active this recently stay as PARTICIPANTS rows even past the fold budget.
+const LIVE_HOURS: i64 = 2;
+
 /// Earliest/latest timestamp for fit, restricted to matching events when filtered.
 fn model_time_range(model: &Model) -> Option<(Ts, Ts)> {
     if model.action_filter.is_some() {
@@ -99,6 +102,7 @@ struct App {
     attributor: Attributor,
     idle_gap: i64,
     layout: ui::LayoutInfo,
+    session_budget: usize,
     launch: Option<editor::Invocation>,
     suspend: bool,
     disk_tx: Option<mpsc::Sender<usize>>,
@@ -180,14 +184,22 @@ impl App {
     }
 
     /// Shared tail of `rebuild`/`refresh_rows`/`land_on`: rebuild `self.rows` from the current
-    /// tree/expand state, then relocate the selection to wherever `row` ended up (if it's still
-    /// present), falling back to a plain clamp. A `Row::Node` that came from *before* a
+    /// tree/expand state, then relocate the selection to wherever `row` ended up (including a
+    /// session that folded away), falling back to a plain clamp. A `Row::Node` that came from *before* a
     /// `Tree::build` (indices reassigned) must be translated via `Tree::find_by_key` first —
     /// see `rebuild`.
     fn finish_row_update(&mut self, row: Option<Row>) {
+        self.ui.expand.session_fold = self.ui.fold_sessions.then(|| tree::SessionFold {
+            budget: self.session_budget,
+            live_since: chrono::Utc::now() - chrono::Duration::hours(LIVE_HOURS),
+        });
         self.rows = tree::build_rows(&self.model, &self.tree, &self.ui.expand);
         if let Some(r) = row
             && let Some(pos) = self.rows.iter().position(|x| *x == r)
+        {
+            self.ui.selected = pos;
+        } else if matches!(row, Some(Row::Participant(..)))
+            && let Some(pos) = self.rows.iter().position(|r| *r == Row::Fold)
         {
             self.ui.selected = pos;
         }
@@ -355,6 +367,10 @@ impl App {
             _ => {}
         }
         self.land_on(Some(row));
+        if self.ui.fold_sessions && !self.rows.contains(&row) {
+            self.ui.fold_sessions = false;
+            self.land_on(Some(row));
+        }
     }
 
     fn search_step(&mut self, query: &str, forward: bool, n: usize) -> bool {
@@ -380,6 +396,17 @@ impl App {
         true
     }
 
+    fn toggle_session_fold(&mut self) {
+        self.ui.fold_sessions = !self.ui.fold_sessions;
+        self.refresh_rows();
+    }
+
+    fn show_folded_sessions(&mut self) {
+        let (_, folded) = tree::session_rows(&self.model, &self.ui.expand);
+        self.ui.fold_sessions = false;
+        self.land_on(folded.first().map(|&s| Row::Participant(self.model.sessions[s].main, 0)));
+    }
+
     fn toggle_expand(&mut self) {
         match self.selected_row() {
             Some(Row::Node(idx)) if self.tree.nodes[idx].is_dir => {
@@ -402,6 +429,7 @@ impl App {
                     self.ui.expand.toggle_session(sidx);
                 }
             }
+            Some(Row::Fold) => return self.show_folded_sessions(),
             _ => {}
         }
         self.refresh_rows();
@@ -409,6 +437,12 @@ impl App {
 
     fn fold(&mut self, open: bool, recursive: bool) {
         let Some(row) = self.selected_row() else { return };
+        if row == Row::Fold {
+            if open {
+                self.show_folded_sessions();
+            }
+            return;
+        }
         if let Some(target) = self.ui.expand.fold(&self.model, &self.tree, row, open, recursive)
             && let Some(pos) = self.rows.iter().position(|r| *r == target)
         {
@@ -418,6 +452,10 @@ impl App {
     }
 
     fn enter_detail(&mut self) {
+        if self.selected_row() == Some(Row::Fold) {
+            self.show_folded_sessions();
+            return;
+        }
         if matches!(self.selected_row(), Some(Row::Section(_)) | None) {
             return;
         }
@@ -564,7 +602,7 @@ impl App {
                 .map(|e| e.start)
                 .collect(),
             Row::Participant(pid, _) => self.model.spans.iter().filter(|s| s.who == pid).map(|s| s.start).collect(),
-            Row::Section(_) => Vec::new(),
+            Row::Section(_) | Row::Fold => Vec::new(),
         };
         times.sort();
         times.dedup();
@@ -773,16 +811,17 @@ fn main() -> anyhow::Result<()> {
     let layout = ui::compute_layout(root_rect, ui_state.view_mode(), ui_state.stats_panel);
 
     let tree = Tree::build(&model, ui_state.files_view);
-    let rows = tree::build_rows(&model, &tree, &ui_state.expand);
+    let session_budget = ui::session_budget(layout.body_height);
     let mut app = App {
         model,
         tree,
-        rows,
+        rows: Vec::new(),
         view: View::new(!args.no_collapse_gaps),
         ui: ui_state,
         attributor,
         idle_gap: args.idle_gap,
         layout,
+        session_budget,
         launch: None,
         suspend: false,
         disk_tx,
@@ -794,6 +833,7 @@ fn main() -> anyhow::Result<()> {
         index_spec,
         tx,
     };
+    app.refresh_rows();
     app.view.set_activity(timeline::visible_activity(&app.model));
     app.fit();
 
@@ -871,7 +911,19 @@ fn run_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App, rx: mpsc::Re
 
         let size = terminal.size()?;
         let root_rect = Rect::new(0, 0, size.width, size.height);
-        app.layout = ui::compute_layout(root_rect, app.ui.view_mode(), app.ui.stats_panel);
+        let mode = app.ui.view_mode();
+        app.layout = ui::compute_layout(root_rect, mode, app.ui.stats_panel);
+        // Detail shrinks the body without changing how many sessions should be listed.
+        let normal_body = if mode == Mode::Detail {
+            ui::compute_layout(root_rect, Mode::Normal, false).body_height
+        } else {
+            app.layout.body_height
+        };
+        let budget = ui::session_budget(normal_body);
+        if budget != app.session_budget {
+            app.session_budget = budget;
+            app.refresh_rows();
+        }
         app.clamp_scroll();
         app.view.clamp_to_view(app.layout.gantt_width.max(1) as usize);
         drawn_now_col = app.view.col_for(chrono::Utc::now());

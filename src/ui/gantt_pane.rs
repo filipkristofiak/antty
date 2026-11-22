@@ -12,7 +12,9 @@ use antty::tree::Row;
 
 use super::{AppRef, CURSOR_BG, HIGHLIGHT_FG, SELECTED_BG, TOUCHED_BG, color_for, palette_color};
 
-pub fn render(f: &mut Frame, area: Rect, app: &AppRef, touched: &[bool]) {
+type FoldLane = (ParticipantId, Vec<(Ts, Ts)>);
+
+pub fn render(f: &mut Frame, area: Rect, app: &AppRef, touched: &[bool], folded: &[usize]) {
     let block = Block::default().borders(Borders::ALL).title("Gantt Chart Timeline");
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -21,7 +23,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppRef, touched: &[bool]) {
     }
     render_header(f, Rect { height: 2, ..inner }, app);
     let body = Rect { y: inner.y + 2, height: inner.height.saturating_sub(2), ..inner };
-    render_body(f, body, app, touched);
+    render_body(f, body, app, touched, folded);
 }
 
 fn is_boundary(start: Ts, end: Ts, col_secs: i64) -> bool {
@@ -175,11 +177,38 @@ fn render_header(f: &mut Frame, area: Rect, app: &AppRef) {
 }
 
 /// (glyph, color) for one row's cell at time bucket `[bs, be)`.
-fn glyph_for_row(app: &AppRef, row: Row, bs: Ts, be: Ts, lanes: Option<&[Vec<(Ts, Ts)>]>) -> (char, Option<Color>) {
+fn glyph_for_row(
+    app: &AppRef,
+    row: Row,
+    bs: Ts,
+    be: Ts,
+    lanes: Option<&[Vec<(Ts, Ts)>]>,
+    fold: &[FoldLane],
+) -> (char, Option<Color>) {
     match row {
         Row::Section(_) => (' ', None),
+        Row::Fold => {
+            let mut hits = fold.iter().filter(|(_, lane)| lane.iter().any(|&(s, e)| s < be && e >= bs));
+            let Some((main, _)) = hits.next() else { return fold_glyph(0, None) };
+            if hits.next().is_none() {
+                fold_glyph(1, Some(color_for(app.model, *main)))
+            } else {
+                fold_glyph(2 + usize::from(hits.next().is_some()), None)
+            }
+        }
         Row::Participant(pid, _) => glyph_for_participant(app, pid, bs, be, lanes),
         Row::Node(idx) => glyph_for_node(app, idx, bs, be),
+    }
+}
+
+/// Fold-strip cell: bar height is the number of folded sessions active (▄ 1, ▆ 2, █ 3+);
+/// a lone session keeps its colour, 2+ are DarkGray. Shape carries the count under NO_COLOR.
+fn fold_glyph(hits: usize, lone: Option<Color>) -> (char, Option<Color>) {
+    match hits {
+        0 => (' ', None),
+        1 => ('▄', lone),
+        2 => ('▆', Some(Color::DarkGray)),
+        _ => ('█', Some(Color::DarkGray)),
     }
 }
 
@@ -275,7 +304,34 @@ fn glyph_for_node(app: &AppRef, idx: usize, bs: Ts, be: Ts) -> (char, Option<Col
     (' ', None)
 }
 
-fn render_body(f: &mut Frame, area: Rect, app: &AppRef, touched: &[bool]) {
+fn fold_lanes(model: &Model, folded: &[usize], lanes: Option<&[Vec<(Ts, Ts)>]>) -> Vec<FoldLane> {
+    if folded.is_empty() {
+        return Vec::new();
+    }
+    // Group once by session rather than scanning all spans separately for each folded session.
+    let mut index = vec![None; model.sessions.len()];
+    let mut fold = Vec::with_capacity(folded.len());
+    for &s in folded {
+        index[s] = Some(fold.len());
+        fold.push((model.sessions[s].main, Vec::new()));
+    }
+    if let Some(lanes) = lanes {
+        for (p, lane) in model.participants.iter().zip(lanes) {
+            if let Some(i) = p.session.and_then(|s| index[s]) {
+                fold[i].1.extend_from_slice(lane);
+            }
+        }
+    } else {
+        for s in &model.spans {
+            if let Some(i) = model.participants[s.who.0].session.and_then(|s| index[s]) {
+                fold[i].1.push((s.start, s.end));
+            }
+        }
+    }
+    fold
+}
+
+fn render_body(f: &mut Frame, area: Rect, app: &AppRef, touched: &[bool], folded: &[usize]) {
     let width = area.width as i64;
     let cols: Vec<Column> = (0..width).map(|c| app.view.column(c)).collect();
     let cursor_col = app.view.col_for(app.view.cursor);
@@ -289,6 +345,7 @@ fn render_body(f: &mut Frame, area: Rect, app: &AppRef, touched: &[bool]) {
         }
         lanes
     });
+    let fold = fold_lanes(app.model, folded, lanes.as_deref());
 
     for r in 0..area.height {
         let row_idx = app.ui.scroll + r as usize;
@@ -304,7 +361,7 @@ fn render_body(f: &mut Frame, area: Rect, app: &AppRef, touched: &[bool]) {
             let (ch, color) = match column {
                 Column::Break { .. } => ('~', Some(Color::DarkGray)),
                 Column::GapPad { .. } => (' ', None),
-                Column::Time { start, end } => glyph_for_row(app, row, start, end, lanes.as_deref()),
+                Column::Time { start, end } => glyph_for_row(app, row, start, end, lanes.as_deref(), &fold),
             };
             let mut style = Style::default();
             if let Some(c) = color {
@@ -320,6 +377,7 @@ fn render_body(f: &mut Frame, area: Rect, app: &AppRef, touched: &[bool]) {
             let x = area.x + col as u16;
             let out = if matches!(column, Column::Time { .. })
                 && ch == ' '
+                && row != Row::Fold
                 && col == now_col
                 && !is_selected
                 && col != cursor_col
@@ -338,7 +396,15 @@ fn render_body(f: &mut Frame, area: Rect, app: &AppRef, touched: &[bool]) {
 mod tests {
     use chrono::{Duration, Local, TimeZone};
 
-    use super::{break_label, fmt_span, tick_char};
+    use super::{Color, break_label, fmt_span, fold_glyph, tick_char};
+
+    #[test]
+    fn fold_glyph_encodes_session_count() {
+        assert_eq!(fold_glyph(0, None), (' ', None));
+        assert_eq!(fold_glyph(1, Some(Color::Red)), ('▄', Some(Color::Red)));
+        assert_eq!(fold_glyph(2, Some(Color::Red)), ('▆', Some(Color::DarkGray)));
+        assert_eq!(fold_glyph(5, None), ('█', Some(Color::DarkGray)));
+    }
 
     #[test]
     fn minute_ticks_show_changing_digits() {

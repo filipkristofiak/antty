@@ -236,6 +236,7 @@ impl App {
                 self.ui.expand.touched_only = !self.ui.expand.touched_only;
                 self.refresh_rows();
             }
+            KeyCode::Char('p') => self.toggle_session_fold(),
             KeyCode::Char('w') => self.toggle_files_view(),
             KeyCode::Char('s') => self.open_picker(),
             KeyCode::Char('F') => self.open_actions(),
@@ -419,7 +420,7 @@ mod tests {
     use super::*;
     use crate::ui::UiState;
     use antty::attrib::Attributor;
-    use antty::model::{EventDetail, FileEvent, Model, Scope, TouchKind, TouchSource};
+    use antty::model::{EventDetail, FileEvent, Model, ParticipantKind, Scope, Session, TouchKind, TouchSource};
     use antty::timeline::View;
     use antty::tree::{self, FilesView, Tree};
     use ratatui::layout::Rect;
@@ -444,6 +445,7 @@ mod tests {
             attributor: Attributor::new(state_dir, &[root.to_path_buf()]),
             idle_gap: 30,
             layout,
+            session_budget: 12,
             launch: None,
             suspend: false,
             disk_tx: None,
@@ -460,6 +462,59 @@ mod tests {
             },
             tx,
         }
+    }
+
+    #[test]
+    fn participant_fold_keys_show_all_and_restore_selection() {
+        let root = std::env::temp_dir().join(format!("antty-keys-test-fold-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut app = test_app(&root, &root.join("state"));
+        let now = chrono::Utc::now();
+        for i in 0..20 {
+            let title = format!("s{i}");
+            let file = root.join(format!("{title}.jsonl"));
+            let at = now - chrono::Duration::hours(i as i64 + 1);
+            let main = app.model.get_or_create_participant(&file, ParticipantKind::Main, title.clone(), Some(i), None);
+            app.model.sessions.push(Session {
+                file,
+                id: String::new(),
+                title,
+                cwd: root.clone(),
+                start: at,
+                last_seen: at,
+                end: None,
+                main,
+            });
+        }
+        app.rebuild();
+
+        let count_sessions = |app: &App| {
+            app.rows.iter().filter(|row| matches!(row, Row::Participant(pid, 0) if *pid != Model::YOU)).count()
+        };
+        let press = |app: &mut App, code| app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+        assert!(app.rows.contains(&Row::Fold));
+        assert_eq!(count_sessions(&app), 12);
+
+        press(&mut app, KeyCode::Char('p'));
+        assert!(!app.rows.contains(&Row::Fold));
+        assert_eq!(count_sessions(&app), 20);
+
+        let last = Row::Participant(app.model.sessions[19].main, 0);
+        app.land_on(Some(last));
+        press(&mut app, KeyCode::Char('p'));
+        assert_eq!(count_sessions(&app), 12);
+        assert_eq!(app.selected_row(), Some(Row::Fold));
+        press(&mut app, KeyCode::Enter);
+        assert!(!app.ui.fold_sessions);
+        assert_eq!(count_sessions(&app), 20);
+        assert_eq!(app.selected_row(), Some(Row::Participant(app.model.sessions[12].main, 0)));
+
+        press(&mut app, KeyCode::Char('p'));
+        assert!(app.search_step("s19", true, 1));
+        assert!(!app.rows.contains(&Row::Fold));
+        assert_eq!(app.selected_row(), Some(last));
+        drop(app);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

@@ -94,7 +94,7 @@ pub fn resolve_items(app: &AppRef) -> Vec<DetailItem> {
             }
             v
         }
-        Row::Section(_) => Vec::new(),
+        Row::Section(_) | Row::Fold => Vec::new(),
     };
     items.sort_by_key(|a| std::cmp::Reverse(a.0));
     items.into_iter().map(|(_, it)| it).collect()

@@ -246,7 +246,6 @@ impl App {
             KeyCode::Char('F') => self.open_actions(),
             KeyCode::Char('i') => self.ui.stats_panel = !self.ui.stats_panel,
             KeyCode::Char('I') => self.ui.mode = Mode::Stats,
-            KeyCode::Char('v') => self.ui.stats_window = !self.ui.stats_window,
             KeyCode::Char('?') => self.open_help(),
             KeyCode::Esc => self.ui.search = None,
             _ => {}
@@ -457,11 +456,13 @@ mod tests {
         assert!(!app.ui.stats_panel);
         assert!(!app.ui.stats_window);
         press(&mut app, 'v');
-        assert!(app.ui.stats_window);
+        assert!(!app.ui.stats_window);
         press(&mut app, 'i');
         assert!(app.ui.stats_panel);
         press(&mut app, 'I');
         assert_eq!(app.ui.mode, Mode::Stats);
+        press(&mut app, 'v');
+        assert!(app.ui.stats_window);
         let selected = app.ui.selected;
         press(&mut app, 'j');
         assert_eq!(app.ui.selected, selected + 1);

@@ -35,7 +35,7 @@ const KEYS: &[(&str, &str)] = &[
     ("F", "action filter: show only chosen actions; script-files toggle"),
     ("i", "stats panel on/off: tool calls and totals, selection vs all"),
     ("I", "stats popup; j/k move the selection underneath"),
-    ("v", "stats: visible time range only on/off"),
+    ("v (Stats)", "count only the Gantt's visible time range on/off"),
     ("?", "this help, from any view; closing returns there"),
     (":q⏎, ZZ/ZQ", "quit"),
     ("Ctrl-C", "hint: quit with :q⏎"),

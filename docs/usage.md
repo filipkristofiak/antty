@@ -67,8 +67,9 @@ With `NO_COLOR`, touched rows stay bold without the tint.
 - **Stats** (`I`) — tool-call bars and totals for the selected row next to all visible activity
 - **Help** (`?` from any view) — the key table below; closing it returns to the view it was opened from
 
-Stats cover all time by default. Press `v` in Normal mode or in the Stats popup to count
-only the time shown in the Gantt timeline. The panel and time-range setting reset on launch.
+Stats cover all time by default. Press `v` in the Stats popup to count only the time shown in
+the Gantt timeline; the side panel uses the same setting. The panel and time-range setting
+reset on launch.
 
 In Actions, `Space` toggles the highlighted checkbox, `a` checks every action, and `n` unchecks
 every action. `Enter` applies; `q` or `Esc` cancels. The separate **scripts only** checkbox narrows
@@ -128,7 +129,7 @@ are not traced.
 | `F` | action filter: show only chosen actions; script-files toggle |
 | `i` | stats panel on/off: tool calls and totals, selection vs all |
 | `I` | stats popup; j/k move the selection underneath |
-| `v` | stats: visible time range only on/off |
+| `v (Stats)` | count only the Gantt's visible time range on/off |
 | `?` | this help, from any view; closing returns there |
 | `:q⏎, ZZ/ZQ` | quit |
 | `Ctrl-C` | hint: quit with :q⏎ |

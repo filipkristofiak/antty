@@ -239,6 +239,7 @@ pub struct App {
     pub layout: crate::ui::Layout,
     pub flash: Option<String>,
     pub cmdline: Option<String>,
+    pub help: Option<u16>,
     pub no_color: bool,
     pub launch: Option<antty::tui::Invocation>,
     pub suspend: bool,
@@ -267,6 +268,7 @@ impl App {
             layout: crate::ui::layout(ratatui::layout::Rect::default()),
             flash: None,
             cmdline: None,
+            help: None,
             no_color: std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()),
             launch: None,
             suspend: false,
@@ -510,6 +512,13 @@ impl App {
             }
             return false;
         }
+        if let Some(scroll) = &mut self.help {
+            let page = self.layout.help.height.saturating_sub(2);
+            if antty::tui::help_key(key, scroll, page, crate::ui::HELP) {
+                self.help = None;
+            }
+            return false;
+        }
         if key.code == KeyCode::Char('z') && key.modifiers == KeyModifiers::CONTROL {
             self.count = 0;
             self.pending = None;
@@ -570,6 +579,7 @@ impl App {
         let n = count.max(1);
         match key.code {
             KeyCode::Char(':') => self.cmdline = Some(String::new()),
+            KeyCode::Char('?') => self.help = Some(0),
             KeyCode::Char('j') | KeyCode::Down => self.selected = self.selected.saturating_add(n),
             KeyCode::Char('k') | KeyCode::Up => self.selected = self.selected.saturating_sub(n),
             KeyCode::Char('G') => self.selected = if count > 0 { count - 1 } else { self.rows.len().saturating_sub(1) },
@@ -752,6 +762,19 @@ mod tests {
         }
         folded(&app);
         assert!(matches!(app.rows[app.selected], Row::ProjectFold));
+    }
+
+    #[test]
+    fn help_scrolls_without_moving_the_selected_row() {
+        let mut app = App::new(vec![project(0, [180]), project(1, [240])], PathBuf::new());
+        app.layout = crate::ui::layout(ratatui::layout::Rect::new(0, 0, 160, 24));
+        app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+        assert_eq!(app.help, Some(0));
+        app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+        assert_eq!(app.help, Some(1));
+        assert_eq!(app.selected, 0);
+        assert!(!app.handle_key(KeyEvent::from(KeyCode::Char('q'))));
+        assert_eq!(app.help, None);
     }
 
     #[test]

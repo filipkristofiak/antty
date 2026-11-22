@@ -10,10 +10,57 @@ use crate::discover::Kind;
 
 use ratatui::layout::{Constraint, Direction, Layout as Split, Rect};
 
+pub const HELP: antty::tui::HelpSections = &[
+    (
+        "Rows",
+        &[
+            ("[count]", "repeat: 5j 10l 3n …"),
+            ("j/k, ↓/↑", "row down/up"),
+            ("gg/G", "first/last row; [count]: row N"),
+            ("Ctrl-d/Ctrl-u", "half page down/up; [count]: N rows"),
+        ],
+    ),
+    (
+        "Timeline",
+        &[
+            ("h/l, ←/→", "time cursor ±1 column"),
+            ("H/L", "pan by half the pane width"),
+            ("+/-", "zoom in/out"),
+            ("t", "cursor to now, pinned near the right edge"),
+            ("f", "fit all activity"),
+            ("c", "collapse idle stretches into ' ~ ' breaks on/off"),
+        ],
+    ),
+    (
+        "Projects",
+        &[
+            ("Enter", "open the project or session in antty; on a fold row: show what it hides"),
+            ("Space/za", "open/close a project or directory"),
+            ("zo/zc", "open/close"),
+            ("zM/zR", "close/open all"),
+            ("o", "order: recent activity / path tree"),
+            ("p", "fold older sessions and projects on/off"),
+        ],
+    ),
+    ("Search", &[("/", "search project paths and session titles (smartcase)"), ("n/N", "next/prev match")]),
+    (
+        "General",
+        &[
+            ("?", "this help. In help: j/k, Ctrl-d/Ctrl-u, g/G scroll"),
+            (":q⏎, ZZ/ZQ", "quit"),
+            ("Ctrl-C", "hint: quit with :q⏎"),
+            ("Ctrl-z", "suspend to the shell; fg resumes"),
+            (":/ line", "Ctrl-U clear · Ctrl-W delete word · ↑/↓ history"),
+            ("q/Esc", "close help; Esc also clears the search"),
+        ],
+    ),
+];
+
 pub struct Layout {
     pub tree: Rect,
     pub gantt: Rect,
     pub status: Rect,
+    pub help: Rect,
     pub body_height: u16,
     pub gantt_width: u16,
 }
@@ -32,6 +79,7 @@ pub fn layout(root: Rect) -> Layout {
         tree: panes[0],
         gantt: panes[1],
         status: outer[1],
+        help: antty::tui::centered_rect(60, 80, root),
         body_height: panes[1].height.saturating_sub(4),
         gantt_width: panes[1].width.saturating_sub(2),
     }
@@ -42,6 +90,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     tree(f, app, live_since);
     gantt(f, app, live_since);
     status(f, app);
+    if let Some(scroll) = app.help {
+        antty::tui::render_help(f, app.layout.help, scroll, HELP);
+    }
     if app.no_color {
         antty::tui::strip_colors(f.buffer_mut());
     }
@@ -198,7 +249,8 @@ fn status(f: &mut Frame, app: &App) {
         f.render_widget(Paragraph::new(truncate(flash, width)).style(Style::default().fg(Color::Red)), area);
         return;
     }
-    let left = "Nav (j/k/h/l) | Zoom (+/-) | Now (t) | Fit (f) | Open (⏎) | Fold (␣) | Order (o) | Quit (:q)";
+    let left =
+        "Nav (j/k/h/l) | Zoom (+/-) | Now (t) | Fit (f) | Open (⏎) | Fold (␣) | Order (o) | Help (?) | Quit (:q)";
     let right = format!(
         "{} · {} projects · {} sessions · order:{} · gaps:{} · fold:{}",
         app.view.zoom_label(),

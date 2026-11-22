@@ -233,6 +233,7 @@ active in the last two hours, with older projects summarized in a
 | `[count]+/-`, `=`, `t`, `f`, `c` | Zoom, now, fit, toggle collapsed gaps |
 | `o` | Toggle recent/path-tree order |
 | `p` | Toggle folding older sessions and projects |
+| `?` | Open help; scroll with `j/k`, `Ctrl-d/u`, or `g/G`; close with `q`, `?`, or `Esc` |
 | `Space/za` | Toggle node; on a session, close and select its project; on a fold row, reveal hidden rows |
 | `zo/zc`, `zR/zM` | Open/close node; expand/collapse all |
 | `Enter` | Open session cwd, or project's most recently active existing cwd, in antty; directory-only nodes toggle |

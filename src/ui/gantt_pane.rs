@@ -8,7 +8,7 @@ use antty::timeline::Column;
 use antty::tree::Row;
 
 use super::{AppRef, TOUCHED_BG, color_for, palette_color};
-use antty::tui::{CURSOR_BG, SELECTED_BG};
+use antty::tui::{CURSOR_BG, SELECTED_BG, fold_glyph};
 
 type FoldLane = (ParticipantId, Vec<(Ts, Ts)>);
 
@@ -46,17 +46,6 @@ fn glyph_for_row(
         }
         Row::Participant(pid, _) => glyph_for_participant(app, pid, bs, be, lanes),
         Row::Node(idx) => glyph_for_node(app, idx, bs, be),
-    }
-}
-
-/// Fold-strip cell: bar height is the number of folded sessions active (▄ 1, ▆ 2, █ 3+);
-/// a lone session keeps its colour, 2+ are DarkGray. Shape carries the count under NO_COLOR.
-fn fold_glyph(hits: usize, lone: Option<Color>) -> (char, Option<Color>) {
-    match hits {
-        0 => (' ', None),
-        1 => ('▄', lone),
-        2 => ('▆', Some(Color::DarkGray)),
-        _ => ('█', Some(Color::DarkGray)),
     }
 }
 
@@ -237,18 +226,5 @@ fn render_body(f: &mut Frame, area: Rect, app: &AppRef, touched: &[bool], folded
             };
             buf.set_string(x, y, out.to_string(), style);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{Color, fold_glyph};
-
-    #[test]
-    fn fold_glyph_encodes_session_count() {
-        assert_eq!(fold_glyph(0, None), (' ', None));
-        assert_eq!(fold_glyph(1, Some(Color::Red)), ('▄', Some(Color::Red)));
-        assert_eq!(fold_glyph(2, Some(Color::Red)), ('▆', Some(Color::DarkGray)));
-        assert_eq!(fold_glyph(5, None), ('█', Some(Color::DarkGray)));
     }
 }

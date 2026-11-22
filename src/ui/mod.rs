@@ -15,10 +15,11 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Color;
 use ratatui::widgets::Clear;
 
-use crate::cmdline::CmdLine;
+use antty::cmdline::CmdLine;
 use antty::model::{Model, ParticipantId, ParticipantKind};
 use antty::timeline::View;
 use antty::tree::{ExpandState, FilesView, Row, Tree};
+use antty::tui::centered_rect;
 
 /// Soft row tint for participants that touched the selected file/dir. Dark slate-teal so the
 /// participant's palette foreground stays readable and it differs from CURSOR_BG's column.
@@ -175,26 +176,6 @@ pub struct AppRef<'a> {
     pub ui: &'a UiState,
 }
 
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(area);
-    let horizontal = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(vertical[1]);
-    horizontal[1]
-}
-
 pub struct LayoutInfo {
     pub tree_area: Rect,
     pub gantt_area: Rect,
@@ -295,7 +276,7 @@ pub fn draw(f: &mut Frame, app: &AppRef) {
         _ => {}
     }
     if app.ui.mode == Mode::Help {
-        help::render(f, layout.help_area, app.ui.help_scroll);
+        antty::tui::render_help(f, layout.help_area, app.ui.help_scroll, help::SECTIONS);
     }
     if app.ui.no_color {
         antty::tui::strip_colors(f.buffer_mut());

@@ -5,9 +5,12 @@ use std::ffi::OsString;
 use std::fmt::Write;
 
 use chrono::Timelike;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::Line;
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::model::Ts;
 use crate::timeline::{Column, View};
@@ -16,6 +19,98 @@ pub const CURSOR_BG: Color = Color::Rgb(40, 40, 60);
 /// Text drawn on SELECTED_BG/CURSOR_BG. Explicit RGB so it stays light when the terminal's
 /// default foreground is dark (light themes).
 pub const HIGHLIGHT_FG: Color = Color::Rgb(235, 235, 235);
+
+/// Sessions (and queen projects) active this recently are never folded.
+pub const LIVE_HOURS: i64 = 2;
+
+/// Fold-strip cell: bar height is the number of folded rows active (▄ 1, ▆ 2, █ 3+);
+/// a lone hit keeps its colour, 2+ are DarkGray. Shape carries the count under NO_COLOR.
+pub fn fold_glyph(hits: usize, lone: Option<Color>) -> (char, Option<Color>) {
+    match hits {
+        0 => (' ', None),
+        1 => ('▄', lone),
+        2 => ('▆', Some(Color::DarkGray)),
+        _ => ('█', Some(Color::DarkGray)),
+    }
+}
+
+pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
+    let horizontal = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(vertical[1]);
+    horizontal[1]
+}
+
+/// Help overlay content: (section title, [(keys, description)]), in display order.
+pub type HelpSections = &'static [(&'static str, &'static [(&'static str, &'static str)])];
+
+pub fn help_line_count(sections: HelpSections) -> usize {
+    let separators = sections.len().saturating_sub(1);
+    separators + sections.iter().map(|(_, keys)| 1 + keys.len()).sum::<usize>()
+}
+
+fn help_lines(sections: HelpSections) -> Vec<Line<'static>> {
+    let mut lines = Vec::with_capacity(help_line_count(sections));
+    let heading = Style::default().add_modifier(Modifier::BOLD);
+    for (title, keys) in sections {
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines.push(Line::styled(*title, heading));
+        lines.extend(keys.iter().map(|(k, d)| Line::from(format!("{k:<16} {d}"))));
+    }
+    lines
+}
+
+pub fn render_help(f: &mut Frame, area: Rect, scroll: u16, sections: HelpSections) {
+    f.render_widget(Clear, area);
+    let block = Block::default().borders(Borders::ALL);
+    let inner = block.inner(area);
+    let lines = help_lines(sections);
+    let total = lines.len();
+    let visible = usize::from(inner.height);
+    let top = usize::from(scroll).min(total.saturating_sub(visible));
+    let block = if visible > 0 && total > visible {
+        block.title(format!("Help · {}-{}/{}", top + 1, top + visible, total))
+    } else {
+        block.title("Help")
+    };
+    f.render_widget(block, area);
+    f.render_widget(Paragraph::new(lines).scroll((top as u16, 0)), inner);
+}
+
+/// Applies one key to an open help overlay; returns true when the key closes it.
+pub fn help_key(key: KeyEvent, scroll: &mut u16, page: u16, sections: HelpSections) -> bool {
+    let max = (help_line_count(sections) as u16).saturating_sub(page);
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    // A taller terminal may already be drawing at a lower offset.
+    *scroll = (*scroll).min(max);
+    match key.code {
+        KeyCode::Char('q' | '?') | KeyCode::Esc => return true,
+        KeyCode::Char('d') if ctrl => *scroll = scroll.saturating_add(page / 2).min(max),
+        KeyCode::Char('u') if ctrl => *scroll = scroll.saturating_sub(page / 2),
+        KeyCode::Char('j') | KeyCode::Down => *scroll = scroll.saturating_add(1).min(max),
+        KeyCode::Char('k') | KeyCode::Up => *scroll = scroll.saturating_sub(1),
+        KeyCode::Char('g') => *scroll = 0,
+        KeyCode::Char('G') => *scroll = max,
+        _ => {}
+    }
+    false
+}
+
 pub fn truncate(s: &str, width: usize) -> String {
     if s.chars().count() <= width {
         s.to_string()
@@ -287,6 +382,14 @@ mod tests {
     use super::*;
     use chrono::{Duration, Local, TimeZone};
     use ratatui::buffer::Buffer;
+
+    #[test]
+    fn fold_glyph_encodes_session_count() {
+        assert_eq!(fold_glyph(0, None), (' ', None));
+        assert_eq!(fold_glyph(1, Some(Color::Red)), ('▄', Some(Color::Red)));
+        assert_eq!(fold_glyph(2, Some(Color::Red)), ('▆', Some(Color::DarkGray)));
+        assert_eq!(fold_glyph(5, None), ('█', Some(Color::DarkGray)));
+    }
 
     #[test]
     fn strip_colors_turns_highlights_into_modifiers() {

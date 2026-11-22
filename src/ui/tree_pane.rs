@@ -3,8 +3,8 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders};
 
-use crate::search;
 use antty::model::ParticipantKind;
+use antty::search;
 use antty::tree::{self, Row};
 
 use super::{AppRef, TOUCHED_BG, color_for};

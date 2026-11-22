@@ -1,9 +1,7 @@
 mod cli;
-mod cmdline;
 mod delta;
 mod editor;
 mod keys;
-mod search;
 mod ui;
 
 use std::collections::BTreeMap;
@@ -11,7 +9,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use antty::filter::{Action, ActionFilter, ActionKey, action_key};
-use antty::{attrib, disk, index, model, sessions, timeline, tree, watch, worktree};
+use antty::{attrib, disk, index, model, search, sessions, timeline, tree, watch, worktree};
 use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind};
 use ratatui::layout::Rect;
 
@@ -22,9 +20,6 @@ use sessions::{Harness, Msg};
 use timeline::View;
 use tree::{Row, Tree};
 use ui::{ActionRow, AppRef, Mode, UiState};
-
-/// Sessions active this recently stay as PARTICIPANTS rows even past the fold budget.
-const LIVE_HOURS: i64 = 2;
 
 /// Earliest/latest timestamp for fit, restricted to matching events when filtered.
 fn model_time_range(model: &Model) -> Option<(Ts, Ts)> {
@@ -194,7 +189,7 @@ impl App {
     fn finish_row_update(&mut self, row: Option<Row>) {
         self.ui.expand.session_fold = self.ui.fold_sessions.then(|| tree::SessionFold {
             budget: self.session_budget,
-            live_since: chrono::Utc::now() - chrono::Duration::hours(LIVE_HOURS),
+            live_since: chrono::Utc::now() - chrono::Duration::hours(antty::tui::LIVE_HOURS),
         });
         self.rows = tree::build_rows(&self.model, &self.tree, &self.ui.expand);
         if let Some(r) = row

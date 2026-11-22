@@ -275,26 +275,10 @@ checks; the version bump happens once, when queen lands.
   Subagent logs are registered, not read; an explicit session end wins over
   last-seen. Drill-down runs `antty --project <most recently active worktree>`.
   Discovery runs only at startup. See [usage](usage.md#queen).
-
-### Step 0: setup
-
-1. Land `feat/participants-defrag` on `main`; queen's fold copies its rules
-   and glyphs.
-2. Rebase `feat/queen` onto it.
-
-### Bundle B.5: interaction (no new data)
-
-1. **Origin and drill target** (see Remote readiness). First, because every
-   later step touches these rows.
-2. **Session fold** inside expanded projects (see Folding).
-3. **Project fold** in recent order.
-4. **`?` help:** the help overlay takes a key table and lives in
-   `antty::tui`, used by both binaries.
-5. **`/` search** over project paths and session titles, opening collapsed
-   projects that contain matches.
-
-Done when expanding antty adds about 5 rows instead of 83, and every project
-is reachable in two keystrokes or with `/`.
+- **Bundle B.5, interaction:** project identity includes its origin, drill
+  targets are chosen at discovery, and older sessions and projects fold into
+  summary rows. `?` opens shared help; `/` searches paths and session titles
+  and reveals matches hidden by folds.
 
 ### Bundle C: real activity
 

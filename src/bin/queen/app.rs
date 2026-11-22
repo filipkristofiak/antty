@@ -2,7 +2,10 @@ use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 
+use antty::cmdline::{self, CmdKind, CmdLine};
 use antty::model::Ts;
+use antty::search;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::discover::{Drill, Kind, Origin, Project, ProjectKey, SessionInfo};
 
@@ -238,13 +241,16 @@ pub struct App {
     pub view: antty::timeline::View,
     pub layout: crate::ui::Layout,
     pub flash: Option<String>,
-    pub cmdline: Option<String>,
+    pub cmdline: Option<CmdLine>,
+    pub search: Option<String>,
     pub help: Option<u16>,
     pub no_color: bool,
     pub launch: Option<antty::tui::Invocation>,
     pub suspend: bool,
     count: usize,
     pending: Option<char>,
+    command_history: Vec<String>,
+    search_history: Vec<String>,
 }
 
 impl App {
@@ -268,12 +274,15 @@ impl App {
             layout: crate::ui::layout(ratatui::layout::Rect::default()),
             flash: None,
             cmdline: None,
+            search: None,
             help: None,
             no_color: std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()),
             launch: None,
             suspend: false,
             count: 0,
             pending: None,
+            command_history: Vec::new(),
+            search_history: Vec::new(),
         };
         app.rebuild();
         app
@@ -314,31 +323,7 @@ impl App {
             Order::Recent => recent_forest(&self.projects, &self.home),
             Order::Tree => tree_forest(&self.projects, &self.home),
         };
-        fn walk(app: &App, node: usize, depth: usize, live_since: Ts, rows: &mut Vec<Row>) {
-            rows.push(Row::Node { node, depth });
-            let n = &app.forest.nodes[node];
-            if app.expanded.contains(&n.key) {
-                if let Some(project) = n.project {
-                    let shown = app.sessions_shown(project, live_since);
-                    rows.extend((0..shown).map(|session| Row::Session { project, session, depth: depth + 1 }));
-                    if shown < app.projects[project].sessions.len() {
-                        rows.push(Row::SessionFold { project, depth: depth + 1 });
-                    }
-                }
-                for &child in &n.children {
-                    walk(app, child, depth + 1, live_since, rows);
-                }
-            }
-        }
-        let mut rows = Vec::new();
-        let live_since = live_since();
-        let shown = self.roots_shown(live_since);
-        for &root in &self.forest.roots[..shown] {
-            walk(self, root, 0, live_since, &mut rows);
-        }
-        if shown < self.forest.roots.len() {
-            rows.push(Row::ProjectFold);
-        }
+        let rows = self.rows_for(false);
         let exact = rows.iter().position(|row| match (old, *row) {
             (Some(Row::Node { .. }), Row::Node { node, .. }) => key.as_ref() == Some(&self.forest.nodes[node].key),
             (Some(Row::Session { project: p, session: s, .. }), Row::Session { project, session, .. }) => {
@@ -370,6 +355,113 @@ impl App {
             .unwrap_or(self.selected.min(rows.len().saturating_sub(1)));
         self.rows = rows;
         self.clamp_scroll();
+    }
+
+    fn rows_for(&self, full: bool) -> Vec<Row> {
+        fn walk(app: &App, node: usize, depth: usize, full: bool, live_since: Ts, rows: &mut Vec<Row>) {
+            rows.push(Row::Node { node, depth });
+            let n = &app.forest.nodes[node];
+            if full || app.expanded.contains(&n.key) {
+                if let Some(project) = n.project {
+                    let total = app.projects[project].sessions.len();
+                    let shown = if full { total } else { app.sessions_shown(project, live_since) };
+                    rows.extend((0..shown).map(|session| Row::Session { project, session, depth: depth + 1 }));
+                    if shown < total {
+                        rows.push(Row::SessionFold { project, depth: depth + 1 });
+                    }
+                }
+                for &child in &n.children {
+                    walk(app, child, depth + 1, full, live_since, rows);
+                }
+            }
+        }
+        let mut rows = Vec::new();
+        let live_since = live_since();
+        let total = self.forest.roots.len();
+        let shown = if full { total } else { self.roots_shown(live_since) };
+        for &root in &self.forest.roots[..shown] {
+            walk(self, root, 0, full, live_since, &mut rows);
+        }
+        if shown < total {
+            rows.push(Row::ProjectFold);
+        }
+        rows
+    }
+
+    pub fn row_label(&self, row: Row) -> Option<&str> {
+        match row {
+            Row::Node { node, .. } => Some(&self.forest.nodes[node].label),
+            Row::Session { project, session, .. } => Some(&self.projects[project].sessions[session].title),
+            Row::SessionFold { .. } | Row::ProjectFold => None,
+        }
+    }
+
+    fn path_to(&self, target: usize) -> Vec<usize> {
+        fn visit(forest: &Forest, node: usize, target: usize, path: &mut Vec<usize>) -> bool {
+            path.push(node);
+            if node == target || forest.nodes[node].children.iter().any(|&child| visit(forest, child, target, path)) {
+                return true;
+            }
+            path.pop();
+            false
+        }
+        let mut path = Vec::new();
+        for &root in &self.forest.roots {
+            if visit(&self.forest, root, target, &mut path) {
+                break;
+            }
+        }
+        path
+    }
+
+    fn reveal(&mut self, row: Row) {
+        let target = match row {
+            Row::Node { node, .. } => node,
+            Row::Session { project, .. } => self.forest.nodes.iter().position(|n| n.project == Some(project)).unwrap(),
+            Row::SessionFold { .. } | Row::ProjectFold => return,
+        };
+        let path = self.path_to(target);
+        let live_since = live_since();
+        let shown = self.roots_shown(live_since);
+        if self.forest.roots[shown..].contains(&path[0]) {
+            self.projects_unfolded = true;
+        }
+        for &node in &path[..path.len() - 1] {
+            self.expanded.insert(self.forest.nodes[node].key.clone());
+        }
+        if let Row::Session { project, session, .. } = row {
+            self.expanded.insert(self.forest.nodes[target].key.clone());
+            if session >= self.sessions_shown(project, live_since) {
+                self.unfolded.insert(self.projects[project].key.clone());
+            }
+        }
+        self.rebuild();
+        if let Some(i) = self.rows.iter().position(|&r| same_row(r, row)) {
+            self.selected = i;
+        }
+        self.clamp_scroll();
+    }
+
+    fn search_step(&mut self, query: &str, forward: bool, n: usize) -> bool {
+        let full = self.rows_for(true);
+        let matches: Vec<_> = full
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &r)| self.row_label(r).filter(|label| search::is_match(label, query)).map(|_| i))
+            .collect();
+        let cur = self.rows.get(self.selected).and_then(|&row| full.iter().position(|&r| same_row(r, row)));
+        let Some((idx, wrapped)) = search::step(&matches, cur, forward, n) else {
+            self.flash = Some(format!("Pattern not found: {query}"));
+            return false;
+        };
+        if wrapped {
+            self.flash = Some(
+                if forward { "search hit BOTTOM, continuing at TOP" } else { "search hit TOP, continuing at BOTTOM" }
+                    .into(),
+            );
+        }
+        self.reveal(full[idx]);
+        true
     }
 
     pub fn fit(&mut self) {
@@ -485,37 +577,19 @@ impl App {
         self.launch = Some(antty_invocation(target));
     }
 
-    pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
-        use crossterm::event::{KeyCode, KeyModifiers};
+    pub fn handle_key(&mut self, key: KeyEvent) -> bool {
         self.flash = None;
         let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
-        if let Some(text) = self.cmdline.as_mut() {
-            match key.code {
-                KeyCode::Esc => self.cmdline = None,
-                KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => self.cmdline = None,
-                KeyCode::Backspace => {
-                    text.pop();
-                    if text.is_empty() {
-                        self.cmdline = None;
-                    }
-                }
-                KeyCode::Enter => {
-                    let text = self.cmdline.take().unwrap();
-                    let text = text.trim();
-                    if matches!(text, "q" | "q!" | "qa" | "qa!" | "quit") {
-                        return true;
-                    }
-                    self.flash = Some(format!("not an editor command: {text}"));
-                }
-                KeyCode::Char(c) if plain && !c.is_control() => text.push(c),
-                _ => {}
-            }
-            return false;
+        if self.cmdline.is_some() {
+            return self.handle_key_command(key);
         }
         if let Some(scroll) = &mut self.help {
             let page = self.layout.help.height.saturating_sub(2);
             if antty::tui::help_key(key, scroll, page, crate::ui::HELP) {
                 self.help = None;
+                if key.code == KeyCode::Esc {
+                    self.search = None;
+                }
             }
             return false;
         }
@@ -523,6 +597,12 @@ impl App {
             self.count = 0;
             self.pending = None;
             self.suspend = true;
+            return false;
+        }
+        if plain && key.code == KeyCode::Esc {
+            self.search = None;
+            self.count = 0;
+            self.pending = None;
             return false;
         }
         let width = self.layout.gantt_width.max(1) as usize;
@@ -578,7 +658,14 @@ impl App {
         let count = std::mem::take(&mut self.count);
         let n = count.max(1);
         match key.code {
-            KeyCode::Char(':') => self.cmdline = Some(String::new()),
+            KeyCode::Char(':') => self.cmdline = Some(CmdLine::new(CmdKind::Command)),
+            KeyCode::Char('/') => self.cmdline = Some(CmdLine::new(CmdKind::Search)),
+            KeyCode::Char('n' | 'N') => {
+                if let Some(query) = self.search.take() {
+                    self.search_step(&query, key.code == KeyCode::Char('n'), n);
+                    self.search = Some(query);
+                }
+            }
             KeyCode::Char('?') => self.help = Some(0),
             KeyCode::Char('j') | KeyCode::Down => self.selected = self.selected.saturating_add(n),
             KeyCode::Char('k') | KeyCode::Up => self.selected = self.selected.saturating_sub(n),
@@ -618,6 +705,69 @@ impl App {
         }
         self.clamp_scroll();
         false
+    }
+
+    fn handle_key_command(&mut self, key: KeyEvent) -> bool {
+        let line = self.cmdline.as_mut().unwrap();
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Esc => self.cmdline = None,
+            KeyCode::Char('c') if ctrl => self.cmdline = None,
+            KeyCode::Backspace => {
+                if !line.backspace() {
+                    self.cmdline = None;
+                }
+            }
+            KeyCode::Char('u') if ctrl => line.clear(),
+            KeyCode::Char('w') if ctrl => line.delete_word(),
+            KeyCode::Up | KeyCode::Down => {
+                let history = match line.kind {
+                    CmdKind::Command => &self.command_history,
+                    CmdKind::Search => &self.search_history,
+                };
+                if key.code == KeyCode::Up { line.older(history) } else { line.newer(history) }
+            }
+            KeyCode::Enter => {
+                let line = self.cmdline.take().unwrap();
+                match line.kind {
+                    CmdKind::Command => {
+                        let cmd = line.text.trim();
+                        if !cmd.is_empty() {
+                            cmdline::record(&mut self.command_history, &line.text);
+                        }
+                        match cmd {
+                            "q" | "q!" | "qa" | "qa!" | "quit" => return true,
+                            "" => {}
+                            other => self.flash = Some(format!("not an editor command: {other}")),
+                        }
+                    }
+                    CmdKind::Search => {
+                        let query = if line.text.is_empty() {
+                            self.search_history.last().cloned()
+                        } else {
+                            cmdline::record(&mut self.search_history, &line.text);
+                            Some(line.text)
+                        };
+                        if let Some(query) = query
+                            && self.search_step(&query, true, 1)
+                        {
+                            self.search = Some(query);
+                        }
+                    }
+                }
+            }
+            KeyCode::Char(c) if !ctrl && !c.is_control() => line.push(c),
+            _ => {}
+        }
+        false
+    }
+}
+
+fn same_row(a: Row, b: Row) -> bool {
+    match (a, b) {
+        (Row::Node { node: a, .. }, Row::Node { node: b, .. }) => a == b,
+        (Row::Session { project: a, session: s, .. }, Row::Session { project: b, session: t, .. }) => a == b && s == t,
+        _ => false,
     }
 }
 
@@ -775,6 +925,51 @@ mod tests {
         assert_eq!(app.selected, 0);
         assert!(!app.handle_key(KeyEvent::from(KeyCode::Char('q'))));
         assert_eq!(app.help, None);
+    }
+
+    fn enter_search(app: &mut App, query: &str) {
+        app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+        for c in query.chars() {
+            app.handle_key(KeyEvent::from(KeyCode::Char(c)));
+        }
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
+    }
+
+    #[test]
+    fn search_reveals_older_sessions_and_wraps_in_smartcase_order() {
+        let mut first = project(0, (3..11).map(|hours| hours * 60));
+        first.sessions[7].title = "needle".into();
+        let mut second = project(1, [20 * 60]);
+        second.sessions[0].title = "Needle two".into();
+        let mut app = App::new(vec![first, second], PathBuf::new());
+        enter_search(&mut app, "needle");
+        assert!(matches!(app.rows[app.selected], Row::Session { project: 0, session: 7, .. }));
+        let key = &app.projects[0].key;
+        assert!(app.expanded.contains(key));
+        assert!(app.unfolded.contains(key));
+        app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+        assert!(matches!(app.rows[app.selected], Row::Session { project: 1, session: 0, .. }));
+        app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+        assert!(matches!(app.rows[app.selected], Row::Session { project: 0, session: 7, .. }));
+        assert_eq!(app.flash.as_deref(), Some("search hit BOTTOM, continuing at TOP"));
+        let selected = app.selected;
+        enter_search(&mut app, "zzz");
+        assert_eq!(app.flash.as_deref(), Some("Pattern not found: zzz"));
+        assert_eq!(app.selected, selected);
+        assert_eq!(app.search.as_deref(), Some("needle"));
+    }
+
+    #[test]
+    fn search_reveals_folded_projects_and_collapsed_tree_ancestors() {
+        let projects = (0..14).map(|i| project(i, [(i as i64 + 3) * 60])).collect();
+        let mut app = App::new(projects, PathBuf::new());
+        enter_search(&mut app, "p13");
+        assert!(app.projects_unfolded);
+        assert_eq!(app.row_label(app.rows[app.selected]), Some("/q/p13"));
+        app.handle_key(KeyEvent::from(KeyCode::Char('o')));
+        enter_search(&mut app, "p13");
+        assert!(matches!(app.rows[app.selected], Row::Node { depth: 1, .. }));
+        assert_eq!(app.row_label(app.rows[app.selected]), Some("p13"));
     }
 
     #[test]

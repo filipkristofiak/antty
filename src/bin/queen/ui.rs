@@ -149,6 +149,11 @@ fn tree(f: &mut Frame, app: &App, live_since: antty::model::Ts) {
             style = style.bg(SELECTED_BG).add_modifier(Modifier::BOLD);
             buf.set_string(inner.x, y, " ".repeat(width), style);
         }
+        if let Some(query) = &app.search
+            && app.row_label(*row).is_some_and(|label| antty::search::is_match(label, query))
+        {
+            style = style.add_modifier(Modifier::UNDERLINED);
+        }
         buf.set_string(inner.x, y, truncate(&text, width), style);
     }
 }
@@ -240,9 +245,9 @@ fn status(f: &mut Frame, app: &App) {
     if width == 0 || area.height == 0 {
         return;
     }
-    if let Some(text) = &app.cmdline {
-        f.render_widget(Paragraph::new(truncate(&format!(":{text}"), width)), area);
-        f.set_cursor_position((area.x + (1 + text.chars().count()).min(width - 1) as u16, area.y));
+    if let Some(line) = &app.cmdline {
+        f.render_widget(Paragraph::new(truncate(&format!("{}{}", line.kind.prompt(), line.text), width)), area);
+        f.set_cursor_position((area.x + (1 + line.text.chars().count()).min(width - 1) as u16, area.y));
         return;
     }
     if let Some(flash) = &app.flash {

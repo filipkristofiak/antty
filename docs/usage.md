@@ -238,7 +238,7 @@ active in the last two hours, with older projects summarized in a
 | `zo/zc`, `zR/zM` | Open/close node; expand/collapse all |
 | `Enter` | Open session cwd, or project's most recently active existing cwd, in antty; directory-only nodes toggle |
 | `Enter`, `zo` on a fold row | Reveal hidden rows and select the first one |
-| `/pattern⏎` | Find project paths and session titles; uppercase makes the search case-sensitive. Opens any folds hiding the match. |
+| `/pattern⏎` | Find full project paths in either order and session titles; uppercase makes the search case-sensitive. Opens any folds hiding the match. |
 | `[count]n/N`, `Esc` | Next/previous match (wraps); clear the active search |
 | `:q⏎`, `:q!`, `:qa`, `:qa!`, `:quit`, `ZZ/ZQ` | Quit (colon commands require Enter) |
 | `Ctrl-c`, `Ctrl-z` | Quit hint / suspend to shell |

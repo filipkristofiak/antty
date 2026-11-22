@@ -150,7 +150,7 @@ fn tree(f: &mut Frame, app: &App, live_since: antty::model::Ts) {
             buf.set_string(inner.x, y, " ".repeat(width), style);
         }
         if let Some(query) = &app.search
-            && app.row_label(*row).is_some_and(|label| antty::search::is_match(label, query))
+            && app.search_label(*row).is_some_and(|label| antty::search::is_match(label, query))
         {
             style = style.add_modifier(Modifier::UNDERLINED);
         }

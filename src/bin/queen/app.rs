@@ -55,6 +55,7 @@ fn display_path(p: &Path, home: &Path) -> String {
 pub struct Node {
     pub key: ProjectKey,
     pub label: String,
+    pub full_label: String,
     pub project: Option<usize>,
     pub children: Vec<usize>,
     pub spans: Vec<(Ts, Ts)>,
@@ -109,13 +110,17 @@ pub fn recent_forest(projects: &[ProjectView], home: &Path) -> Forest {
     let nodes = projects
         .iter()
         .enumerate()
-        .map(|(p, project)| Node {
-            key: project.key.clone(),
-            label: display_path(&project.key.path, home),
-            project: Some(p),
-            children: Vec::new(),
-            spans: Vec::new(),
-            sessions: 0,
+        .map(|(p, project)| {
+            let label = display_path(&project.key.path, home);
+            Node {
+                key: project.key.clone(),
+                full_label: label.clone(),
+                label,
+                project: Some(p),
+                children: Vec::new(),
+                spans: Vec::new(),
+                sessions: 0,
+            }
         })
         .collect();
     let mut roots: Vec<_> = (0..projects.len()).collect();
@@ -150,11 +155,13 @@ pub fn tree_forest(projects: &[ProjectView], home: &Path) -> Forest {
             at = child;
         }
         let node = forest.nodes.len();
+        let full_label = display_path(&key.path, home);
         forest.nodes.push(Node {
             label: match parent {
                 Some(parent) => key.path.strip_prefix(parent).unwrap().display().to_string(),
-                None => display_path(&key.path, home),
+                None => full_label.clone(),
             },
+            full_label,
             key: key.clone(),
             project: trie[at].project,
             children: Vec::new(),
@@ -388,9 +395,9 @@ impl App {
         rows
     }
 
-    pub fn row_label(&self, row: Row) -> Option<&str> {
+    pub fn search_label(&self, row: Row) -> Option<&str> {
         match row {
-            Row::Node { node, .. } => Some(&self.forest.nodes[node].label),
+            Row::Node { node, .. } => Some(&self.forest.nodes[node].full_label),
             Row::Session { project, session, .. } => Some(&self.projects[project].sessions[session].title),
             Row::SessionFold { .. } | Row::ProjectFold => None,
         }
@@ -447,7 +454,7 @@ impl App {
         let matches: Vec<_> = full
             .iter()
             .enumerate()
-            .filter_map(|(i, &r)| self.row_label(r).filter(|label| search::is_match(label, query)).map(|_| i))
+            .filter_map(|(i, &r)| self.search_label(r).filter(|label| search::is_match(label, query)).map(|_| i))
             .collect();
         let cur = self.rows.get(self.selected).and_then(|&row| full.iter().position(|&r| same_row(r, row)));
         let Some((idx, wrapped)) = search::step(&matches, cur, forward, n) else {
@@ -965,11 +972,15 @@ mod tests {
         let mut app = App::new(projects, PathBuf::new());
         enter_search(&mut app, "p13");
         assert!(app.projects_unfolded);
-        assert_eq!(app.row_label(app.rows[app.selected]), Some("/q/p13"));
+        assert_eq!(app.search_label(app.rows[app.selected]), Some("/q/p13"));
         app.handle_key(KeyEvent::from(KeyCode::Char('o')));
-        enter_search(&mut app, "p13");
-        assert!(matches!(app.rows[app.selected], Row::Node { depth: 1, .. }));
-        assert_eq!(app.row_label(app.rows[app.selected]), Some("p13"));
+        enter_search(&mut app, "/q/p13");
+        let row = app.rows[app.selected];
+        let Row::Node { node, depth: 1 } = row else {
+            panic!("search must select the project under its directory");
+        };
+        assert_eq!(app.forest.nodes[node].label, "p13");
+        assert_eq!(app.search_label(row), Some("/q/p13"));
     }
 
     #[test]

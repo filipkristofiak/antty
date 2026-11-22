@@ -95,6 +95,8 @@ are not traced.
 
 ## Keys
 
+### Rows
+
 | Key | Action |
 | --- | --- |
 | `[count]` | repeat: 5j 10l 2H 3n 2} 3Ctrl-e … |
@@ -105,6 +107,11 @@ are not traced.
 | `Ctrl-f/Ctrl-b` | page down/up |
 | `Ctrl-e/Ctrl-y` | scroll rows down/up by one |
 | `zz/zt/zb` | selected row to middle/top/bottom |
+
+### Timeline
+
+| Key | Action |
+| --- | --- |
 | `h/l, ←/→` | time cursor ±1 column |
 | `0/$` | time cursor to view start / now |
 | `H/L` | pan by half the pane width |
@@ -112,25 +119,55 @@ are not traced.
 | `t` | cursor to now, pinned near the right edge |
 | `f` | fit all activity, latest near the right edge |
 | `c` | collapse idle stretches into ` ~ ` breaks on/off |
+
+### Search
+
+| Key | Action |
+| --- | --- |
 | `/` | search row names (smartcase); Enter jumps to the next match |
 | `n/N` | next/prev search match; no search: next/prev activity on the row |
+
+### Tree
+
+| Key | Action |
+| --- | --- |
 | `Space/za` | toggle dir/session; on a file: collapse its dir |
 | `zo/zc` | open/close; zc on a file or closed dir: its parent |
 | `zO/zC` | open/close recursively |
 | `zM/zR` | collapse/expand all dirs |
 | `a` | auto-expand the focused session's files on/off |
+| `T` | touched-only |
+| `w` | worktrees: merged/separate FILES view |
+
+### Detail & diffs
+
+| Key | Action |
+| --- | --- |
 | `Enter` | open Detail for the selected row |
 | `Enter (Detail)` | full-screen diff of selected event |
 | `e` | open file in `$EDITOR`, or the parent Neovim when `$NVIM` is set (file rows, Detail, Diff) |
 | `D` | diff of selected event in delta (Detail, Diff); needs delta on PATH |
-| `T` | touched-only |
-| `w` | worktrees: merged/separate FILES view |
+
+### Pickers & filters
+
+| Key | Action |
+| --- | --- |
 | `s` | session picker |
 | `F` | action filter: show only chosen actions; script-files toggle |
+
+### Stats
+
+| Key | Action |
+| --- | --- |
 | `i` | stats panel on/off: tool calls and totals, selection vs all |
 | `I` | stats popup; j/k move the selection underneath |
 | `v (Stats)` | count only the Gantt's visible time range on/off |
-| `?` | this help, from any view; closing returns there |
+
+### General
+
+| Key | Action |
+| --- | --- |
+| `?` | this help, from any view; closing returns there. In help: j/k, Ctrl-d/Ctrl-u, g/G scroll |
 | `:q⏎, ZZ/ZQ` | quit |
 | `Ctrl-C` | hint: quit with :q⏎ |
 | `Ctrl-z` | suspend to the shell; fg resumes |

@@ -113,6 +113,8 @@ pub struct UiState {
 
     // Diff mode (full-screen)
     pub diff_scroll: u16,
+    /// Help overlay: first visible line.
+    pub help_scroll: u16,
 
     // Picker mode: working selection, applied to model.session_filter on Enter.
     pub picker_selected: HashSet<usize>,
@@ -150,6 +152,7 @@ impl UiState {
             detail_selected: 0,
             detail_scroll: 0,
             diff_scroll: 0,
+            help_scroll: 0,
             picker_selected: HashSet::new(),
             picker_cursor: 0,
             actions_rows: Vec::new(),
@@ -214,6 +217,8 @@ pub struct LayoutInfo {
     pub gantt_width: u16,
     /// Centered picker overlays; inner height determines half-page moves.
     pub picker_area: Rect,
+    /// Centered help overlay; its inner height bounds help scrolling.
+    pub help_area: Rect,
 }
 
 /// Shared layout math so main.rs can size scroll/pan behavior identically to what `draw` renders.
@@ -252,6 +257,7 @@ pub fn compute_layout(root: Rect, mode: Mode, stats_panel: bool) -> LayoutInfo {
         body_height,
         gantt_width,
         picker_area: centered_rect(60, 60, root),
+        help_area: centered_rect(60, 80, root),
     }
 }
 
@@ -286,7 +292,7 @@ pub fn draw(f: &mut Frame, app: &AppRef) {
         _ => {}
     }
     if app.ui.mode == Mode::Help {
-        help::render(f, centered_rect(60, 80, root));
+        help::render(f, layout.help_area, app.ui.help_scroll);
     }
     if app.ui.no_color {
         strip_colors(f.buffer_mut());

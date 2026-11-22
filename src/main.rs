@@ -462,6 +462,7 @@ impl App {
     fn open_help(&mut self) {
         self.ui.help_return = self.ui.mode;
         self.ui.mode = Mode::Help;
+        self.ui.help_scroll = 0;
     }
 
     fn apply_picker(&mut self) {

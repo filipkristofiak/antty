@@ -6,6 +6,12 @@ use antty::model::Ts;
 
 use crate::discover::{Drill, Kind, Origin, Project, ProjectKey, SessionInfo};
 
+const SESSIONS_SHOWN: usize = 5;
+
+pub(crate) fn live_since() -> Ts {
+    chrono::Utc::now() - chrono::Duration::hours(antty::tui::LIVE_HOURS)
+}
+
 pub struct ProjectView {
     pub key: ProjectKey,
     pub kind: Kind,
@@ -212,6 +218,7 @@ pub enum Order {
 pub enum Row {
     Node { node: usize, depth: usize },
     Session { project: usize, session: usize, depth: usize },
+    SessionFold { project: usize, depth: usize },
 }
 
 pub struct App {
@@ -220,6 +227,8 @@ pub struct App {
     pub order: Order,
     pub forest: Forest,
     pub expanded: HashSet<ProjectKey>,
+    pub fold: bool,
+    pub unfolded: HashSet<ProjectKey>,
     pub rows: Vec<Row>,
     pub selected: usize,
     pub scroll: usize,
@@ -245,6 +254,8 @@ impl App {
             order: Order::Recent,
             forest: Forest { nodes: Vec::new(), roots: Vec::new() },
             expanded: Default::default(),
+            fold: true,
+            unfolded: HashSet::new(),
             rows: Vec::new(),
             selected: 0,
             scroll: 0,
@@ -262,36 +273,49 @@ impl App {
         app
     }
 
+    pub fn sessions_shown(&self, project: usize, live_since: Ts) -> usize {
+        let project = &self.projects[project];
+        let sessions = &project.sessions;
+        if !self.fold || self.unfolded.contains(&project.key) {
+            return sessions.len();
+        }
+        let live = sessions.iter().take_while(|s| s.span.is_some_and(|(_, end)| end >= live_since)).count();
+        SESSIONS_SHOWN.max(live).min(sessions.len())
+    }
+
     fn rebuild(&mut self) {
         let old = self.rows.get(self.selected).copied();
         let key = match old {
             Some(Row::Node { node, .. }) => Some(self.forest.nodes[node].key.clone()),
-            Some(Row::Session { project, .. }) => Some(self.projects[project].key.clone()),
+            Some(Row::Session { project, .. } | Row::SessionFold { project, .. }) => {
+                Some(self.projects[project].key.clone())
+            }
             None => None,
         };
         self.forest = match self.order {
             Order::Recent => recent_forest(&self.projects, &self.home),
             Order::Tree => tree_forest(&self.projects, &self.home),
         };
-        fn walk(app: &App, node: usize, depth: usize, rows: &mut Vec<Row>) {
+        fn walk(app: &App, node: usize, depth: usize, live_since: Ts, rows: &mut Vec<Row>) {
             rows.push(Row::Node { node, depth });
             let n = &app.forest.nodes[node];
             if app.expanded.contains(&n.key) {
                 if let Some(project) = n.project {
-                    rows.extend((0..app.projects[project].sessions.len()).map(|session| Row::Session {
-                        project,
-                        session,
-                        depth: depth + 1,
-                    }));
+                    let shown = app.sessions_shown(project, live_since);
+                    rows.extend((0..shown).map(|session| Row::Session { project, session, depth: depth + 1 }));
+                    if shown < app.projects[project].sessions.len() {
+                        rows.push(Row::SessionFold { project, depth: depth + 1 });
+                    }
                 }
                 for &child in &n.children {
-                    walk(app, child, depth + 1, rows);
+                    walk(app, child, depth + 1, live_since, rows);
                 }
             }
         }
         let mut rows = Vec::new();
+        let live_since = live_since();
         for &root in &self.forest.roots {
-            walk(self, root, 0, &mut rows);
+            walk(self, root, 0, live_since, &mut rows);
         }
         let exact = rows.iter().position(|row| match (old, *row) {
             (Some(Row::Node { .. }), Row::Node { node, .. }) => key.as_ref() == Some(&self.forest.nodes[node].key),
@@ -300,13 +324,23 @@ impl App {
             }
             _ => false,
         });
+        let session_fold = || {
+            if let Some(Row::Session { project, .. } | Row::SessionFold { project, .. }) = old {
+                rows.iter().position(|r| matches!(*r, Row::SessionFold { project: p, .. } if p == project))
+            } else {
+                None
+            }
+        };
         let project_node = || {
             rows.iter().position(|row| match row {
                 Row::Node { node, .. } => key.as_ref() == Some(&self.forest.nodes[*node].key),
                 _ => false,
             })
         };
-        self.selected = exact.or_else(project_node).unwrap_or(self.selected.min(rows.len().saturating_sub(1)));
+        self.selected = exact
+            .or_else(session_fold)
+            .or_else(project_node)
+            .unwrap_or(self.selected.min(rows.len().saturating_sub(1)));
         self.rows = rows;
         self.clamp_scroll();
     }
@@ -334,16 +368,34 @@ impl App {
         }
     }
 
+    fn unfold_sessions(&mut self, project: usize) {
+        let first_hidden = self.sessions_shown(project, live_since());
+        self.unfolded.insert(self.projects[project].key.clone());
+        self.rebuild();
+        if let Some(i) = self.rows.iter().position(
+            |r| matches!(*r, Row::Session { project: p, session, .. } if p == project && session == first_hidden),
+        ) {
+            self.selected = i;
+        }
+    }
+
     fn fold(&mut self, open: Option<bool>) {
-        let key = match self.rows.get(self.selected) {
-            Some(Row::Node { node, .. }) => self.forest.nodes[*node].key.clone(),
+        let key = match self.rows.get(self.selected).copied() {
+            Some(Row::Node { node, .. }) => self.forest.nodes[node].key.clone(),
             Some(Row::Session { project, .. }) => {
                 // Space/za on a session closes its project rather than opening it.
                 if open.is_none() {
-                    let key = self.projects[*project].key.clone();
-                    self.expanded.remove(&key);
+                    let key = &self.projects[project].key;
+                    self.expanded.remove(key);
+                    self.unfolded.remove(key);
                     self.rebuild();
                     return;
+                }
+                return;
+            }
+            Some(Row::SessionFold { project, .. }) => {
+                if open != Some(false) {
+                    self.unfold_sessions(project);
                 }
                 return;
             }
@@ -353,6 +405,7 @@ impl App {
             self.expanded.insert(key);
         } else {
             self.expanded.remove(&key);
+            self.unfolded.remove(&key);
         }
         self.rebuild();
     }
@@ -370,6 +423,10 @@ impl App {
                 };
                 let project = &self.projects[p];
                 (&project.drill, project.sessions.first().map_or(&project.key.path, |s| &s.cwd))
+            }
+            Some(Row::SessionFold { project, .. }) => {
+                self.unfold_sessions(project);
+                return;
             }
             None => return,
         };
@@ -429,6 +486,7 @@ impl App {
                     }
                     ('z', KeyCode::Char('M')) => {
                         self.expanded.clear();
+                        self.unfolded.clear();
                         self.rebuild();
                     }
                     _ => {}
@@ -488,6 +546,13 @@ impl App {
             KeyCode::Char('c') => self.view.toggle_collapse_gaps(),
             KeyCode::Char('o') => {
                 self.order = if self.order == Order::Recent { Order::Tree } else { Order::Recent };
+                self.rebuild();
+            }
+            KeyCode::Char('p') => {
+                self.fold = !self.fold;
+                if self.fold {
+                    self.unfolded.clear();
+                }
                 self.rebuild();
             }
             KeyCode::Char(' ') => self.fold(None),
@@ -559,6 +624,59 @@ mod tests {
 
     use super::*;
     use antty::sessions::Harness;
+    use crossterm::event::{KeyCode, KeyEvent};
+
+    fn project(index: usize, minutes_ago: impl IntoIterator<Item = i64>) -> ProjectView {
+        let path = PathBuf::from(format!("/q/p{index}"));
+        let now = chrono::Utc::now();
+        let sessions = minutes_ago
+            .into_iter()
+            .enumerate()
+            .map(|(i, offset)| {
+                let end = now - chrono::Duration::minutes(offset);
+                SessionInfo {
+                    harness: Harness::Omp,
+                    cwd: path.clone(),
+                    drill: Drill::Local(path.clone()),
+                    title: format!("session {i}"),
+                    span: Some((end - chrono::Duration::minutes(1), end)),
+                }
+            })
+            .collect();
+        ProjectView {
+            key: ProjectKey { origin: Origin::Local, path: path.clone() },
+            kind: Kind::NoGit,
+            drill: Drill::Local(path),
+            sessions,
+        }
+    }
+
+    #[test]
+    fn session_fold_opens_at_first_hidden_row_and_restores_selection() {
+        let mut app = App::new(vec![project(0, (3..11).map(|hours| hours * 60))], PathBuf::new());
+        app.handle_key(KeyEvent::from(KeyCode::Char(' ')));
+        assert_eq!(app.rows.len(), 7);
+        assert!(app.rows[1..6].iter().all(|r| matches!(r, Row::Session { .. })));
+        assert!(matches!(app.rows[6], Row::SessionFold { project: 0, .. }));
+        app.handle_key(KeyEvent::from(KeyCode::Char('G')));
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
+        assert_eq!(app.rows.len(), 9);
+        assert!(app.rows[1..].iter().all(|r| matches!(r, Row::Session { .. })));
+        assert!(matches!(app.rows[app.selected], Row::Session { project: 0, session: 5, .. }));
+        for _ in 0..2 {
+            app.handle_key(KeyEvent::from(KeyCode::Char('p')));
+        }
+        assert!(matches!(app.rows[app.selected], Row::SessionFold { project: 0, .. }));
+    }
+
+    #[test]
+    fn session_fold_keeps_all_live_sessions_visible() {
+        let mut app = App::new(vec![project(0, [30, 30, 30, 30, 30, 30, 30, 180])], PathBuf::new());
+        app.handle_key(KeyEvent::from(KeyCode::Char(' ')));
+        assert_eq!(app.rows.len(), 9);
+        assert!(app.rows[1..8].iter().all(|r| matches!(r, Row::Session { .. })));
+        assert!(matches!(app.rows[8], Row::SessionFold { project: 0, .. }));
+    }
 
     #[test]
     fn missing_discovery_target_does_not_launch() {

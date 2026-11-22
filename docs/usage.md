@@ -219,15 +219,21 @@ project/directory spans; `▒` bars are not-yet-indexed session spans. Session
 colours identify the harness. Missing projects are dimmed. `NO_COLOR` works
 as in antty.
 
+An expanded project shows the five most recent sessions and any others active
+in the last two hours. The `⋯ N older` row summarizes the rest; its bars count
+active folded sessions (`▄` 1, `▆` 2, `█` 3+).
+
 | Key | Queen action |
 | --- | --- |
 | `[count]j/k`, `↓/↑`, `gg/G`, `Ctrl-d/u` | Navigate rows; counts select/repeat as in antty |
 | `[count]h/l`, `←/→`, `H/L` | Move the time cursor / half-pane pan |
 | `[count]+/-`, `=`, `t`, `f`, `c` | Zoom, now, fit, toggle collapsed gaps |
 | `o` | Toggle recent/path-tree order |
-| `Space/za` | Toggle node; on a session, close and select its project |
+| `p` | Toggle folding older sessions |
+| `Space/za` | Toggle node; on a session, close and select its project; on a fold row, reveal hidden rows |
 | `zo/zc`, `zR/zM` | Open/close node; expand/collapse all |
 | `Enter` | Open session cwd, or project's most recently active existing cwd, in antty; directory-only nodes toggle |
+| `Enter`, `zo` on a fold row | Reveal hidden rows and select the first one |
 | `:q⏎`, `:q!`, `:qa`, `:qa!`, `:quit`, `ZZ/ZQ` | Quit (colon commands require Enter) |
 | `Ctrl-c`, `Ctrl-z` | Quit hint / suspend to shell |
 | `Esc`, `Ctrl-c`, `Backspace` in `:` | Cancel the line / erase a character |

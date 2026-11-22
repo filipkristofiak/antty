@@ -1,11 +1,11 @@
 use antty::sessions::Harness;
 use antty::timeline::Column;
-use antty::tui::{CURSOR_BG, HIGHLIGHT_FG, SELECTED_BG, truncate};
+use antty::tui::{CURSOR_BG, HIGHLIGHT_FG, SELECTED_BG, fold_glyph, truncate};
 use ratatui::Frame;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::app::{App, Order, Row, overlaps};
+use crate::app::{App, Order, Row, live_since, overlaps};
 use crate::discover::Kind;
 
 use ratatui::layout::{Constraint, Direction, Layout as Split, Rect};
@@ -38,8 +38,9 @@ pub fn layout(root: Rect) -> Layout {
 }
 
 pub fn draw(f: &mut Frame, app: &App) {
-    tree(f, app);
-    gantt(f, app);
+    let live_since = live_since();
+    tree(f, app, live_since);
+    gantt(f, app, live_since);
     status(f, app);
     if app.no_color {
         antty::tui::strip_colors(f.buffer_mut());
@@ -54,7 +55,7 @@ fn harness_color(h: Harness) -> Color {
     }
 }
 
-fn tree(f: &mut Frame, app: &App) {
+fn tree(f: &mut Frame, app: &App, live_since: antty::model::Ts) {
     let block = Block::default().borders(Borders::ALL).title("projects");
     let inner = block.inner(app.layout.tree);
     f.render_widget(block, app.layout.tree);
@@ -80,6 +81,10 @@ fn tree(f: &mut Frame, app: &App) {
                 }
                 (text, Style::default().fg(harness_color(s.harness)))
             }
+            Row::SessionFold { project, depth } => {
+                let folded = app.projects[project].sessions.len() - app.sessions_shown(project, live_since);
+                (format!("{}⋯ {folded} older", "  ".repeat(depth)), Style::default().fg(Color::DarkGray))
+            }
         };
         let y = inner.y + 2 + r as u16;
         if app.scroll + r == app.selected {
@@ -93,7 +98,7 @@ fn tree(f: &mut Frame, app: &App) {
     }
 }
 
-fn gantt(f: &mut Frame, app: &App) {
+fn gantt(f: &mut Frame, app: &App, live_since: antty::model::Ts) {
     let block = Block::default().borders(Borders::ALL).title("timeline");
     let inner = block.inner(app.layout.gantt);
     f.render_widget(block, app.layout.gantt);
@@ -108,6 +113,11 @@ fn gantt(f: &mut Frame, app: &App) {
     for (r, row) in app.rows.iter().skip(app.scroll).take(app.layout.body_height as usize).enumerate() {
         let selected = app.scroll + r == app.selected;
         let y = inner.y + 2 + r as u16;
+        let folded = if let Row::SessionFold { project, .. } = *row {
+            &app.projects[project].sessions[app.sessions_shown(project, live_since)..]
+        } else {
+            &[]
+        };
         for (col, &column) in cols.iter().enumerate() {
             let (ch, color) = match column {
                 Column::Break { .. } => ('~', Some(Color::DarkGray)),
@@ -123,6 +133,12 @@ fn gantt(f: &mut Frame, app: &App) {
                         } else {
                             (' ', None)
                         }
+                    }
+                    Row::SessionFold { .. } => {
+                        let mut hits =
+                            folded.iter().filter(|s| s.span.is_some_and(|(a, b)| a < end && b >= start)).take(3);
+                        let first = hits.next();
+                        fold_glyph(usize::from(first.is_some()) + hits.count(), first.map(|s| harness_color(s.harness)))
                     }
                     _ => (' ', None),
                 },
@@ -170,12 +186,13 @@ fn status(f: &mut Frame, app: &App) {
     }
     let left = "Nav (j/k/h/l) | Zoom (+/-) | Now (t) | Fit (f) | Open (⏎) | Fold (␣) | Order (o) | Quit (:q)";
     let right = format!(
-        "{} · {} projects · {} sessions · order:{} · gaps:{}",
+        "{} · {} projects · {} sessions · order:{} · gaps:{} · fold:{}",
         app.view.zoom_label(),
         app.projects.len(),
         app.projects.iter().map(|p| p.sessions.len()).sum::<usize>(),
         if app.order == Order::Recent { "recent" } else { "tree" },
-        if app.view.collapse_gaps() { "on" } else { "off" }
+        if app.view.collapse_gaps() { "on" } else { "off" },
+        if app.fold { "on" } else { "off" }
     );
     let left_len = left.chars().count();
     let right_len = right.chars().count();

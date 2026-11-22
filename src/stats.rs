@@ -31,6 +31,7 @@ pub struct Stats {
 pub fn subject_for(model: &Model, tree: &Tree, row: Option<Row>) -> (String, Subject) {
     let Some(row) = row else { return ("all".into(), Subject::All) };
     let mut events = match row {
+        Row::Fold => return ("all".into(), Subject::All),
         Row::Section(name) => {
             let roots = match name {
                 "files" => &tree.files,

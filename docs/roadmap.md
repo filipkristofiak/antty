@@ -100,8 +100,23 @@ interactive stdin streams (Codex `write_stdin`, pty shells) and indirection
 (`bash -c` beyond one level, Makefiles, subprocess calls) are parsed from
 intent, not effect.
 
+## 6. Big projects (consideration)
+
+PARTICIPANTS folds older sessions into one row (see
+[Condensing PARTICIPANTS](participants-defrag.md)). Possible next steps, kept in
+that doc with mockups:
+
+- [ ] Sessions tab in the side panel: browse sessions next to Stats, with the
+  fold row as the fallback below 110 columns.
+- [ ] One lens for the session picker, action filter and stats range, applied
+  to the tree, Gantt and stats together.
+- [ ] Show folded sessions that touched the selected file as rows.
+
 ## Done
 
+- PARTICIPANTS fold: up to 12 recent sessions (live ones always) stay as
+  rows; older ones fold into one `⋯ N older` row with a `▄▆█` activity strip.
+  `p` toggles.
 - Timeline gaps: runs of 6 or more columns idle across visible activity
   collapse into a three-column ` ~ ` break by default, with a duration label
   when it fits. `c` toggles collapsing; `--no-collapse-gaps` starts linear.

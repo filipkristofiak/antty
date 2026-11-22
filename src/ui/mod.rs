@@ -87,6 +87,8 @@ pub struct UiState {
     pub selected: usize,
     pub scroll: usize,
     pub expand: ExpandState,
+    /// PARTICIPANTS folds older sessions into one row; `p` toggles. Not persisted.
+    pub fold_sessions: bool,
     /// FILES layout for multiple worktrees; `w` toggles.
     pub files_view: FilesView,
     pub watch_on: bool,
@@ -135,6 +137,7 @@ impl UiState {
             selected: 0,
             scroll: 0,
             expand: ExpandState::default(),
+            fold_sessions: true,
             files_view: FilesView::Merged,
             watch_on,
             status_extra: None,
@@ -221,6 +224,12 @@ pub struct LayoutInfo {
     pub help_area: Rect,
 }
 
+/// Session rows before older ones fold: 12, fewer when needed so FILES keeps at least 10
+/// rows. The other 4 rows are the PARTICIPANTS header, `you`, the fold row and the FILES header.
+pub fn session_budget(body_height: u16) -> usize {
+    usize::from(body_height).saturating_sub(14).min(12)
+}
+
 /// Shared layout math so main.rs can size scroll/pan behavior identically to what `draw` renders.
 pub fn compute_layout(root: Rect, mode: Mode, stats_panel: bool) -> LayoutInfo {
     let outer = Layout::default()
@@ -271,8 +280,15 @@ pub fn draw(f: &mut Frame, app: &AppRef) {
         detail::render(f, area, app);
     }
     let touched = antty::tree::touching_participants(app.model, app.tree, app.rows.get(app.ui.selected).copied());
-    tree_pane::render(f, layout.tree_area, app, &touched);
-    gantt_pane::render(f, layout.gantt_area, app, &touched);
+    let start = app.ui.scroll.min(app.rows.len());
+    let end = (start + usize::from(layout.body_height)).min(app.rows.len());
+    let folded = if app.rows[start..end].contains(&Row::Fold) {
+        antty::tree::session_rows(app.model, &app.ui.expand).1
+    } else {
+        Vec::new()
+    };
+    tree_pane::render(f, layout.tree_area, app, &touched, &folded);
+    gantt_pane::render(f, layout.gantt_area, app, &touched, &folded);
     let comparison =
         (layout.stats_area.is_some() || mode == Mode::Stats).then(|| stats::Comparison::new(app, layout.gantt_width));
     if let (Some(area), Some(comparison)) = (layout.stats_area, &comparison) {
@@ -318,6 +334,13 @@ fn strip_colors(buf: &mut ratatui::buffer::Buffer) {
 mod tests {
     use super::*;
     use ratatui::buffer::Buffer;
+
+    #[test]
+    fn session_budget_leaves_room_for_files() {
+        assert_eq!(session_budget(45), 12);
+        assert_eq!(session_budget(20), 6);
+        assert_eq!(session_budget(10), 0);
+    }
 
     #[test]
     fn stats_panel_reserves_width_only_when_it_fits() {

@@ -38,13 +38,17 @@ the first observed change has no diff unless a tool already recorded the file's 
 
 Left pane, top to bottom:
 
-- `PARTICIPANTS` — you, plus each session (and its subagents), most recently active first
+- `PARTICIPANTS` — you, plus each session (and its subagents), most recently active first.
+  Up to 12 sessions show as rows (fewer on short terminals to leave room for 10 FILES rows).
+  Sessions active in the last 2 hours always show. Older ones fold into one `⋯ N older` row
+  whose timeline bars count active folded sessions (`▄` 1, `▆` 2, `█` 3+).
+  Press `p`, or Enter on the fold row, to show every session.
 - `FILES` — the project's file tree, merged across worktrees by default, or grouped by checkout with `w`
 - `MOUNTS` — external/remote paths touched outside the project, plus inferred ssh/scp/rsync/docker/kubectl targets
 - `WEB` — search queries and fetched URLs
 - `MCP` — tool calls grouped by server, then tool
 
-Right pane: the Gantt timeline, one lane per participant.
+Right pane: the Gantt timeline, aligned with the left-pane rows.
 `i` adds a stats panel on the far right (hidden below 110 columns).
 Runs of six or more columns idle across all visible sessions collapse into three display columns (` ~ `) by default, with the marker centered between two blank columns. The header shows `~<duration>` when it fits; closely spaced breaks retain a bare `~` rather than a truncated duration. Press `c` to toggle collapsing without moving the time cursor.
 
@@ -137,6 +141,7 @@ are not traced.
 | `zM/zR` | collapse/expand all dirs |
 | `a` | auto-expand the focused session's files on/off |
 | `T` | touched-only |
+| `p` | fold older sessions into one row on/off; Enter on the fold row shows all |
 | `w` | worktrees: merged/separate FILES view |
 
 ### Detail & diffs

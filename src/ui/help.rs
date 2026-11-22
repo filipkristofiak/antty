@@ -47,6 +47,7 @@ const SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("zM/zR", "collapse/expand all dirs"),
             ("a", "auto-expand the focused session's files on/off"),
             ("T", "touched-only"),
+            ("p", "fold older sessions into one row on/off; Enter on the fold row shows all"),
             ("w", "worktrees: merged/separate FILES view"),
         ],
     ),

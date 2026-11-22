@@ -244,7 +244,7 @@ Later, queen may show another machine's projects. Nothing remote is built now,
 but these keep it possible:
 
 - **Identity:** a project key is `{ origin, path }` (`Origin::Local` only for
-  now). `App.expanded`, `Node.key` and `ProjectView.label` must not use a bare
+  now). `App.expanded`, `Node.key` and `ProjectView.key` must not use a bare
   `PathBuf`: `~/projects/x` on two machines would collide.
 - **Drill target decided in the data layer:** `Drill::Local(path) | None` is
   set at discovery, not by `exists()` when Enter is pressed. A later

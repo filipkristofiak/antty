@@ -232,7 +232,8 @@ as in antty.
 | `Ctrl-c`, `Ctrl-z` | Quit hint / suspend to shell |
 | `Esc`, `Ctrl-c`, `Backspace` in `:` | Cancel the line / erase a character |
 
-Returning from antty restores queen's selection and view. Missing cwds show an
-error instead of launching. The companion antty binary is resolved beside queen
-first, then on PATH. Session discovery and header/tail metadata are a startup
-snapshot; no background indexing, activity cache or live updates ship yet.
+Returning from antty restores queen's selection and view. A cwd missing at
+discovery shows an error instead of launching. The companion antty binary is
+resolved beside queen first, then on PATH. Session discovery and header/tail
+metadata are a startup snapshot; no background indexing, activity cache or live
+updates ship yet.

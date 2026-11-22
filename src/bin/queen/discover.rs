@@ -13,10 +13,31 @@ const HEADER_LINES: usize = 50;
 const TAIL_BYTES: u64 = 64 * 1024;
 const MAX_TAIL_BYTES: u64 = 8 * 1024 * 1024;
 
+/// Machine a project lives on; only the local machine for now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Origin {
+    Local,
+}
+
+/// Identity of a project or a tree directory: a path on one origin.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ProjectKey {
+    pub origin: Origin,
+    pub path: PathBuf,
+}
+
+/// What Enter opens, decided at discovery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Drill {
+    Local(PathBuf),
+    None,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionInfo {
     pub harness: Harness,
     pub cwd: PathBuf,
+    pub drill: Drill,
     pub title: String,
     /// (start, end) of the bar; None when no line read had a top-level timestamp.
     pub span: Option<(Ts, Ts)>,
@@ -34,6 +55,7 @@ pub fn collect(roots: &[(Harness, PathBuf); 3]) -> BTreeMap<PathBuf, Vec<Session
 }
 
 fn collect_cwd(harness: Harness, cwd: &Path, files: &[SessionFile]) -> Vec<SessionInfo> {
+    let drill = if cwd.exists() { Drill::Local(cwd.to_path_buf()) } else { Drill::None };
     let mut model = Model::new(vec![cwd.to_path_buf()]);
     for f in files {
         let who = harness.ensure_participant(&mut model, &f.path, &f.project_dir);
@@ -49,6 +71,7 @@ fn collect_cwd(harness: Harness, cwd: &Path, files: &[SessionFile]) -> Vec<Sessi
         .map(|s| SessionInfo {
             harness,
             cwd: cwd.to_path_buf(),
+            drill: drill.clone(),
             title: s.title.clone(),
             span: (s.last_seen != DateTime::<Utc>::MIN_UTC).then(|| {
                 let end = s.end.unwrap_or(s.last_seen);
@@ -122,7 +145,7 @@ pub enum Kind {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Project<T> {
-    pub label: PathBuf,
+    pub key: ProjectKey,
     pub kind: Kind,
     pub cwds: Vec<(PathBuf, T)>,
 }
@@ -146,10 +169,18 @@ pub fn group<T>(by_cwd: BTreeMap<PathBuf, T>) -> Vec<Project<T>> {
     let mut projects: BTreeMap<PathBuf, Project<T>> = BTreeMap::new();
     for (cwd, counts) in by_cwd {
         let (key, kind, label) = project_key(&cwd);
-        projects.entry(key).or_insert_with(|| Project { label, kind, cwds: Vec::new() }).cwds.push((cwd, counts));
+        projects
+            .entry(key)
+            .or_insert_with(|| Project {
+                key: ProjectKey { origin: Origin::Local, path: label },
+                kind,
+                cwds: Vec::new(),
+            })
+            .cwds
+            .push((cwd, counts));
     }
     let mut projects: Vec<_> = projects.into_values().collect();
-    projects.sort_by(|a, b| a.label.cmp(&b.label));
+    projects.sort_by(|a, b| a.key.cmp(&b.key));
     projects
 }
 #[cfg(test)]
@@ -187,11 +218,27 @@ mod tests {
             vec![SessionInfo {
                 harness: Harness::Omp,
                 cwd: base.clone(),
+                drill: Drill::Local(base.clone()),
                 title: "Fix bug".into(),
                 span: Some((at("2026-01-01T00:00:00Z"), at("2026-01-01T01:00:00Z"))),
             }]
         );
         fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn collect_cwd_records_no_drill_for_a_missing_directory() {
+        let base = std::env::temp_dir().join(format!("antty-queen-test-gone-{}", std::process::id()));
+        let dir = base.join("sessions/proj");
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("s1.jsonl");
+        let gone = base.join("gone");
+        let header = serde_json::json!({"type":"session","id":"s1","cwd":gone,"timestamp":"2026-01-01T00:00:00.000Z"});
+        fs::write(&file, format!("{header}\n")).unwrap();
+        let sessions = collect_cwd(Harness::Omp, &gone, &[SessionFile { project_dir: dir, path: file }]);
+        fs::remove_dir_all(base).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].drill, Drill::None);
     }
 
     #[test]
@@ -219,13 +266,14 @@ mod tests {
             (plain.clone(), [0, 0, 3]),
             (gone.clone(), [1, 0, 0]),
         ]);
+        let local = |path: &Path| ProjectKey { origin: Origin::Local, path: path.to_path_buf() };
         assert_eq!(
             group(counts),
             vec![
-                Project { label: gone.clone(), kind: Kind::Missing, cwds: vec![(gone, [1, 0, 0])] },
-                Project { label: plain.clone(), kind: Kind::NoGit, cwds: vec![(plain, [0, 0, 3])] },
-                Project { label: repo.clone(), kind: Kind::Git, cwds: vec![(feat, [0, 2, 0]), (repo, [1, 0, 0])] },
-                Project { label: sub.clone(), kind: Kind::NoGit, cwds: vec![(sub, [1, 0, 0])] },
+                Project { key: local(&gone), kind: Kind::Missing, cwds: vec![(gone, [1, 0, 0])] },
+                Project { key: local(&plain), kind: Kind::NoGit, cwds: vec![(plain, [0, 0, 3])] },
+                Project { key: local(&repo), kind: Kind::Git, cwds: vec![(feat, [0, 2, 0]), (repo, [1, 0, 0])] },
+                Project { key: local(&sub), kind: Kind::NoGit, cwds: vec![(sub, [1, 0, 0])] },
             ]
         );
         fs::remove_dir_all(base).unwrap();

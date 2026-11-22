@@ -67,7 +67,14 @@ fn print(projects: &[Project<Vec<SessionInfo>>]) {
             Kind::NoGit => "no-git",
             Kind::Missing => "missing",
         };
-        println!("{}  [{}]  omp={} claude={} codex={}", project.label.display(), kind, totals[0], totals[1], totals[2]);
+        println!(
+            "{}  [{}]  omp={} claude={} codex={}",
+            project.key.path.display(),
+            kind,
+            totals[0],
+            totals[1],
+            totals[2]
+        );
         for (cwd, sessions) in &project.cwds {
             let counts = counts(sessions);
             println!("  {}  omp={} claude={} codex={}", cwd.display(), counts[0], counts[1], counts[2]);

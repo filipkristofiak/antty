@@ -1,14 +1,15 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 
 use antty::model::Ts;
 
-use crate::discover::{Kind, Project, SessionInfo};
+use crate::discover::{Drill, Kind, Origin, Project, ProjectKey, SessionInfo};
 
 pub struct ProjectView {
-    pub label: PathBuf,
+    pub key: ProjectKey,
     pub kind: Kind,
+    pub drill: Drill,
     pub sessions: Vec<SessionInfo>,
 }
 
@@ -20,7 +21,9 @@ pub fn project_views(projects: Vec<Project<Vec<SessionInfo>>>) -> Vec<ProjectVie
             sessions.sort_by(|a, b| {
                 b.span.map(|(_, e)| e).cmp(&a.span.map(|(_, e)| e)).then_with(|| a.title.cmp(&b.title))
             });
-            ProjectView { label: p.label, kind: p.kind, sessions }
+            let drill =
+                sessions.iter().find(|s| matches!(s.drill, Drill::Local(_))).map_or(Drill::None, |s| s.drill.clone());
+            ProjectView { key: p.key, kind: p.kind, drill, sessions }
         })
         .collect()
 }
@@ -40,7 +43,7 @@ fn display_path(p: &Path, home: &Path) -> String {
 }
 
 pub struct Node {
-    pub key: PathBuf,
+    pub key: ProjectKey,
     pub label: String,
     pub project: Option<usize>,
     pub children: Vec<usize>,
@@ -97,8 +100,8 @@ pub fn recent_forest(projects: &[ProjectView], home: &Path) -> Forest {
         .iter()
         .enumerate()
         .map(|(p, project)| Node {
-            key: project.label.clone(),
-            label: display_path(&project.label, home),
+            key: project.key.clone(),
+            label: display_path(&project.key.path, home),
             project: Some(p),
             children: Vec::new(),
             spans: Vec::new(),
@@ -107,9 +110,7 @@ pub fn recent_forest(projects: &[ProjectView], home: &Path) -> Forest {
         .collect();
     let mut roots: Vec<_> = (0..projects.len()).collect();
     roots.sort_by(|&a, &b| {
-        last_active(&projects[b])
-            .cmp(&last_active(&projects[a]))
-            .then_with(|| projects[a].label.cmp(&projects[b].label))
+        last_active(&projects[b]).cmp(&last_active(&projects[a])).then_with(|| projects[a].key.cmp(&projects[b].key))
     });
     let mut forest = Forest { nodes, roots };
     for n in 0..forest.nodes.len() {
@@ -125,65 +126,74 @@ struct Trie {
 }
 
 pub fn tree_forest(projects: &[ProjectView], home: &Path) -> Forest {
-    let mut trie = vec![Trie::default()];
-    for (p, project) in projects.iter().enumerate() {
-        let mut at = 0;
-        for component in project.label.components() {
-            if matches!(component, Component::RootDir | Component::Prefix(_) | Component::CurDir) {
-                continue;
-            }
-            let name = component.as_os_str();
-            at = if let Some(&child) = trie[at].children.get(name) {
-                child
-            } else {
-                let child = trie.len();
-                trie.push(Trie::default());
-                trie[at].children.insert(name.to_os_string(), child);
-                child
-            };
-        }
-        trie[at].project = Some(p);
-    }
     fn emit(
         trie: &[Trie],
         mut at: usize,
-        mut path: PathBuf,
+        mut key: ProjectKey,
         parent: Option<&Path>,
         home: &Path,
         forest: &mut Forest,
     ) -> usize {
         while trie[at].project.is_none() && trie[at].children.len() == 1 {
             let (name, &child) = trie[at].children.first_key_value().unwrap();
-            path.push(name);
+            key.path.push(name);
             at = child;
         }
         let node = forest.nodes.len();
         forest.nodes.push(Node {
-            key: path.clone(),
             label: match parent {
-                Some(parent) => path.strip_prefix(parent).unwrap().display().to_string(),
-                None => display_path(&path, home),
+                Some(parent) => key.path.strip_prefix(parent).unwrap().display().to_string(),
+                None => display_path(&key.path, home),
             },
+            key: key.clone(),
             project: trie[at].project,
             children: Vec::new(),
             spans: Vec::new(),
             sessions: 0,
         });
         for (name, &child) in &trie[at].children {
-            let child = emit(trie, child, path.join(name), Some(&path), home, forest);
+            let child_key = ProjectKey { origin: key.origin, path: key.path.join(name) };
+            let child = emit(trie, child, child_key, Some(&key.path), home, forest);
             forest.nodes[node].children.push(child);
         }
         node
     }
     let mut forest = Forest { nodes: Vec::new(), roots: Vec::new() };
-    // Root itself can be a project (a session launched in /).
-    if trie[0].project.is_some() {
-        let root = emit(&trie, 0, PathBuf::from("/"), None, home, &mut forest);
-        forest.roots.push(root);
-    } else {
-        for (name, &child) in &trie[0].children {
-            let root = emit(&trie, child, Path::new("/").join(name), None, home, &mut forest);
+    let mut origins = BTreeMap::<Origin, Vec<usize>>::new();
+    for (p, project) in projects.iter().enumerate() {
+        origins.entry(project.key.origin).or_default().push(p);
+    }
+    for (origin, indices) in origins {
+        let mut trie = vec![Trie::default()];
+        for p in indices {
+            let mut at = 0;
+            for component in projects[p].key.path.components() {
+                if matches!(component, Component::RootDir | Component::Prefix(_) | Component::CurDir) {
+                    continue;
+                }
+                let name = component.as_os_str();
+                at = if let Some(&child) = trie[at].children.get(name) {
+                    child
+                } else {
+                    let child = trie.len();
+                    trie.push(Trie::default());
+                    trie[at].children.insert(name.to_os_string(), child);
+                    child
+                };
+            }
+            trie[at].project = Some(p);
+        }
+        // Root itself can be a project (a session launched in /).
+        if trie[0].project.is_some() {
+            let key = ProjectKey { origin, path: PathBuf::from("/") };
+            let root = emit(&trie, 0, key, None, home, &mut forest);
             forest.roots.push(root);
+        } else {
+            for (name, &child) in &trie[0].children {
+                let key = ProjectKey { origin, path: Path::new("/").join(name) };
+                let root = emit(&trie, child, key, None, home, &mut forest);
+                forest.roots.push(root);
+            }
         }
     }
     for i in 0..forest.roots.len() {
@@ -209,7 +219,7 @@ pub struct App {
     pub home: PathBuf,
     pub order: Order,
     pub forest: Forest,
-    pub expanded: std::collections::HashSet<PathBuf>,
+    pub expanded: HashSet<ProjectKey>,
     pub rows: Vec<Row>,
     pub selected: usize,
     pub scroll: usize,
@@ -256,7 +266,7 @@ impl App {
         let old = self.rows.get(self.selected).copied();
         let key = match old {
             Some(Row::Node { node, .. }) => Some(self.forest.nodes[node].key.clone()),
-            Some(Row::Session { project, .. }) => Some(self.projects[project].label.clone()),
+            Some(Row::Session { project, .. }) => Some(self.projects[project].key.clone()),
             None => None,
         };
         self.forest = match self.order {
@@ -286,7 +296,7 @@ impl App {
         let exact = rows.iter().position(|row| match (old, *row) {
             (Some(Row::Node { .. }), Row::Node { node, .. }) => key.as_ref() == Some(&self.forest.nodes[node].key),
             (Some(Row::Session { project: p, session: s, .. }), Row::Session { project, session, .. }) => {
-                self.projects[p].label == self.projects[project].label && s == session
+                p == project && s == session
             }
             _ => false,
         });
@@ -330,7 +340,7 @@ impl App {
             Some(Row::Session { project, .. }) => {
                 // Space/za on a session closes its project rather than opening it.
                 if open.is_none() {
-                    let key = self.projects[*project].label.clone();
+                    let key = self.projects[*project].key.clone();
                     self.expanded.remove(&key);
                     self.rebuild();
                     return;
@@ -348,39 +358,26 @@ impl App {
     }
 
     fn drill_down(&mut self) {
-        let target = match self.rows.get(self.selected).copied() {
-            Some(Row::Session { project, session, .. }) => self.projects[project].sessions[session].cwd.clone(),
+        let (drill, cwd) = match self.rows.get(self.selected).copied() {
+            Some(Row::Session { project, session, .. }) => {
+                let session = &self.projects[project].sessions[session];
+                (&session.drill, &session.cwd)
+            }
             Some(Row::Node { node, .. }) => {
                 let Some(p) = self.forest.nodes[node].project else {
                     self.fold(None);
                     return;
                 };
-                self.projects[p]
-                    .sessions
-                    .iter()
-                    .find(|s| s.cwd.exists())
-                    .or_else(|| self.projects[p].sessions.first())
-                    .map(|s| s.cwd.clone())
-                    .unwrap_or_else(|| self.projects[p].label.clone())
+                let project = &self.projects[p];
+                (&project.drill, project.sessions.first().map_or(&project.key.path, |s| &s.cwd))
             }
             None => return,
         };
-        if !target.exists() {
-            self.flash = Some(format!("cwd no longer exists: {}", target.display()));
+        let Drill::Local(target) = drill else {
+            self.flash = Some(format!("cwd no longer exists: {}", cwd.display()));
             return;
-        }
-        let program = std::env::current_exe()
-            .ok()
-            .map(|p| p.with_file_name(format!("antty{}", std::env::consts::EXE_SUFFIX)))
-            .filter(|p| p.exists())
-            .map(|p| p.into_os_string())
-            .unwrap_or_else(|| "antty".into());
-        self.launch = Some(antty::tui::Invocation {
-            program,
-            args: vec!["--project".into(), target.into_os_string()],
-            suspend: true,
-            stdin: None,
-        });
+        };
+        self.launch = Some(antty_invocation(target));
     }
 
     pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
@@ -502,6 +499,21 @@ impl App {
     }
 }
 
+fn antty_invocation(target: &Path) -> antty::tui::Invocation {
+    let program = std::env::current_exe()
+        .ok()
+        .map(|p| p.with_file_name(format!("antty{}", std::env::consts::EXE_SUFFIX)))
+        .filter(|p| p.exists())
+        .map(PathBuf::into_os_string)
+        .unwrap_or_else(|| "antty".into());
+    antty::tui::Invocation {
+        program,
+        args: vec!["--project".into(), target.as_os_str().to_owned()],
+        suspend: true,
+        stdin: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -511,13 +523,15 @@ mod tests {
         let session = crate::discover::SessionInfo {
             harness: antty::sessions::Harness::Omp,
             cwd: cwd.clone(),
+            drill: Drill::Local(cwd.clone()),
             title: "session".into(),
             span: Some((Ts::UNIX_EPOCH, Ts::UNIX_EPOCH)),
         };
         let mut app = super::App::new(
             vec![super::ProjectView {
-                label: cwd.clone(),
+                key: ProjectKey { origin: Origin::Local, path: cwd.clone() },
                 kind: crate::discover::Kind::NoGit,
+                drill: Drill::Local(cwd.clone()),
                 sessions: vec![session],
             }],
             PathBuf::new(),
@@ -528,7 +542,7 @@ mod tests {
         assert!(matches!(app.rows[app.selected], super::Row::Session { .. }));
         app.handle_key(key(' '));
         assert!(matches!(app.rows[app.selected], super::Row::Node { .. }));
-        assert!(!app.expanded.contains(&cwd));
+        assert!(!app.expanded.contains(&ProjectKey { origin: Origin::Local, path: cwd.clone() }));
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
         assert!(app.launch.is_none());
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -545,6 +559,31 @@ mod tests {
 
     use super::*;
     use antty::sessions::Harness;
+
+    #[test]
+    fn missing_discovery_target_does_not_launch() {
+        let cwd = PathBuf::from("/q/gone");
+        let mut app = App::new(
+            project_views(vec![Project {
+                key: ProjectKey { origin: Origin::Local, path: PathBuf::from("/q/repo") },
+                kind: Kind::Git,
+                cwds: vec![(
+                    cwd.clone(),
+                    vec![SessionInfo {
+                        harness: Harness::Omp,
+                        cwd,
+                        drill: Drill::None,
+                        title: "gone".into(),
+                        span: None,
+                    }],
+                )],
+            }]),
+            PathBuf::new(),
+        );
+        app.handle_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Enter));
+        assert!(app.launch.is_none());
+        assert_eq!(app.flash.as_deref(), Some("cwd no longer exists: /q/gone"));
+    }
 
     #[test]
     fn tree_forest_merges_single_child_dirs() {
@@ -564,12 +603,13 @@ mod tests {
                     let session = SessionInfo {
                         harness: Harness::Omp,
                         cwd: PathBuf::from(path),
+                        drill: Drill::Local(PathBuf::from(path)),
                         title: path.to_string(),
                         span: Some((start, start + chrono::Duration::minutes(1))),
                     };
                     let sessions = if i == 3 { vec![session.clone(), session] } else { vec![session] };
                     Project {
-                        label: PathBuf::from(path),
+                        key: ProjectKey { origin: Origin::Local, path: PathBuf::from(path) },
                         kind: Kind::NoGit,
                         cwds: vec![(PathBuf::from(path), sessions)],
                     }
@@ -587,7 +627,7 @@ mod tests {
         assert_eq!(tree.nodes[root].sessions, 5);
         let recent = recent_forest(&projects, home);
         assert_eq!(
-            recent.roots.iter().map(|&i| recent.nodes[i].key.as_path()).collect::<Vec<_>>(),
+            recent.roots.iter().map(|&i| recent.nodes[i].key.path.as_path()).collect::<Vec<_>>(),
             paths.iter().rev().map(Path::new).collect::<Vec<_>>()
         );
     }

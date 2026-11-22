@@ -136,6 +136,13 @@ pub struct Call {
     pub input: String,
 }
 
+/// Every tool call seen in a transcript, for stats. `tool` is the normalized name.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCall {
+    pub tool: String,
+    pub start: Ts,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolWindow {
     pub who: ParticipantId,
@@ -191,6 +198,8 @@ pub struct Model {
     /// Tool calls keyed by participant index + call id; never cleared on reset,
     /// so retained watcher events keep their command.
     pub calls: HashMap<(usize, String), Call>,
+    /// Every tool call keyed by participant index + call id; cleared on reset.
+    pub tool_calls: HashMap<(usize, String), ToolCall>,
     /// empty = all sessions visible
     #[serde(skip)]
     pub session_filter: HashSet<usize>,
@@ -257,6 +266,7 @@ impl Model {
             tool_windows: Vec::new(),
             window_keys: HashSet::new(),
             calls: HashMap::new(),
+            tool_calls: HashMap::new(),
             session_filter: HashSet::new(),
             action_filter: None,
             file_participant: HashMap::new(),
@@ -272,6 +282,13 @@ impl Model {
 
     pub fn record_call(&mut self, who: ParticipantId, id: &str, tool: String, input: String) {
         self.calls.insert((who.0, id.to_owned()), Call { tool, input });
+    }
+
+    pub fn record_tool_call(&mut self, who: ParticipantId, id: &str, tool: &str, start: Ts) {
+        if tool.is_empty() {
+            return;
+        }
+        self.tool_calls.entry((who.0, id.to_owned())).or_insert_with(|| ToolCall { tool: tool.to_owned(), start });
     }
 
     pub fn open_window(&mut self, who: ParticipantId, id: &str, tool: String, start: Ts, input: String) {
@@ -434,6 +451,7 @@ impl Model {
         self.spans.retain(|s| s.who != who);
         self.tool_windows.retain(|w| w.who != who);
         self.window_keys.retain(|(w, _)| *w != who.0);
+        self.tool_calls.retain(|(w, _), _| *w != who.0);
         self.raw_intervals.remove(&who.0);
         self.last_entry_ts.remove(&who.0);
         let p = &self.participants[who.0];
@@ -589,8 +607,10 @@ mod tests {
             detail: EventDetail::None,
         });
         model.record_call(who, "tc2", "bash".into(), "ssh h".into());
+        model.record_tool_call(who, "tc2", "bash", now);
 
         model.clear_participant_data(who);
+        assert!(model.tool_calls.is_empty());
 
         assert_eq!(model.events.len(), 2, "observed watcher events must survive a Reset");
         assert!(model.events.iter().all(|e| !matches!(e.source, TouchSource::Tool(_) | TouchSource::Inferred)));

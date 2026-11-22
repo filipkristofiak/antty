@@ -4,6 +4,7 @@ pub mod diff_view;
 pub mod gantt_pane;
 pub mod help;
 pub mod picker;
+pub mod stats;
 pub mod status;
 pub mod tree_pane;
 
@@ -27,6 +28,8 @@ pub const TOUCHED_BG: Color = Color::Rgb(32, 48, 62);
 /// Text drawn on SELECTED_BG/CURSOR_BG. Explicit RGB so it stays light when the terminal's
 /// default foreground is dark (light themes).
 pub const HIGHLIGHT_FG: Color = Color::Rgb(235, 235, 235);
+pub const STATS_PANEL_WIDTH: u16 = 34;
+pub const STATS_MIN_WIDTH: u16 = 110;
 
 const PALETTE: [Color; 8] = [
     Color::Cyan,
@@ -58,6 +61,7 @@ pub enum Mode {
     Diff,
     Picker,
     Actions,
+    Stats,
     Help,
 }
 
@@ -89,6 +93,8 @@ pub struct UiState {
     pub status_extra: Option<String>,
     pub loading: Option<(usize, usize)>,
     pub no_color: bool,
+    pub stats_panel: bool,
+    pub stats_window: bool,
     /// The open `:` or `/` line; histories and last successful search live for this session.
     pub cmdline: Option<CmdLine>,
     pub command_history: Vec<String>,
@@ -132,6 +138,8 @@ impl UiState {
             status_extra: None,
             loading: None,
             no_color: false,
+            stats_panel: false,
+            stats_window: false,
             cmdline: None,
             command_history: Vec::new(),
             search_history: Vec::new(),
@@ -198,6 +206,7 @@ pub struct LayoutInfo {
     pub tree_area: Rect,
     pub gantt_area: Rect,
     pub detail_area: Option<Rect>,
+    pub stats_area: Option<Rect>,
     pub status_area: Rect,
     /// visible row-list height shared by the tree and gantt panes.
     pub body_height: u16,
@@ -208,31 +217,28 @@ pub struct LayoutInfo {
 }
 
 /// Shared layout math so main.rs can size scroll/pan behavior identically to what `draw` renders.
-pub fn compute_layout(root: Rect, mode: Mode) -> LayoutInfo {
+pub fn compute_layout(root: Rect, mode: Mode, stats_panel: bool) -> LayoutInfo {
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(1)])
         .split(root);
 
-    let tree_width = (root.width / 3).clamp(20, 40);
-    let (tree_area, gantt_area, detail_area) = if mode == Mode::Detail {
+    let (main_area, detail_area) = if mode == Mode::Detail {
         let detail_height = (outer[0].height * 2 / 5).max(6);
         let split = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(0), Constraint::Length(detail_height)])
             .split(outer[0]);
-        let top = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(tree_width), Constraint::Min(10)])
-            .split(split[0]);
-        (top[0], top[1], Some(split[1]))
+        (split[0], Some(split[1]))
     } else {
-        let main = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(tree_width), Constraint::Min(10)])
-            .split(outer[0]);
-        (main[0], main[1], None)
+        (outer[0], None)
     };
+
+    let tree_width = (root.width / 3).clamp(20, 40);
+    let columns = [Constraint::Length(tree_width), Constraint::Min(10), Constraint::Length(STATS_PANEL_WIDTH)];
+    let panel = stats_panel && root.width >= STATS_MIN_WIDTH;
+    let main = Layout::horizontal(&columns[..if panel { 3 } else { 2 }]).split(main_area);
+    let (tree_area, gantt_area) = (main[0], main[1]);
 
     // 2 border rows + 2 header rows in the gantt pane; tree pane matches with its own spacer.
     let body_height = gantt_area.height.saturating_sub(4);
@@ -241,6 +247,7 @@ pub fn compute_layout(root: Rect, mode: Mode) -> LayoutInfo {
         tree_area,
         gantt_area,
         detail_area,
+        stats_area: main.get(2).copied(),
         status_area: outer[1],
         body_height,
         gantt_width,
@@ -248,10 +255,11 @@ pub fn compute_layout(root: Rect, mode: Mode) -> LayoutInfo {
     }
 }
 
-/// Top-level draw: main split (tree | gantt) + status bar, with mode-specific overlays.
+/// Draw the main panes and status bar, then layer mode-specific overlays on top.
 pub fn draw(f: &mut Frame, app: &AppRef) {
     let root = f.area();
-    let layout = compute_layout(root, app.ui.view_mode());
+    let mode = app.ui.view_mode();
+    let layout = compute_layout(root, mode, app.ui.stats_panel);
 
     if let Some(area) = layout.detail_area {
         detail::render(f, area, app);
@@ -259,11 +267,17 @@ pub fn draw(f: &mut Frame, app: &AppRef) {
     let touched = antty::tree::touching_participants(app.model, app.tree, app.rows.get(app.ui.selected).copied());
     tree_pane::render(f, layout.tree_area, app, &touched);
     gantt_pane::render(f, layout.gantt_area, app, &touched);
+    let comparison =
+        (layout.stats_area.is_some() || mode == Mode::Stats).then(|| stats::Comparison::new(app, layout.gantt_width));
+    if let (Some(area), Some(comparison)) = (layout.stats_area, &comparison) {
+        stats::render_panel(f, area, comparison);
+    }
     status::render(f, layout.status_area, app);
 
-    match app.ui.view_mode() {
+    match mode {
         Mode::Picker => picker::render(f, layout.picker_area, app),
         Mode::Actions => actions::render(f, layout.picker_area, app),
+        Mode::Stats => stats::render_popup(f, centered_rect(80, 80, root), comparison.as_ref().unwrap()),
         Mode::Diff => {
             let area = Rect { height: root.height.saturating_sub(1), ..root };
             f.render_widget(Clear, area);
@@ -298,6 +312,23 @@ fn strip_colors(buf: &mut ratatui::buffer::Buffer) {
 mod tests {
     use super::*;
     use ratatui::buffer::Buffer;
+
+    #[test]
+    fn stats_panel_reserves_width_only_when_it_fits() {
+        let root = Rect::new(0, 0, 200, 50);
+        let normal = compute_layout(root, Mode::Normal, true);
+        let panel = normal.stats_area.unwrap();
+        assert_eq!(panel.width, 34);
+        assert_eq!(panel.x, normal.gantt_area.right());
+        assert_eq!(panel.right(), root.right());
+        assert_eq!(normal.gantt_width + panel.width, compute_layout(root, Mode::Normal, false).gantt_width);
+        assert!(compute_layout(Rect::new(0, 0, 100, 50), Mode::Normal, true).stats_area.is_none());
+
+        let detail = compute_layout(root, Mode::Detail, true);
+        let detail_pane = detail.detail_area.unwrap();
+        assert_eq!(detail.stats_area.unwrap().bottom(), detail_pane.y);
+        assert_eq!(detail_pane.width, root.width);
+    }
 
     #[test]
     fn strip_colors_turns_highlights_into_modifiers() {

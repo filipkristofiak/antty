@@ -769,7 +769,7 @@ fn main() -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
     let size = terminal.size()?;
     let root_rect = Rect::new(0, 0, size.width, size.height);
-    let layout = ui::compute_layout(root_rect, ui_state.view_mode());
+    let layout = ui::compute_layout(root_rect, ui_state.view_mode(), ui_state.stats_panel);
 
     let tree = Tree::build(&model, ui_state.files_view);
     let rows = tree::build_rows(&model, &tree, &ui_state.expand);
@@ -870,7 +870,7 @@ fn run_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App, rx: mpsc::Re
 
         let size = terminal.size()?;
         let root_rect = Rect::new(0, 0, size.width, size.height);
-        app.layout = ui::compute_layout(root_rect, app.ui.view_mode());
+        app.layout = ui::compute_layout(root_rect, app.ui.view_mode(), app.ui.stats_panel);
         app.clamp_scroll();
         app.view.clamp_to_view(app.layout.gantt_width.max(1) as usize);
         drawn_now_col = app.view.col_for(chrono::Utc::now());

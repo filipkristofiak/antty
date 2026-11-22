@@ -179,6 +179,25 @@ pub fn ensure_participant(model: &mut Model, file: &Path, project_dir: &Path) ->
 
 const SHELL_TOOLS: &[&str] = &["exec", "exec_command", "write_stdin", "shell", "shell_command"];
 
+fn codex_tool_name<'a>(pty: &str, payload: &'a Value) -> Option<&'a str> {
+    Some(match pty {
+        "function_call" | "custom_tool_call" => {
+            let name = payload.get("name").and_then(Value::as_str).filter(|name| !name.is_empty())?;
+            match name {
+                _ if SHELL_TOOLS.contains(&name) => "bash",
+                "apply_patch" => "edit",
+                "update_plan" => "todo",
+                "view_image" => "read",
+                _ if name.contains("__") => "mcp",
+                _ => name,
+            }
+        }
+        "local_shell_call" => "bash",
+        "web_search_call" => "web_search",
+        _ => return None,
+    })
+}
+
 /// A declared history mode takes precedence when a rollout contains both record shapes.
 /// Older headers without one still accept either shape.
 fn history_mode(model: &Model, who: ParticipantId) -> Option<HistoryMode> {
@@ -223,6 +242,13 @@ pub fn ingest(model: &mut Model, who: ParticipantId, v: &Value, project_dir: &Pa
         {
             model.sessions[s].title = title;
         }
+    }
+    // History-mode completion records can describe these same calls with other IDs.
+    if ty == "response_item"
+        && let Some(tool) = codex_tool_name(pty, payload)
+        && let Some(id) = payload.get("call_id").or_else(|| payload.get("id")).and_then(Value::as_str)
+    {
+        model.record_tool_call(who, id, tool, ts);
     }
     match (ty, pty) {
         ("session_meta", _) if model.participants[who.0].kind == ParticipantKind::Main => {
@@ -567,6 +593,33 @@ mod tests {
 
     fn record(sec: u32, ty: &str, payload: Value) -> Value {
         json!({"timestamp": format!("2026-01-01T00:00:{sec:02}Z"), "type":ty, "payload":payload})
+    }
+
+    #[test]
+    fn codex_tool_stats_count_response_items_not_history_events() {
+        let mut model = Model::new(vec![PathBuf::from("/Users/x/proj")]);
+        let dir = Path::new("/nonexistent/codex/sessions");
+        let who = ensure_participant(&mut model, &dir.join("rollout-stats.jsonl"), dir);
+        for v in [
+            record(1, "response_item", json!({"type":"function_call","name":"exec_command","call_id":"c1"})),
+            record(2, "response_item", json!({"type":"custom_tool_call","name":"apply_patch","call_id":"c2"})),
+            record(3, "response_item", json!({"type":"web_search_call","id":"w1"})),
+            record(4, "response_item", json!({"type":"web_search_call"})),
+            record(5, "event_msg", json!({"type":"exec_command_end","call_id":"c1"})),
+            record(
+                6,
+                "event_msg",
+                json!({"type":"item_completed","item":{"type":"CommandExecution","id":"item1","status":"completed"}}),
+            ),
+        ] {
+            ingest(&mut model, who, &v, dir);
+        }
+        assert_eq!(model.tool_calls.len(), 3);
+        for (id, tool, start) in [("c1", "bash", t(1)), ("c2", "edit", t(2)), ("w1", "web_search", t(3))] {
+            let call = &model.tool_calls[&(who.0, id.into())];
+            assert_eq!(call.tool, tool);
+            assert_eq!(call.start, start);
+        }
     }
 
     #[test]

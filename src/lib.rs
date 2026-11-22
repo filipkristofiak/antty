@@ -12,6 +12,7 @@ mod parse;
 mod remote;
 pub mod sessions;
 pub mod snapshot;
+pub mod stats;
 pub mod timeline;
 pub mod tree;
 pub mod watch;

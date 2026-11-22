@@ -47,7 +47,7 @@ fn tick_char(local: chrono::DateTime<chrono::Local>, secs: i64, day_boundary: bo
     }
 }
 
-fn fmt_span(d: chrono::Duration) -> String {
+pub(super) fn fmt_span(d: chrono::Duration) -> String {
     let mut seconds = d.num_seconds().max(0);
     let mut parts = String::new();
     let mut written = 0;

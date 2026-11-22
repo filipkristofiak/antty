@@ -1,12 +1,15 @@
 //! formi: overview of every project with coding-agent sessions.
 
+mod activity;
 mod app;
+mod cache;
 mod discover;
 mod ui;
 
 use std::path::PathBuf;
+use std::sync::mpsc;
 
-use antty::dirs::{default_claude_dir, default_codex_dir, default_omp_dir, expand_tilde};
+use antty::dirs::{default_claude_dir, default_codex_dir, default_omp_dir, default_state_dir, expand_tilde};
 use antty::sessions::Harness;
 use clap::Parser;
 use discover::{Kind, Project, SessionInfo, collect, group};
@@ -97,44 +100,85 @@ fn main() -> anyhow::Result<()> {
     let raw = RawArgs::parse();
     let list = raw.list;
     let roots = harness_roots(raw);
-    let projects = group(collect(&roots));
+    let (by_cwd, sources) = collect(&roots);
+    let projects = group(by_cwd);
     if list {
         print(&projects);
         return Ok(());
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    let mut app = app::App::new(app::project_views(projects), home, roots);
+    let home = std::env::var_os("HOME");
+    let cache_path =
+        default_state_dir(std::env::var_os("XDG_STATE_HOME"), home.clone()).ok().map(|d| d.join("formi/activity.bin"));
+    let (tx, rx) = mpsc::sync_channel(256);
+    let mut app =
+        app::App::new(app::project_views(projects), home.map(PathBuf::from).unwrap_or_default(), roots.clone());
+    activity::spawn(roots, sources, cache_path, tx);
     let mut terminal = ratatui::init();
-    let result = run_loop(&mut terminal, &mut app);
+    let result = run_loop(&mut terminal, &mut app, rx);
     ratatui::restore();
     result
 }
 
-fn run_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut app::App) -> anyhow::Result<()> {
+fn run_loop(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut app::App,
+    rx: mpsc::Receiver<activity::Msg>,
+) -> anyhow::Result<()> {
     use crossterm::event::{self, Event, KeyEventKind};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
+
+    use activity::Msg;
 
     let size = terminal.size()?;
     app.layout = ui::layout(ratatui::layout::Rect::new(0, 0, size.width, size.height));
     app.fit();
+    let mut dirty = true;
+    let mut last_draw = Instant::now();
     loop {
+        let started = Instant::now();
+        let mut updates = Vec::new();
+        while started.elapsed() < Duration::from_millis(30) {
+            let Ok(msg) = rx.try_recv() else { break };
+            dirty = true;
+            match msg {
+                Msg::Session { info, fresh_title } => updates.push((info, fresh_title)),
+                Msg::Progress { done, total } => app.index_status = Some(format!("indexing {done}/{total}")),
+                Msg::Indexed { sessions, scanned, elapsed } => {
+                    app.index_status =
+                        Some(format!("indexed {sessions} · {scanned} scanned · {:.2}s", elapsed.as_secs_f64()));
+                }
+                Msg::Notice(s) => app.flash = Some(s),
+            }
+        }
+        let backlog = started.elapsed() >= Duration::from_millis(30);
+        if !updates.is_empty() {
+            app.apply(updates);
+        }
         let size = terminal.size()?;
         app.layout = ui::layout(ratatui::layout::Rect::new(0, 0, size.width, size.height));
         app.clamp_scroll();
         app.view.clamp_to_view(app.layout.gantt_width as usize);
-        terminal.draw(|f| ui::draw(f, app))?;
-        if event::poll(Duration::from_secs(1))?
-            && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-        {
-            if app.handle_key(key) {
-                break;
-            }
-            if let Some(inv) = app.launch.take() {
-                app.flash = antty::tui::run(terminal, &inv)?;
-            }
-            if std::mem::take(&mut app.suspend) {
-                app.flash = antty::tui::suspend(terminal)?;
+        if dirty || last_draw.elapsed() >= Duration::from_secs(1) {
+            terminal.draw(|f| ui::draw(f, app))?;
+            last_draw = Instant::now();
+            dirty = false;
+        }
+        if event::poll(Duration::from_millis(if backlog { 0 } else { 200 }))? {
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    dirty = true;
+                    if app.handle_key(key) {
+                        break;
+                    }
+                    if let Some(inv) = app.launch.take() {
+                        app.flash = antty::tui::run(terminal, &inv)?;
+                    }
+                    if std::mem::take(&mut app.suspend) {
+                        app.flash = antty::tui::suspend(terminal)?;
+                    }
+                }
+                Event::Resize(..) => dirty = true,
+                _ => {}
             }
         }
     }

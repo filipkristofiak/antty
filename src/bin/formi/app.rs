@@ -8,7 +8,7 @@ use antty::search;
 use antty::sessions::Harness;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::discover::{Drill, Kind, Origin, Project, ProjectKey, SessionInfo};
+use crate::discover::{Drill, Kind, Origin, Project, ProjectKey, SessionInfo, project_of};
 
 const SESSIONS_SHOWN: usize = 5;
 const PROJECTS_SHOWN: usize = 12;
@@ -24,17 +24,23 @@ pub struct ProjectView {
     pub sessions: Vec<SessionInfo>,
 }
 
+impl ProjectView {
+    fn refresh(&mut self) {
+        self.sessions
+            .sort_by(|a, b| b.span.map(|(_, e)| e).cmp(&a.span.map(|(_, e)| e)).then_with(|| a.title.cmp(&b.title)));
+        self.drill =
+            self.sessions.iter().find(|s| matches!(s.drill, Drill::Local(_))).map_or(Drill::None, |s| s.drill.clone());
+    }
+}
+
 pub fn project_views(projects: Vec<Project<Vec<SessionInfo>>>) -> Vec<ProjectView> {
     projects
         .into_iter()
         .map(|p| {
-            let mut sessions: Vec<_> = p.cwds.into_iter().flat_map(|(_, s)| s).collect();
-            sessions.sort_by(|a, b| {
-                b.span.map(|(_, e)| e).cmp(&a.span.map(|(_, e)| e)).then_with(|| a.title.cmp(&b.title))
-            });
-            let drill =
-                sessions.iter().find(|s| matches!(s.drill, Drill::Local(_))).map_or(Drill::None, |s| s.drill.clone());
-            ProjectView { key: p.key, kind: p.kind, drill, sessions }
+            let sessions = p.cwds.into_iter().flat_map(|(_, s)| s).collect();
+            let mut project = ProjectView { key: p.key, kind: p.kind, drill: Drill::None, sessions };
+            project.refresh();
+            project
         })
         .collect()
 }
@@ -94,7 +100,7 @@ impl Forest {
         let mut sessions = 0;
         if let Some(p) = self.nodes[node].project {
             sessions += projects[p].sessions.len();
-            spans.extend(projects[p].sessions.iter().filter_map(|s| s.span));
+            spans.extend(projects[p].sessions.iter().flat_map(|s| s.bars()).copied());
         }
         for i in 0..self.nodes[node].children.len() {
             let child = self.nodes[node].children[i];
@@ -234,6 +240,14 @@ pub enum Row {
     ProjectFold,
 }
 
+enum Anchor {
+    Node(ProjectKey),
+    Session { project: ProjectKey, file: PathBuf },
+    SessionFold(ProjectKey),
+    ProjectFold,
+    None,
+}
+
 pub struct App {
     pub projects: Vec<ProjectView>,
     pub home: PathBuf,
@@ -250,6 +264,7 @@ pub struct App {
     pub view: antty::timeline::View,
     pub layout: crate::ui::Layout,
     pub flash: Option<String>,
+    pub index_status: Option<String>,
     pub cmdline: Option<CmdLine>,
     pub search: Option<String>,
     pub help: Option<u16>,
@@ -265,9 +280,6 @@ pub struct App {
 
 impl App {
     pub fn new(projects: Vec<ProjectView>, home: PathBuf, roots: [(Harness, PathBuf); 3]) -> Self {
-        let mut view = antty::timeline::View::new(true);
-        let spans = merge(projects.iter().flat_map(|p| p.sessions.iter().filter_map(|s| s.span)).collect());
-        view.set_activity(spans.iter().map(|(s, e)| (s.timestamp(), e.timestamp())).collect());
         let mut app = Self {
             projects,
             home,
@@ -282,9 +294,10 @@ impl App {
             live_since: live_cutoff(),
             selected: 0,
             scroll: 0,
-            view,
+            view: antty::timeline::View::new(true),
             layout: crate::ui::layout(ratatui::layout::Rect::default()),
             flash: None,
+            index_status: Some("indexing".into()),
             cmdline: None,
             search: None,
             help: None,
@@ -296,8 +309,51 @@ impl App {
             command_history: Vec::new(),
             search_history: Vec::new(),
         };
+        app.refresh_activity();
         app.rebuild_at(app.live_since);
         app
+    }
+
+    fn refresh_activity(&mut self) {
+        let spans = merge(self.projects.iter().flat_map(|p| &p.sessions).flat_map(|s| s.bars()).copied().collect());
+        self.view.set_activity(spans.into_iter().map(|(s, e)| (s.timestamp(), e.timestamp())).collect());
+    }
+
+    pub fn apply(&mut self, updates: Vec<(SessionInfo, bool)>) {
+        let anchor = self.anchor();
+        let mut touched = HashSet::new();
+        for (info, fresh_title) in updates {
+            if let Some((project, session)) = self
+                .projects
+                .iter_mut()
+                .enumerate()
+                .find_map(|(p, project)| project.sessions.iter_mut().find(|s| s.file == info.file).map(|s| (p, s)))
+            {
+                session.span = info.span;
+                session.activity = info.activity;
+                if fresh_title {
+                    session.title = info.title;
+                }
+                touched.insert(project);
+                continue;
+            }
+            let p =
+                self.projects.iter().position(|p| p.sessions.iter().any(|s| s.cwd == info.cwd)).unwrap_or_else(|| {
+                    let (key, kind) = project_of(&info.cwd);
+                    self.projects.iter().position(|p| p.key == key).unwrap_or_else(|| {
+                        let p = self.projects.len();
+                        self.projects.push(ProjectView { key, kind, drill: Drill::None, sessions: Vec::new() });
+                        p
+                    })
+                });
+            self.projects[p].sessions.push(info);
+            touched.insert(p);
+        }
+        for p in touched {
+            self.projects[p].refresh();
+        }
+        self.refresh_activity();
+        self.rebuild_from(anchor, live_cutoff());
     }
 
     pub fn sessions_shown(&self, project: usize, live_since: Ts) -> usize {
@@ -327,38 +383,53 @@ impl App {
     }
 
     fn rebuild_at(&mut self, live_since: Ts) {
-        let old = self.rows.get(self.selected).copied();
-        let key = match old {
-            Some(Row::Node { node, .. }) => Some(self.forest.nodes[node].key.clone()),
-            Some(Row::Session { project, .. } | Row::SessionFold { project, .. }) => {
-                Some(self.projects[project].key.clone())
+        self.rebuild_from(self.anchor(), live_since);
+    }
+
+    fn anchor(&self) -> Anchor {
+        match self.rows.get(self.selected).copied() {
+            Some(Row::Node { node, .. }) => Anchor::Node(self.forest.nodes[node].key.clone()),
+            Some(Row::Session { project, session, .. }) => {
+                let p = &self.projects[project];
+                Anchor::Session { project: p.key.clone(), file: p.sessions[session].file.clone() }
             }
-            Some(Row::ProjectFold) | None => None,
-        };
+            Some(Row::SessionFold { project, .. }) => Anchor::SessionFold(self.projects[project].key.clone()),
+            Some(Row::ProjectFold) => Anchor::ProjectFold,
+            None => Anchor::None,
+        }
+    }
+
+    fn rebuild_from(&mut self, anchor: Anchor, live_since: Ts) {
         self.forest = match self.order {
             Order::Recent => recent_forest(&self.projects, &self.home),
             Order::Tree => tree_forest(&self.projects, &self.home),
         };
         self.live_since = live_since;
         let rows = self.rows_for(false);
-        let exact = rows.iter().position(|row| match (old, *row) {
-            (Some(Row::Node { .. }), Row::Node { node, .. }) => key.as_ref() == Some(&self.forest.nodes[node].key),
-            (Some(Row::Session { project: p, session: s, .. }), Row::Session { project, session, .. }) => {
-                p == project && s == session
+        let exact = rows.iter().position(|row| match (&anchor, *row) {
+            (Anchor::Node(key), Row::Node { node, .. }) => *key == self.forest.nodes[node].key,
+            (Anchor::Session { project: key, file }, Row::Session { project, session, .. }) => {
+                let p = &self.projects[project];
+                *key == p.key && *file == p.sessions[session].file
             }
-            (Some(Row::ProjectFold), Row::ProjectFold) => true,
+            (Anchor::ProjectFold, Row::ProjectFold) => true,
             _ => false,
         });
+        let key = match &anchor {
+            Anchor::Node(key) | Anchor::Session { project: key, .. } | Anchor::SessionFold(key) => Some(key),
+            Anchor::ProjectFold | Anchor::None => None,
+        };
         let session_fold = || {
-            if let Some(Row::Session { project, .. } | Row::SessionFold { project, .. }) = old {
-                rows.iter().position(|r| matches!(*r, Row::SessionFold { project: p, .. } if p == project))
+            if let Anchor::Session { project: key, .. } | Anchor::SessionFold(key) = &anchor {
+                rows.iter()
+                    .position(|r| matches!(*r, Row::SessionFold { project, .. } if self.projects[project].key == *key))
             } else {
                 None
             }
         };
         let project_node = || {
             rows.iter().position(|row| match row {
-                Row::Node { node, .. } => key.as_ref() == Some(&self.forest.nodes[*node].key),
+                Row::Node { node, .. } => key == Some(&self.forest.nodes[*node].key),
                 _ => false,
             })
         };
@@ -366,8 +437,7 @@ impl App {
             .or_else(session_fold)
             .or_else(project_node)
             .or_else(|| {
-                (matches!(old, Some(Row::Node { .. })) && rows.last() == Some(&Row::ProjectFold))
-                    .then(|| rows.len() - 1)
+                (matches!(anchor, Anchor::Node(_)) && rows.last() == Some(&Row::ProjectFold)).then(|| rows.len() - 1)
             })
             .unwrap_or(self.selected.min(rows.len().saturating_sub(1)));
         self.rows = rows;
@@ -817,9 +887,11 @@ mod tests {
         let session = crate::discover::SessionInfo {
             harness: Harness::Omp,
             cwd: cwd.clone(),
+            file: cwd.join("folding.jsonl"),
             drill: Drill::Local(cwd.clone()),
             title: "session".into(),
             span: Some((Ts::UNIX_EPOCH, Ts::UNIX_EPOCH)),
+            activity: None,
         };
         let mut app = super::App::new(
             vec![super::ProjectView {
@@ -882,9 +954,11 @@ mod tests {
                 SessionInfo {
                     harness: Harness::Omp,
                     cwd: path.clone(),
+                    file: path.join(format!("s{i}.jsonl")),
                     drill: Drill::Local(path.clone()),
                     title: format!("session {i}"),
                     span: Some((end - chrono::Duration::minutes(1), end)),
+                    activity: None,
                 }
             })
             .collect();
@@ -894,6 +968,28 @@ mod tests {
             drill: Drill::Local(path),
             sessions,
         }
+    }
+
+    #[test]
+    fn activity_updates_keep_the_selected_log_when_sessions_resort() {
+        let mut app = App::new(vec![project(0, [10, 20])], PathBuf::new(), roots());
+        app.handle_key(KeyEvent::from(KeyCode::Char(' ')));
+        app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+        app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+        let mut update = app.projects[0].sessions[1].clone();
+        let file = update.file.clone();
+        let (_, end) = app.projects[0].sessions[0].span.unwrap();
+        update.span = Some((end, end + chrono::Duration::minutes(1)));
+        update.activity = Some(update.span.into_iter().collect());
+        update.title = "stale cached title".into();
+        app.apply(vec![(update, false)]);
+        let Row::Session { project, session, .. } = app.rows[app.selected] else {
+            panic!("selected session was lost");
+        };
+        let selected = &app.projects[project].sessions[session];
+        assert_eq!(selected.file, file);
+        assert_eq!(selected.title, "session 1");
+        assert_eq!(app.selected, 1);
     }
 
     #[test]
@@ -1041,10 +1137,12 @@ mod tests {
                     cwd.clone(),
                     vec![SessionInfo {
                         harness: Harness::Omp,
+                        file: cwd.join("gone.jsonl"),
                         cwd,
                         drill: Drill::None,
                         title: "gone".into(),
                         span: None,
+                        activity: None,
                     }],
                 )],
             }]),
@@ -1074,11 +1172,17 @@ mod tests {
                     let session = SessionInfo {
                         harness: Harness::Omp,
                         cwd: PathBuf::from(path),
+                        file: Path::new(path).join("s0.jsonl"),
                         drill: Drill::Local(PathBuf::from(path)),
                         title: path.to_string(),
                         span: Some((start, start + chrono::Duration::minutes(1))),
+                        activity: None,
                     };
-                    let sessions = if i == 3 { vec![session.clone(), session] } else { vec![session] };
+                    let sessions = if i == 3 {
+                        vec![SessionInfo { file: Path::new(path).join("s1.jsonl"), ..session.clone() }, session]
+                    } else {
+                        vec![session]
+                    };
                     Project {
                         key: ProjectKey { origin: Origin::Local, path: PathBuf::from(path) },
                         kind: Kind::NoGit,

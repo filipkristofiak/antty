@@ -215,9 +215,8 @@ shows all discovered projects. Harness-root flags and defaults match antty;
 
 Projects start collapsed, newest activity first. `o` toggles an alphabetical
 path tree; expansion keys are shared between both orders. `▓` bars are merged
-project/directory spans; `▒` bars are not-yet-indexed session spans. Session
-colours identify the harness. Missing projects are dimmed. `NO_COLOR` works
-as in antty.
+project/directory activity; session colours identify the harness. Missing
+projects are dimmed. `NO_COLOR` works as in antty.
 
 An expanded project shows the five most recent sessions and any others active
 in the last two hours. The `⋯ N older` row summarizes the rest; its bars count
@@ -250,6 +249,6 @@ displayed rows, refreshed when those rows are rebuilt.
 Returning from antty restores formi's selection and view. A cwd missing at
 discovery shows an error instead of launching. The companion antty binary is
 resolved beside formi first, then on PATH, and receives the same three harness
-roots formi used for discovery. Session discovery and header/tail
-metadata are a startup snapshot; no background indexing, activity cache or live
-updates ship yet.
+roots formi used for discovery. `█` marks indexed activity and `▒` marks
+not-yet-indexed session spans; live polling runs once a second and the cache
+is stored at `<state-dir>/formi/activity.bin`.

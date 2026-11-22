@@ -3,12 +3,12 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use antty::model::{Model, ParticipantId, Ts};
+use antty::model::{Model, ParticipantId, Session, Ts};
 use antty::sessions::{Harness, SessionFile};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
-const IDLE_GAP: i64 = 30;
+pub const IDLE_GAP: i64 = 30;
 const HEADER_LINES: usize = 50;
 const TAIL_BYTES: u64 = 64 * 1024;
 const MAX_TAIL_BYTES: u64 = 8 * 1024 * 1024;
@@ -37,46 +37,105 @@ pub enum Drill {
 pub struct SessionInfo {
     pub harness: Harness,
     pub cwd: PathBuf,
+    /// First log of the session's file group; the main log when listed.
+    pub file: PathBuf,
     pub drill: Drill,
     pub title: String,
     /// (start, end) of the bar; None when no line read had a top-level timestamp.
     pub span: Option<(Ts, Ts)>,
+    /// Merged, sorted real activity, or `None` before indexing.
+    pub activity: Option<Vec<(Ts, Ts)>>,
 }
 
-pub fn collect(roots: &[(Harness, PathBuf); 3]) -> BTreeMap<PathBuf, Vec<SessionInfo>> {
-    let mut sessions: BTreeMap<PathBuf, Vec<SessionInfo>> = BTreeMap::new();
+impl SessionInfo {
+    /// What the timeline draws: real activity once indexed, else the start→last-seen span.
+    pub fn bars(&self) -> &[(Ts, Ts)] {
+        self.activity.as_deref().unwrap_or(self.span.as_slice())
+    }
+}
+
+/// The logs of one session, with `files[0].path` as its key.
+pub struct Source {
+    pub harness: Harness,
+    pub cwd: PathBuf,
+    pub files: Vec<SessionFile>,
+}
+
+pub fn collect(roots: &[(Harness, PathBuf); 3]) -> (BTreeMap<PathBuf, Vec<SessionInfo>>, Vec<Source>) {
+    let mut pairs = Vec::new();
     for (harness, root) in roots {
         let index = harness.index_root(root);
         for cwd in index.cwds() {
-            sessions.entry(cwd.to_path_buf()).or_default().extend(collect_cwd(*harness, cwd, &index.files(cwd)));
+            pairs.extend(collect_cwd(*harness, cwd, &index.files(cwd)));
         }
     }
-    sessions
+    pairs.sort_by(|(a, _), (b, _)| {
+        b.span.map(|(_, e)| e).cmp(&a.span.map(|(_, e)| e)).then_with(|| a.file.cmp(&b.file))
+    });
+    let mut sessions: BTreeMap<PathBuf, Vec<SessionInfo>> = BTreeMap::new();
+    let mut sources = Vec::with_capacity(pairs.len());
+    for (info, source) in pairs {
+        sessions.entry(info.cwd.clone()).or_default().push(info);
+        sources.push(source);
+    }
+    (sessions, sources)
 }
 
-fn collect_cwd(harness: Harness, cwd: &Path, files: &[SessionFile]) -> Vec<SessionInfo> {
-    let drill = if cwd.exists() { Drill::Local(cwd.to_path_buf()) } else { Drill::None };
+/// Register every file in index order; group i belongs to `model.sessions[i]`.
+/// Keep that order except for moving the session's main file first, when present.
+pub fn sessions_of(harness: Harness, cwd: &Path, files: &[SessionFile]) -> (Model, Vec<Vec<SessionFile>>) {
     let mut model = Model::new(vec![cwd.to_path_buf()]);
+    let mut groups: Vec<Vec<SessionFile>> = Vec::new();
     for f in files {
         let who = harness.ensure_participant(&mut model, &f.path, &f.project_dir);
-        if let Some(s) = model.participants[who.0].session
-            && model.sessions[s].main == who
-        {
-            read_meta(harness, &mut model, who, f);
+        groups.resize_with(model.sessions.len(), Vec::new);
+        if let Some(s) = model.participants[who.0].session {
+            groups[s].push(f.clone());
         }
     }
-    model
-        .sessions
-        .iter()
-        .map(|s| SessionInfo {
-            harness,
-            cwd: cwd.to_path_buf(),
-            drill: drill.clone(),
-            title: s.title.clone(),
-            span: (s.last_seen != DateTime::<Utc>::MIN_UTC).then(|| {
-                let end = s.end.unwrap_or(s.last_seen);
-                (s.start.min(end), end)
-            }),
+    for (s, group) in model.sessions.iter().zip(&mut groups) {
+        if let Some(i) = group.iter().position(|f| f.path == s.file) {
+            group[..=i].rotate_right(1);
+        }
+    }
+    (model, groups)
+}
+
+pub fn session_span(s: &Session) -> Option<(Ts, Ts)> {
+    (s.last_seen != DateTime::<Utc>::MIN_UTC).then(|| {
+        let end = s.end.unwrap_or(s.last_seen);
+        (s.start.min(end), end)
+    })
+}
+
+pub fn drill_for(cwd: &Path) -> Drill {
+    if cwd.exists() { Drill::Local(cwd.to_path_buf()) } else { Drill::None }
+}
+
+fn collect_cwd(harness: Harness, cwd: &Path, files: &[SessionFile]) -> Vec<(SessionInfo, Source)> {
+    let (mut model, groups) = sessions_of(harness, cwd, files);
+    let drill = drill_for(cwd);
+    groups
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, files)| {
+            let file = files.first()?;
+            let s = &model.sessions[i];
+            if file.path == s.file {
+                let who = s.main;
+                read_meta(harness, &mut model, who, file);
+            }
+            let s = &model.sessions[i];
+            let info = SessionInfo {
+                harness,
+                cwd: cwd.to_path_buf(),
+                file: file.path.clone(),
+                drill: drill.clone(),
+                title: s.title.clone(),
+                span: session_span(s),
+                activity: None,
+            };
+            Some((info, Source { harness, cwd: cwd.to_path_buf(), files }))
         })
         .collect()
 }
@@ -165,6 +224,11 @@ fn project_key(cwd: &Path) -> (PathBuf, Kind, PathBuf) {
     (cwd.to_path_buf(), Kind::NoGit, cwd.to_path_buf())
 }
 
+pub fn project_of(cwd: &Path) -> (ProjectKey, Kind) {
+    let (_, kind, label) = project_key(cwd);
+    (ProjectKey { origin: Origin::Local, path: label }, kind)
+}
+
 pub fn group<T>(by_cwd: BTreeMap<PathBuf, T>) -> Vec<Project<T>> {
     let mut projects: BTreeMap<PathBuf, Project<T>> = BTreeMap::new();
     for (cwd, counts) in by_cwd {
@@ -211,16 +275,22 @@ mod tests {
         ));
         data.push_str("{\"type\":\"custom\",\"customType\":\"noop\",\"timestamp\":\"2026-01-01T02:00:00.000Z\"}");
         fs::write(&file, data).unwrap();
-        let sessions = collect_cwd(Harness::Omp, &base, &[SessionFile { project_dir: dir, path: file }]);
+        let sessions: Vec<_> =
+            collect_cwd(Harness::Omp, &base, &[SessionFile { project_dir: dir, path: file.clone() }])
+                .into_iter()
+                .map(|(info, _)| info)
+                .collect();
         let at = |s: &str| s.parse::<Ts>().unwrap();
         assert_eq!(
             sessions,
             vec![SessionInfo {
                 harness: Harness::Omp,
                 cwd: base.clone(),
+                file,
                 drill: Drill::Local(base.clone()),
                 title: "Fix bug".into(),
                 span: Some((at("2026-01-01T00:00:00Z"), at("2026-01-01T01:00:00Z"))),
+                activity: None,
             }]
         );
         fs::remove_dir_all(base).unwrap();
@@ -235,7 +305,10 @@ mod tests {
         let gone = base.join("gone");
         let header = serde_json::json!({"type":"session","id":"s1","cwd":gone,"timestamp":"2026-01-01T00:00:00.000Z"});
         fs::write(&file, format!("{header}\n")).unwrap();
-        let sessions = collect_cwd(Harness::Omp, &gone, &[SessionFile { project_dir: dir, path: file }]);
+        let sessions: Vec<_> = collect_cwd(Harness::Omp, &gone, &[SessionFile { project_dir: dir, path: file }])
+            .into_iter()
+            .map(|(info, _)| info)
+            .collect();
         fs::remove_dir_all(base).unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].drill, Drill::None);

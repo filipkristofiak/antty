@@ -75,44 +75,46 @@ sessions, rather than antty's single-project view.
    (`thread_name`), Claude Code from `custom-title`/`ai-title` when encountered
    in the header or tail, else `(untitled)`. Render one `▒` bar per session,
    marked as not yet indexed, with `▓` union bars on project and directory rows.
-   Startup does not yet read an activity cache.
-2. Background indexing: a worker pool scans files that are missing from the
-   cache or fail validation, highest last-seen first. Each file sends its
-   result when done and its bar switches to real activity. Progress is shown
-   in the status bar (same pattern as antty's `Msg::Progress`).
+   The activity cache is read by the background indexer.
+2. Background indexing: use cached activity for unchanged sessions. A worker
+   pool scans sessions missing from the cache or failing validation, highest
+   last-seen first. Each session's bar switches to `█` real activity when
+   its result arrives. The status bar shows indexing progress.
 3. Live: poll every second like antty's `spawn_tailer`: re-run
    `Harness::index_root` (cwd lookups are cached per file) to find new
-   sessions, and read appended bytes of files that grew. Nothing watches the
-   harness roots or the repos.
+   sessions. Read only appended bytes when a session has in-memory resume
+   state; otherwise rescan its files. Nothing watches the harness roots or
+   the repos.
 
 ## Activity cache
 
-- Activity has the same meaning as in antty. Each file is ingested with the
-  existing harness readers (`Harness::ensure_participant` +
-  `Harness::ingest`) into a scratch `Model`. Line timestamps alone are not
+- Activity has the same meaning as in antty. All files of a session are
+  ingested with the existing harness readers (`Harness::ensure_participant`
+  + `Harness::ingest`) into a scratch `Model`. Line timestamps alone are not
   enough: a long tool call writes no lines between its call and its result,
   so it would show as idle.
 - Raw intervals come from model start → `completedAt` and tool call → result
   (omp), previous entry → assistant entry (Claude Code), and turn start → event
   (Codex CLI).
 - The cache has two parts with different jobs:
-  - **Display cache (on disk, under `<state-dir>/formi/`):** per file, a thin
-    projection of the scratch `Model` — events, tool calls without command or
-    argument text, spans, prompts and title — plus the byte offset (trimmed
-    back to the last full line) and the bytes just before it. It feeds bars,
-    stats and the dashboard, so `stats::compute` keeps one implementation. It
-    is used only for a file whose length still equals the offset and whose
-    stored bytes still match. Its format has its own version number, not
+  - **Display cache (on disk at `<state-dir>/formi/activity.bin`):** one
+    entry per session, covering all its files. It stores a thin projection of
+    the scratch `Model` — events without details, tool calls without commands
+    or arguments, spans, prompts and session metadata. Each file's offset is
+    the number of bytes read, including any trailing partial line. A hit
+    requires the same ordered file group and each file's length and saved
+    tail bytes to match. The format has its own version number, not
     `CARGO_PKG_VERSION`.
-  - **Resume state (in memory only):** while formi runs, each file that grows
-    keeps its full scratch `Model`, and only the appended lines are ingested.
+  - **Resume state (in memory only):** a freshly scanned or updated session
+    within the live window keeps its full scratch `Model` and per-file
+    offsets and partial lines. The next append ingests only new bytes.
 - The display projection is never a point to resume ingest from. Resuming
   needs state that the projection drops: `pending_tools` (a result whose call
   is missing is dropped, `parse.rs` `ingest_tool_result`), `last_entry_ts`
   (anchors the next interval) and open `tool_windows`/`window_keys`. The
   Claude Code and Codex CLI readers use the same fields.
-- A file that changed while formi was closed is rescanned from 0, with its
-  session's parent registered first (Codex CLI subagents need this).
+- If a file changed while formi was closed, its session is rescanned from 0,
+  with its main file registered first (Codex CLI subagents need this).
 - Persisting resume state to disk is deferred. Add it only if rescanning grown
   files proves slow, and only if the split-call test (bundle C) passes for a
   resume from disk. antty's index does this by storing the whole `Model`.
@@ -137,7 +139,14 @@ Rust, warm page cache, 2026-11-22 (throwaway probe with the harness readers):
 | All full models serialized (rmp) | 68 MB, decode 57 ms |
 | `formi --list` (header and tail only) | 0.36 s |
 
-Cold-cache cost and the thin projection's size have not been measured.
+Release `formi`, default harness roots, 240×50 tmux pane, warm OS page cache
+(2026-11-23). Timings are for background indexing after header/tail discovery.
+
+| Measurement | Value |
+|---|---|
+| Cold first scan, empty activity cache | 0.46 s (374 of 374 sessions scanned) |
+| Warm start | 0.21 s (0 of 374 sessions scanned) |
+| Display cache size | 9,208,436 bytes (9.21 MB) |
 
 ## Harness integration
 
@@ -279,30 +288,13 @@ checks; the version bump happens once, when formi lands.
   targets are chosen at discovery, and older sessions and projects fold into
   summary rows. `?` opens shared help; `/` searches paths and session titles
   and reveals matches hidden by folds.
-
-### Bundle C: real activity
-
-1. **Measure** the thin projection's size on the local logs. If it isn't
-   small, fall back to per-file summaries (minute buckets, per-tool counts,
-   prompt times, path sets) before building on it.
-2. **Display cache and worker pool** (see Activity cache), highest last-seen
-   first. Bars switch to real activity as results arrive; progress in the
-   status bar.
-3. **Live:** once a second, re-run `Harness::index_root` for new sessions and
-   ingest only appended lines of grown files into their in-memory scratch
-   `Model`.
-4. **Correctness gates**, before anything is built on the cache:
-   - Split tool call: a fixture with a call before the offset and its result
-     after. A cold scan of the whole file equals ingesting the first part and
-     then appending the rest into the same in-memory `Model` (spans,
-     `raw_intervals`, calls, events). One case per harness: omp tool
-     call/result, Claude Code entry-to-entry interval via `last_entry_ts`,
-     Codex CLI turn start → event.
-   - A file that grew while formi was closed never uses the display cache:
-     it is rescanned and equals a cold scan.
-
-Done when both gates pass, a cold first scan is measured, a warm start reuses
-every unchanged file, and an active session's bar grows without a restart.
+- **Bundle C, real activity:** `█` replaces the startup estimate once session
+  activity is indexed. The display cache reuses unchanged sessions, and a
+  one-second poll finds new sessions and updates running ones. Split and
+  resumed ingest matched cold scans for all three harnesses; a grown file
+  invalidated its cache entry and matched a cold scan. The tmux smoke test
+  confirmed a warm cache hit and a second activity bar after a live append
+  without restarting.
 
 ### Bundle D: analysis
 
@@ -324,6 +316,4 @@ new binary is backward-compatible: patch), then the first public push.
 
 ## Open questions
 
-- Cold-cache first-scan cost.
-- Size of the thin display projection.
 - Whether Codex `*.jsonl.zst` rollouts should be read (affects antty too).

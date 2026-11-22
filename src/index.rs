@@ -68,14 +68,24 @@ pub fn tails(sources: &[TailSource]) -> Result<Vec<CachedTail>, String> {
                 .iter()
                 .map(|(path, state)| {
                     let offset = state.offset - state.partial.len() as u64;
-                    let tail = read_tail(path, offset, offset.min(TAIL_BYTES) as usize)
-                        .map_err(|e| format!("{}: {e}", path.display()))?;
-                    Ok(CachedFile { path: path.clone(), offset, tail })
+                    cached_file(path, offset).map_err(|e| format!("{}: {e}", path.display()))
                 })
                 .collect::<Result<_, String>>()?;
             Ok(CachedTail { harness: src.harness, project_root: src.project_root.clone(), files })
         })
         .collect()
+}
+
+/// `path`'s cache record at `offset`: the last `TAIL_BYTES` bytes before it.
+pub fn cached_file(path: &Path, offset: u64) -> std::io::Result<CachedFile> {
+    let tail = read_tail(path, offset, offset.min(TAIL_BYTES) as usize)?;
+    Ok(CachedFile { path: path.to_owned(), offset, tail })
+}
+
+/// `file.path` still holds `file.tail` just before `file.offset`.
+pub fn tail_matches(file: &CachedFile) -> bool {
+    file.tail.len() as u64 <= file.offset
+        && read_tail(&file.path, file.offset, file.tail.len()).is_ok_and(|tail| tail == file.tail)
 }
 
 fn read_tail(path: &Path, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
@@ -133,11 +143,10 @@ pub fn load(spec: &Spec) -> Result<Option<(Model, Vec<CachedTail>)>, String> {
 }
 
 fn valid(tails: &[CachedTail]) -> bool {
-    tails.iter().flat_map(|tail| &tail.files).all(|file| {
-        file.tail.len() as u64 <= file.offset
-            && fs::metadata(&file.path).is_ok_and(|meta| meta.len() >= file.offset)
-            && read_tail(&file.path, file.offset, file.tail.len()).is_ok_and(|tail| tail == file.tail)
-    })
+    tails
+        .iter()
+        .flat_map(|tail| &tail.files)
+        .all(|file| fs::metadata(&file.path).is_ok_and(|meta| meta.len() >= file.offset) && tail_matches(file))
 }
 
 fn remap(mut model: Model, cached: &[PathBuf], current: &[PathBuf]) -> Option<Model> {

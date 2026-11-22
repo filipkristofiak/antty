@@ -296,6 +296,22 @@ pub struct TailState {
     pub partial: Vec<u8>,
 }
 
+/// Read `path` from `state.offset` to EOF. Complete lines become records; a trailing partial
+/// line waits in `state.partial`. A failed open/seek/read leaves `state` unchanged and returns nothing.
+pub fn read_appended(path: &Path, state: &mut TailState) -> Vec<serde_json::Value> {
+    let Ok(mut log) = fs::File::open(path) else { return Vec::new() };
+    if log.seek(SeekFrom::Start(state.offset)).is_err() {
+        return Vec::new();
+    }
+    let mut buf = Vec::new();
+    let Ok(n) = log.read_to_end(&mut buf) else { return Vec::new() };
+    let (lines, partial) = split_lines(std::mem::take(&mut state.partial), &buf);
+    // Count actual bytes read: a live file may grow after the stat.
+    state.offset += n as u64;
+    state.partial = partial;
+    lines.into_iter().filter_map(|line| serde_json::from_str(&line).ok()).collect()
+}
+
 /// One harness's session root being tailed for one checkout.
 pub struct TailSource {
     pub harness: Harness,
@@ -333,30 +349,20 @@ fn poll_source(src: &mut TailSource, files: Vec<SessionFile>, tx: &SyncSender<Ms
                 return false;
             }
         }
-        if meta.len() > state.offset
-            && let Ok(mut log) = fs::File::open(&file.path)
-            && log.seek(SeekFrom::Start(state.offset)).is_ok()
-        {
-            let mut buf = Vec::new();
-            if let Ok(n) = log.read_to_end(&mut buf) {
-                let (lines, partial) = split_lines(std::mem::take(&mut state.partial), &buf);
-                // Count actual bytes read: a live file may grow after the stat.
-                state.offset += n as u64;
-                state.partial = partial;
-                let mut records = lines.into_iter().filter_map(|line| serde_json::from_str(&line).ok()).peekable();
-                while records.peek().is_some() {
-                    let chunk = records.by_ref().take(RECORDS_PER_MSG).collect();
-                    if tx
-                        .send(Msg::Records {
-                            harness: src.harness,
-                            project_dir: file.project_dir.clone(),
-                            participant_file: file.path.clone(),
-                            records: chunk,
-                        })
-                        .is_err()
-                    {
-                        return false;
-                    }
+        if meta.len() > state.offset {
+            let mut records = read_appended(&file.path, state).into_iter().peekable();
+            while records.peek().is_some() {
+                let chunk = records.by_ref().take(RECORDS_PER_MSG).collect();
+                if tx
+                    .send(Msg::Records {
+                        harness: src.harness,
+                        project_dir: file.project_dir.clone(),
+                        participant_file: file.path.clone(),
+                        records: chunk,
+                    })
+                    .is_err()
+                {
+                    return false;
                 }
             }
         }

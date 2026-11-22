@@ -189,15 +189,14 @@ fn gantt(f: &mut Frame, app: &App) {
                     }
                     Row::Session { project, session, .. } => {
                         let s = &app.projects[project].sessions[session];
-                        if s.span.is_some_and(|(a, b)| a < end && b >= start) {
-                            ('▒', Some(harness_color(s.harness)))
+                        if overlaps(s.bars(), start, end) {
+                            (if s.activity.is_some() { '█' } else { '▒' }, Some(harness_color(s.harness)))
                         } else {
                             (' ', None)
                         }
                     }
                     Row::SessionFold { .. } => {
-                        let mut hits =
-                            folded.iter().filter(|s| s.span.is_some_and(|(a, b)| a < end && b >= start)).take(3);
+                        let mut hits = folded.iter().filter(|s| overlaps(s.bars(), start, end)).take(3);
                         let first = hits.next();
                         fold_glyph(usize::from(first.is_some()) + hits.count(), first.map(|s| harness_color(s.harness)))
                     }
@@ -264,6 +263,7 @@ fn status(f: &mut Frame, app: &App) {
         if app.view.collapse_gaps() { "on" } else { "off" },
         if app.fold { "on" } else { "off" }
     );
+    let right = if let Some(s) = &app.index_status { format!("{s} · {right}") } else { right };
     let left_len = left.chars().count();
     let right_len = right.chars().count();
     let text = if left_len + right_len + 2 <= width {

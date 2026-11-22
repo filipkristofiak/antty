@@ -160,8 +160,8 @@ inside a fold.
   antty's 12, because several projects can be expanded at once.
 - **Projects, recent order:** projects active in the last 2 h, plus the 12
   most recent, then `⋯ N older projects` with a density strip.
-- **Tree order (`o`): no folding.** It browses by location; folding by time
-  there mixes two axes.
+- **Tree order (`o`): no project folding.** It browses by location; folding
+  projects by time there mixes two axes. Session folding still applies.
 - Not folded by size (one-session scratch cwds): recency already sinks old
   scratch work, and a size rule would hide yesterday's.
 

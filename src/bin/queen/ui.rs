@@ -85,6 +85,10 @@ fn tree(f: &mut Frame, app: &App, live_since: antty::model::Ts) {
                 let folded = app.projects[project].sessions.len() - app.sessions_shown(project, live_since);
                 (format!("{}⋯ {folded} older", "  ".repeat(depth)), Style::default().fg(Color::DarkGray))
             }
+            Row::ProjectFold => {
+                let folded = app.forest.roots.len() - app.roots_shown(live_since);
+                (format!("⋯ {folded} older projects"), Style::default().fg(Color::DarkGray))
+            }
         };
         let y = inner.y + 2 + r as u16;
         if app.scroll + r == app.selected {
@@ -118,6 +122,8 @@ fn gantt(f: &mut Frame, app: &App, live_since: antty::model::Ts) {
         } else {
             &[]
         };
+        let folded_roots =
+            if *row == Row::ProjectFold { &app.forest.roots[app.roots_shown(live_since)..] } else { &[] };
         for (col, &column) in cols.iter().enumerate() {
             let (ch, color) = match column {
                 Column::Break { .. } => ('~', Some(Color::DarkGray)),
@@ -139,6 +145,14 @@ fn gantt(f: &mut Frame, app: &App, live_since: antty::model::Ts) {
                             folded.iter().filter(|s| s.span.is_some_and(|(a, b)| a < end && b >= start)).take(3);
                         let first = hits.next();
                         fold_glyph(usize::from(first.is_some()) + hits.count(), first.map(|s| harness_color(s.harness)))
+                    }
+                    Row::ProjectFold => {
+                        let count = folded_roots
+                            .iter()
+                            .filter(|&&root| overlaps(&app.forest.nodes[root].spans, start, end))
+                            .take(3)
+                            .count();
+                        fold_glyph(count, Some(Color::DarkGray))
                     }
                     _ => (' ', None),
                 },

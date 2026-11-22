@@ -222,6 +222,9 @@ as in antty.
 An expanded project shows the five most recent sessions and any others active
 in the last two hours. The `⋯ N older` row summarizes the rest; its bars count
 active folded sessions (`▄` 1, `▆` 2, `█` 3+).
+Recent order shows the twelve most recently active projects and any others
+active in the last two hours, with older projects summarized in a
+`⋯ N older projects` row. Tree order shows all projects.
 
 | Key | Queen action |
 | --- | --- |
@@ -229,7 +232,7 @@ active folded sessions (`▄` 1, `▆` 2, `█` 3+).
 | `[count]h/l`, `←/→`, `H/L` | Move the time cursor / half-pane pan |
 | `[count]+/-`, `=`, `t`, `f`, `c` | Zoom, now, fit, toggle collapsed gaps |
 | `o` | Toggle recent/path-tree order |
-| `p` | Toggle folding older sessions |
+| `p` | Toggle folding older sessions and projects |
 | `Space/za` | Toggle node; on a session, close and select its project; on a fold row, reveal hidden rows |
 | `zo/zc`, `zR/zM` | Open/close node; expand/collapse all |
 | `Enter` | Open session cwd, or project's most recently active existing cwd, in antty; directory-only nodes toggle |

@@ -249,6 +249,7 @@ displayed rows, refreshed when those rows are rebuilt.
 
 Returning from antty restores queen's selection and view. A cwd missing at
 discovery shows an error instead of launching. The companion antty binary is
-resolved beside queen first, then on PATH. Session discovery and header/tail
+resolved beside queen first, then on PATH, and receives the same three harness
+roots queen used for discovery. Session discovery and header/tail
 metadata are a startup snapshot; no background indexing, activity cache or live
 updates ship yet.

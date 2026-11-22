@@ -96,13 +96,14 @@ fn counts(sessions: &[SessionInfo]) -> [usize; 3] {
 fn main() -> anyhow::Result<()> {
     let raw = RawArgs::parse();
     let list = raw.list;
-    let projects = group(collect(&harness_roots(raw)));
+    let roots = harness_roots(raw);
+    let projects = group(collect(&roots));
     if list {
         print(&projects);
         return Ok(());
     }
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    let mut app = app::App::new(app::project_views(projects), home);
+    let mut app = app::App::new(app::project_views(projects), home, roots);
     let mut terminal = ratatui::init();
     let result = run_loop(&mut terminal, &mut app);
     ratatui::restore();

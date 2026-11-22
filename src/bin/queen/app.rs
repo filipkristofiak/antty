@@ -5,6 +5,7 @@ use std::path::{Component, Path, PathBuf};
 use antty::cmdline::{self, CmdKind, CmdLine};
 use antty::model::Ts;
 use antty::search;
+use antty::sessions::Harness;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::discover::{Drill, Kind, Origin, Project, ProjectKey, SessionInfo};
@@ -255,6 +256,7 @@ pub struct App {
     pub no_color: bool,
     pub launch: Option<antty::tui::Invocation>,
     pub suspend: bool,
+    roots: [(Harness, PathBuf); 3],
     count: usize,
     pending: Option<char>,
     command_history: Vec<String>,
@@ -262,13 +264,14 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(projects: Vec<ProjectView>, home: PathBuf) -> Self {
+    pub fn new(projects: Vec<ProjectView>, home: PathBuf, roots: [(Harness, PathBuf); 3]) -> Self {
         let mut view = antty::timeline::View::new(true);
         let spans = merge(projects.iter().flat_map(|p| p.sessions.iter().filter_map(|s| s.span)).collect());
         view.set_activity(spans.iter().map(|(s, e)| (s.timestamp(), e.timestamp())).collect());
         let mut app = Self {
             projects,
             home,
+            roots,
             order: Order::Recent,
             forest: Forest { nodes: Vec::new(), roots: Vec::new() },
             expanded: Default::default(),
@@ -588,7 +591,7 @@ impl App {
             self.flash = Some(format!("cwd no longer exists: {}", cwd.display()));
             return;
         };
-        self.launch = Some(antty_invocation(target));
+        self.launch = Some(antty_invocation(target, &self.roots));
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
@@ -785,19 +788,24 @@ fn same_row(a: Row, b: Row) -> bool {
     }
 }
 
-fn antty_invocation(target: &Path) -> antty::tui::Invocation {
+fn antty_invocation(target: &Path, roots: &[(Harness, PathBuf); 3]) -> antty::tui::Invocation {
     let program = std::env::current_exe()
         .ok()
         .map(|p| p.with_file_name(format!("antty{}", std::env::consts::EXE_SUFFIX)))
         .filter(|p| p.exists())
         .map(PathBuf::into_os_string)
         .unwrap_or_else(|| "antty".into());
-    antty::tui::Invocation {
-        program,
-        args: vec!["--project".into(), target.as_os_str().to_owned()],
-        suspend: true,
-        stdin: None,
+    let mut args = Vec::with_capacity(2 + 2 * roots.len());
+    args.extend(["--project".into(), target.as_os_str().to_owned()]);
+    for (harness, dir) in roots {
+        let flag = match harness {
+            Harness::Omp => "--omp-dir",
+            Harness::Claude => "--claude-dir",
+            Harness::Codex => "--codex-dir",
+        };
+        args.extend([flag.into(), dir.as_os_str().to_owned()]);
     }
+    antty::tui::Invocation { program, args, suspend: true, stdin: None }
 }
 
 #[cfg(test)]
@@ -807,7 +815,7 @@ mod tests {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let cwd = std::env::temp_dir();
         let session = crate::discover::SessionInfo {
-            harness: antty::sessions::Harness::Omp,
+            harness: Harness::Omp,
             cwd: cwd.clone(),
             drill: Drill::Local(cwd.clone()),
             title: "session".into(),
@@ -821,6 +829,7 @@ mod tests {
                 sessions: vec![session],
             }],
             PathBuf::new(),
+            roots(),
         );
         let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
         app.handle_key(key(' '));
@@ -833,7 +842,19 @@ mod tests {
         assert!(app.launch.is_none());
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         let inv = app.launch.take().unwrap();
-        assert_eq!(inv.args, [OsString::from("--project"), cwd.into_os_string()]);
+        assert_eq!(
+            inv.args,
+            [
+                OsString::from("--project"),
+                cwd.into_os_string(),
+                OsString::from("--omp-dir"),
+                OsString::from("/q/omp"),
+                OsString::from("--claude-dir"),
+                OsString::from("/q/claude"),
+                OsString::from("--codex-dir"),
+                OsString::from("/q/codex"),
+            ]
+        );
         app.handle_key(key('9'));
         app.handle_key(key('g'));
         app.handle_key(key('g'));
@@ -844,8 +865,11 @@ mod tests {
     }
 
     use super::*;
-    use antty::sessions::Harness;
     use crossterm::event::{KeyCode, KeyEvent};
+
+    fn roots() -> [(Harness, PathBuf); 3] {
+        [(Harness::Omp, "/q/omp".into()), (Harness::Claude, "/q/claude".into()), (Harness::Codex, "/q/codex".into())]
+    }
 
     fn project(index: usize, minutes_ago: impl IntoIterator<Item = i64>) -> ProjectView {
         let path = PathBuf::from(format!("/q/p{index}"));
@@ -874,7 +898,7 @@ mod tests {
 
     #[test]
     fn session_fold_opens_at_first_hidden_row_and_restores_selection() {
-        let mut app = App::new(vec![project(0, (3..11).map(|hours| hours * 60))], PathBuf::new());
+        let mut app = App::new(vec![project(0, (3..11).map(|hours| hours * 60))], PathBuf::new(), roots());
         app.handle_key(KeyEvent::from(KeyCode::Char(' ')));
         assert_eq!(app.rows.len(), 7);
         assert!(app.rows[1..6].iter().all(|r| matches!(r, Row::Session { .. })));
@@ -892,7 +916,7 @@ mod tests {
 
     #[test]
     fn session_fold_keeps_all_live_sessions_visible() {
-        let mut app = App::new(vec![project(0, [30, 30, 30, 30, 30, 30, 30, 180])], PathBuf::new());
+        let mut app = App::new(vec![project(0, [30, 30, 30, 30, 30, 30, 30, 180])], PathBuf::new(), roots());
         app.handle_key(KeyEvent::from(KeyCode::Char(' ')));
         assert_eq!(app.rows.len(), 9);
         assert!(app.rows[1..8].iter().all(|r| matches!(r, Row::Session { .. })));
@@ -901,7 +925,7 @@ mod tests {
 
     #[test]
     fn fold_label_uses_the_cutoff_the_rows_were_built_with() {
-        let mut app = App::new(vec![project(0, [60, 60, 60, 60, 60, 150, 240])], PathBuf::new());
+        let mut app = App::new(vec![project(0, [60, 60, 60, 60, 60, 150, 240])], PathBuf::new(), roots());
         app.handle_key(KeyEvent::from(KeyCode::Char(' ')));
         app.rebuild_at(chrono::Utc::now() - chrono::Duration::hours(3));
         assert_eq!(app.rows.len(), 8);
@@ -918,7 +942,7 @@ mod tests {
     #[test]
     fn project_fold_applies_in_recent_order_and_opens_at_first_hidden_root() {
         let projects = (0..14).map(|i| project(i, [(i as i64 + 3) * 60])).collect();
-        let mut app = App::new(projects, PathBuf::new());
+        let mut app = App::new(projects, PathBuf::new(), roots());
         let folded = |app: &App| {
             assert_eq!(app.rows.len(), 13);
             assert!(app.rows[..12].iter().all(|r| matches!(r, Row::Node { .. })));
@@ -946,7 +970,7 @@ mod tests {
 
     #[test]
     fn help_scrolls_without_moving_the_selected_row() {
-        let mut app = App::new(vec![project(0, [180]), project(1, [240])], PathBuf::new());
+        let mut app = App::new(vec![project(0, [180]), project(1, [240])], PathBuf::new(), roots());
         app.layout = crate::ui::layout(ratatui::layout::Rect::new(0, 0, 160, 24));
         app.handle_key(KeyEvent::from(KeyCode::Char('?')));
         assert_eq!(app.help, Some(0));
@@ -971,7 +995,7 @@ mod tests {
         first.sessions[7].title = "needle".into();
         let mut second = project(1, [20 * 60]);
         second.sessions[0].title = "Needle two".into();
-        let mut app = App::new(vec![first, second], PathBuf::new());
+        let mut app = App::new(vec![first, second], PathBuf::new(), roots());
         enter_search(&mut app, "needle");
         assert!(matches!(app.rows[app.selected], Row::Session { project: 0, session: 7, .. }));
         let key = &app.projects[0].key;
@@ -992,7 +1016,7 @@ mod tests {
     #[test]
     fn search_reveals_folded_projects_and_collapsed_tree_ancestors() {
         let projects = (0..14).map(|i| project(i, [(i as i64 + 3) * 60])).collect();
-        let mut app = App::new(projects, PathBuf::new());
+        let mut app = App::new(projects, PathBuf::new(), roots());
         enter_search(&mut app, "p13");
         assert!(app.projects_unfolded);
         assert_eq!(app.search_label(app.rows[app.selected]), Some("/q/p13"));
@@ -1025,6 +1049,7 @@ mod tests {
                 )],
             }]),
             PathBuf::new(),
+            roots(),
         );
         app.handle_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Enter));
         assert!(app.launch.is_none());

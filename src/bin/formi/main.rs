@@ -1,4 +1,4 @@
-//! queen: overview of every project with coding-agent sessions.
+//! formi: overview of every project with coding-agent sessions.
 
 mod app;
 mod discover;
@@ -12,7 +12,7 @@ use clap::Parser;
 use discover::{Kind, Project, SessionInfo, collect, group};
 
 #[derive(Parser, Debug)]
-#[command(name = "queen", about = "Overview of coding-agent sessions across all projects")]
+#[command(name = "formi", about = "Overview of coding-agent sessions across all projects")]
 struct RawArgs {
     /// Root directory of omp's session jsonl files (default: ~/.omp/agent/sessions).
     #[arg(long)]

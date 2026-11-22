@@ -1,4 +1,4 @@
-//! Terminal UI pieces shared by the antty and queen binaries: highlight colours,
+//! Terminal UI pieces shared by the antty and formi binaries: highlight colours,
 //! the timeline ruler and handing the terminal to a child process.
 
 use std::ffi::OsString;
@@ -20,7 +20,7 @@ pub const CURSOR_BG: Color = Color::Rgb(40, 40, 60);
 /// default foreground is dark (light themes).
 pub const HIGHLIGHT_FG: Color = Color::Rgb(235, 235, 235);
 
-/// Sessions (and queen projects) active this recently are never folded.
+/// Sessions (and formi projects) active this recently are never folded.
 pub const LIVE_HOURS: i64 = 2;
 
 /// Fold-strip cell: bar height is the number of folded rows active (▄ 1, ▆ 2, █ 3+);

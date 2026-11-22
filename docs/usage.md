@@ -207,9 +207,9 @@ With an action filter (`F`) active, PARTICIPANTS keeps `you` and sessions with a
 - `H`/`L` pan the timeline by half the pane width; they do not jump to the top/bottom visible row. Use `zt`/`zb` to place the selected row instead.
 - `c` toggles gap collapsing; it is not vim's change operator.
 
-## Queen
+## Formi
 
-`queen [--omp-dir <PATH>] [--claude-dir <PATH>] [--codex-dir <PATH>] [--list]`
+`formi [--omp-dir <PATH>] [--claude-dir <PATH>] [--codex-dir <PATH>] [--list]`
 shows all discovered projects. Harness-root flags and defaults match antty;
 `--list` prints per-project, per-cwd and total session counts instead of the TUI.
 
@@ -228,7 +228,7 @@ active in the last two hours, with older projects summarized in a
 Fold counts and their timeline strips use the same two-hour cutoff as the
 displayed rows, refreshed when those rows are rebuilt.
 
-| Key | Queen action |
+| Key | Formi action |
 | --- | --- |
 | `[count]j/k`, `↓/↑`, `gg/G`, `Ctrl-d/u` | Navigate rows; counts select/repeat as in antty |
 | `[count]h/l`, `←/→`, `H/L` | Move the time cursor / half-pane pan |
@@ -247,9 +247,9 @@ displayed rows, refreshed when those rows are rebuilt.
 | `Esc`, `Ctrl-c`, `Backspace` in `:` or `/` | Cancel the line / erase a character (cancel if already empty) |
 | `Ctrl-U`, `Ctrl-W`, `↑/↓` in `:` or `/` | Clear the line, delete a word, or browse the separate histories |
 
-Returning from antty restores queen's selection and view. A cwd missing at
+Returning from antty restores formi's selection and view. A cwd missing at
 discovery shows an error instead of launching. The companion antty binary is
-resolved beside queen first, then on PATH, and receives the same three harness
-roots queen used for discovery. Session discovery and header/tail
+resolved beside formi first, then on PATH, and receives the same three harness
+roots formi used for discovery. Session discovery and header/tail
 metadata are a startup snapshot; no background indexing, activity cache or live
 updates ship yet.

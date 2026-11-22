@@ -1,4 +1,4 @@
-# queen (working name)
+# formi
 
 A companion binary to antty: an overview of **all** projects with coding-agent
 sessions, rather than antty's single-project view.
@@ -22,8 +22,8 @@ sessions, rather than antty's single-project view.
 ## Packaging
 
 - Same repo, one package: extract `src/lib.rs`, keep `src/main.rs` as antty,
-  and add `src/bin/queen/main.rs` with `discover.rs`, `app.rs` and `ui.rs`.
-- Extracting the lib is a separate PR that lands before any queen code.
+  and add `src/bin/formi/main.rs` with `discover.rs`, `app.rs` and `ui.rs`.
+- Extracting the lib is a separate PR that lands before any formi code.
 - The lib must be closed under `crate::` imports. Today's graph has
   `sessions` → `claude`/`codex`/`parse`/`index`/`disk`/`watch`,
   `model` → `disk` → `tree`, `index` → `attrib` and `watch` → `sessions`, so
@@ -37,14 +37,14 @@ sessions, rather than antty's single-project view.
   between both binaries.
 - One version and the existing bump rule. Move to a Cargo workspace only if
   release cadences or dependencies diverge.
-- Cache lives under the antty state root (e.g. `~/.local/state/antty/queen/`).
+- Cache lives under the antty state root (e.g. `~/.local/state/antty/formi/`).
 
 ## Session discovery
 
 - Reuse antty's index. `Harness::index_root` maps every canonical launch cwd
   to its top-level session files across all session dirs of a harness root,
-  so its keys are queen's cwds and `antty --project <cwd>` loads exactly the
-  sessions queen lists. The lib-extraction PR adds the one missing accessor,
+  so its keys are formi's cwds and `antty --project <cwd>` loads exactly the
+  sessions formi lists. The lib-extraction PR adds the one missing accessor,
   `RootIndex::cwds()`, iterating the keys; `RootIndex::files(cwd)` already
   lists each top-level session followed by its subagent logs.
 - Cwd rules come with the index: omp reads each top-level file's line-2
@@ -60,8 +60,8 @@ sessions, rather than antty's single-project view.
 - omp subagent discovery scans `<stem>/` recursively, so it also lists
   non-session JSONL such as `<stem>/local/sessionize-*.jsonl` metrics logs.
   Their records have no `type`, so ingest yields no activity from them and
-  queen needs no filter.
-- Compressed Codex rollouts (`*.jsonl.zst`) are skipped by antty and queen
+  formi needs no filter.
+- Compressed Codex rollouts (`*.jsonl.zst`) are skipped by antty and formi
   alike.
 
 ## Data flow
@@ -96,7 +96,7 @@ sessions, rather than antty's single-project view.
   (omp), previous entry → assistant entry (Claude Code), and turn start → event
   (Codex CLI).
 - The cache has two parts with different jobs:
-  - **Display cache (on disk, under `<state-dir>/queen/`):** per file, a thin
+  - **Display cache (on disk, under `<state-dir>/formi/`):** per file, a thin
     projection of the scratch `Model` — events, tool calls without command or
     argument text, spans, prompts and title — plus the byte offset (trimmed
     back to the last full line) and the bytes just before it. It feeds bars,
@@ -104,14 +104,14 @@ sessions, rather than antty's single-project view.
     is used only for a file whose length still equals the offset and whose
     stored bytes still match. Its format has its own version number, not
     `CARGO_PKG_VERSION`.
-  - **Resume state (in memory only):** while queen runs, each file that grows
+  - **Resume state (in memory only):** while formi runs, each file that grows
     keeps its full scratch `Model`, and only the appended lines are ingested.
 - The display projection is never a point to resume ingest from. Resuming
   needs state that the projection drops: `pending_tools` (a result whose call
   is missing is dropped, `parse.rs` `ingest_tool_result`), `last_entry_ts`
   (anchors the next interval) and open `tool_windows`/`window_keys`. The
   Claude Code and Codex CLI readers use the same fields.
-- A file that changed while queen was closed is rescanned from 0, with its
+- A file that changed while formi was closed is rescanned from 0, with its
   session's parent registered first (Codex CLI subagents need this).
 - Persisting resume state to disk is deferred. Add it only if rescanning grown
   files proves slow, and only if the split-call test (bundle C) passes for a
@@ -135,7 +135,7 @@ Rust, warm page cache, 2026-11-22 (throwaway probe with the harness readers):
 | `stats::compute` over all cwds | ~4–5 ms |
 | Resulting models | 22.6k events, 40.9k tool calls |
 | All full models serialized (rmp) | 68 MB, decode 57 ms |
-| `queen --list` (header and tail only) | 0.36 s |
+| `formi --list` (header and tail only) | 0.36 s |
 
 Cold-cache cost and the thin projection's size have not been measured.
 
@@ -145,7 +145,7 @@ None. Antty stays a read-only observer. Only omp records a session end;
 Claude Code and Codex CLI liveness is last-activity only. If that proves too
 weak at catching agents blocked on the user, consider optional harness hooks
 (not model instructions) that write a small state file such as
-`<state-dir>/live/<session-id>.json`, which queen reads when present.
+`<state-dir>/live/<session-id>.json`, which formi reads when present.
 
 ## Folding
 
@@ -190,7 +190,7 @@ Drafts at 2026-11-22 numbers:
 │                                    ││Nov 08 10 12 14 16 18 20 22            ││~/p/tools/antty · 3 wt     │
 │                                    ││S S M T W T F S S M T W T F S S M T W│ ││            sel      all   │
 │▾ ~/p/tools/antty  3wt   83  live   ││                 ▓▓▓▓▓▓  ▓▓▓▓▓▓▓▓▓▓▓▓▓ ││calls      8.6k    40.9k   │
-│    Queen overview · omp   11-22    ││                                   ██▌ ││read        431     2.8k   │
+│    Formi overview · omp   11-22    ││                                   ██▌ ││read        431     2.8k   │
 │    Stats panel · omp      11-22    ││                                  ██   ││written     514     5.4k   │
 │    Help sections · omp    11-21    ││                                 █     ││prompts     254     2.3k   │
 │    ⋯ 80 older                      ││▄ ▆█▄▄ ▆█▄ ▄ ▆▄ ▄█▆▄▄▆  ▄▆▄█           ││share       21%            │
@@ -240,7 +240,7 @@ they overcount; the shipped numbers use the path-set union above.
 
 ## Remote readiness
 
-Later, queen may show another machine's projects. Nothing remote is built now,
+Later, formi may show another machine's projects. Nothing remote is built now,
 but these keep it possible:
 
 - **Identity:** a project key is `{ origin, path }` (`Origin::Local` only for
@@ -251,21 +251,21 @@ but these keep it possible:
   `Drill::Ssh { host, path }` runs `ssh -t host antty --project path`.
 - **Serializable summaries:** the UI reads only what the data layer produces.
   With its own format version, that output is the remote protocol:
-  `ssh host queen --dump`, no daemon, no ports.
+  `ssh host formi --dump`, no daemon, no ports.
 - Not a data source: antty's `index/*.bin` files (machine-local,
   invalidated on every version bump, only for projects opened in antty).
 - Polling carries over to remote; watchers don't.
 
 ## Build plan
 
-Queen stays local on `feat/queen` until finished: no pushes, no PRs. Library
+Formi stays local on `feat/formi` until finished: no pushes, no PRs. Library
 changes it needs land on the same branch. Rebase onto `origin/main` whenever
 it moves. Each bundle ends in a local commit that builds and passes the CI
-checks; the version bump happens once, when queen lands.
+checks; the version bump happens once, when formi lands.
 
 ### Done
 
-- **Bundle A, discovery:** `queen --list` prints projects, cwds and per-harness
+- **Bundle A, discovery:** `formi --list` prints projects, cwds and per-harness
   session counts. Worktree cwds fold by `worktree::git_common_dir`; missing or
   repo-less cwds are their own projects.
 - **Bundle B, first screen:** collapsed projects in recent-activity order; `o`
@@ -274,7 +274,7 @@ checks; the version bump happens once, when queen lands.
   doubling up to 8 MiB), so bars span start → last-seen, not real activity.
   Subagent logs are registered, not read; an explicit session end wins over
   last-seen. Drill-down runs `antty --project <most recently active worktree>`.
-  Discovery runs only at startup. See [usage](usage.md#queen).
+  Discovery runs only at startup. See [usage](usage.md#formi).
 - **Bundle B.5, interaction:** project identity includes its origin, drill
   targets are chosen at discovery, and older sessions and projects fold into
   summary rows. `?` opens shared help; `/` searches paths and session titles
@@ -298,7 +298,7 @@ checks; the version bump happens once, when queen lands.
      `raw_intervals`, calls, events). One case per harness: omp tool
      call/result, Claude Code entry-to-entry interval via `last_entry_ts`,
      Codex CLI turn start → event.
-   - A file that grew while queen was closed never uses the display cache:
+   - A file that grew while formi was closed never uses the display cache:
      it is rescanned and equals a cold scan.
 
 Done when both gates pass, a cold first scan is measured, a warm start reuses
@@ -312,10 +312,10 @@ every unchanged file, and an active session's bar grows without a restart.
 
 ### Scrolling
 
-Not solved in queen. Wheel scrolling is tracked for antty in
+Not solved in formi. Wheel scrolling is tracked for antty in
 [#20](https://github.com/filipkristofiak/antty/issues/20). Once that lands on
 `main`, rebase and copy only the input handling that proved itself there into
-queen's own `run_loop`.
+formi's own `run_loop`.
 
 ### Landing
 

@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn read_meta_takes_header_tail_and_skips_partial_lines() {
-        let base = std::env::temp_dir().join(format!("antty-queen-test-meta-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("antty-formi-test-meta-{}", std::process::id()));
         let dir = base.join("sessions/proj");
         fs::create_dir_all(&dir).unwrap();
         let file = dir.join("s1.jsonl");
@@ -228,7 +228,7 @@ mod tests {
 
     #[test]
     fn collect_cwd_records_no_drill_for_a_missing_directory() {
-        let base = std::env::temp_dir().join(format!("antty-queen-test-gone-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("antty-formi-test-gone-{}", std::process::id()));
         let dir = base.join("sessions/proj");
         fs::create_dir_all(&dir).unwrap();
         let file = dir.join("s1.jsonl");
@@ -243,7 +243,7 @@ mod tests {
 
     #[test]
     fn group_folds_worktrees_and_keeps_plain_missing_and_subdir_cwds() {
-        let base = std::env::temp_dir().join(format!("antty-queen-test-group-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("antty-formi-test-group-{}", std::process::id()));
         fs::create_dir_all(base.join("repo/.git/worktrees/feat")).unwrap();
         fs::create_dir_all(base.join("repo/sub")).unwrap();
         fs::create_dir_all(base.join("feat")).unwrap();

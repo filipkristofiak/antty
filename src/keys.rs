@@ -55,12 +55,7 @@ impl App {
             Mode::Picker => self.handle_key_picker(key),
             Mode::Actions => self.handle_key_actions(key),
             Mode::Stats => self.handle_key_stats(key),
-            Mode::Help => {
-                if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('?')) {
-                    self.ui.mode = self.ui.help_return;
-                }
-                false
-            }
+            Mode::Help => self.handle_key_help(key),
         }
     }
 
@@ -260,6 +255,26 @@ impl App {
             KeyCode::Char('v') => self.ui.stats_window = !self.ui.stats_window,
             KeyCode::Char('j') | KeyCode::Down => self.move_selected(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_selected(-1),
+            _ => {}
+        }
+        false
+    }
+
+    fn handle_key_help(&mut self, key: KeyEvent) -> bool {
+        let page = self.layout.help_area.height.saturating_sub(2);
+        let max = (ui::help::line_count() as u16).saturating_sub(page);
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let scroll = &mut self.ui.help_scroll;
+        // A taller terminal may already be drawing at a lower offset.
+        *scroll = (*scroll).min(max);
+        match key.code {
+            KeyCode::Char('q' | '?') | KeyCode::Esc => self.ui.mode = self.ui.help_return,
+            KeyCode::Char('d') if ctrl => *scroll = scroll.saturating_add(page / 2).min(max),
+            KeyCode::Char('u') if ctrl => *scroll = scroll.saturating_sub(page / 2),
+            KeyCode::Char('j') | KeyCode::Down => *scroll = scroll.saturating_add(1).min(max),
+            KeyCode::Char('k') | KeyCode::Up => *scroll = scroll.saturating_sub(1),
+            KeyCode::Char('g') => *scroll = 0,
+            KeyCode::Char('G') => *scroll = max,
             _ => {}
         }
         false
@@ -649,6 +664,55 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
         std::fs::remove_dir_all(&state_dir).unwrap();
     }
+
+    #[test]
+    fn help_scrolls_within_bounds_and_resets_on_open() {
+        let base = std::env::temp_dir().join(format!("antty-keys-test-help-scroll-{}", std::process::id()));
+        let root = base.join("root");
+        let state_dir = base.join("state");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut app = test_app(&root, &state_dir);
+        let page = app.layout.help_area.height - 2;
+        let max = ui::help::line_count() as u16 - page;
+        assert!(max > 0);
+
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        app.handle_key(key(KeyCode::Char('?')));
+        for (code, modifiers, expected) in [
+            (KeyCode::Char('j'), KeyModifiers::NONE, 1),
+            (KeyCode::Char('k'), KeyModifiers::NONE, 0),
+            (KeyCode::Char('k'), KeyModifiers::NONE, 0),
+            (KeyCode::Down, KeyModifiers::NONE, 1),
+            (KeyCode::Up, KeyModifiers::NONE, 0),
+            (KeyCode::Char('G'), KeyModifiers::NONE, max),
+            (KeyCode::Char('j'), KeyModifiers::NONE, max),
+            (KeyCode::Char('g'), KeyModifiers::NONE, 0),
+            (KeyCode::Char('d'), KeyModifiers::CONTROL, (page / 2).min(max)),
+            (KeyCode::Char('u'), KeyModifiers::CONTROL, 0),
+        ] {
+            app.handle_key(KeyEvent::new(code, modifiers));
+            assert_eq!(app.ui.help_scroll, expected, "{modifiers:?} {code:?}");
+        }
+
+        app.layout = ui::compute_layout(Rect::new(0, 0, 120, 30), app.ui.view_mode(), false);
+        app.handle_key(key(KeyCode::Char('G')));
+        assert!(app.ui.help_scroll > max);
+        app.layout = ui::compute_layout(Rect::new(0, 0, 200, 50), app.ui.view_mode(), false);
+        app.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(app.ui.help_scroll, max - 1);
+
+        app.ui.help_scroll = 5;
+        app.handle_key(key(KeyCode::Char('q')));
+        assert_eq!(app.ui.mode, Mode::Normal);
+        app.handle_key(key(KeyCode::Char('?')));
+        assert_eq!(app.ui.mode, Mode::Help);
+        assert_eq!(app.ui.help_scroll, 0);
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.ui.mode, Mode::Normal);
+        drop(app);
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
     #[test]
     fn merged_editor_target_uses_existing_checkout_and_its_own_line() {
         let base = std::env::temp_dir().join(format!("antty-keys-test-merged-editor-{}", std::process::id()));

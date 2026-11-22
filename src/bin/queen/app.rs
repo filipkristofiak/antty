@@ -12,7 +12,7 @@ use crate::discover::{Drill, Kind, Origin, Project, ProjectKey, SessionInfo};
 const SESSIONS_SHOWN: usize = 5;
 const PROJECTS_SHOWN: usize = 12;
 
-pub(crate) fn live_since() -> Ts {
+fn live_cutoff() -> Ts {
     chrono::Utc::now() - chrono::Duration::hours(antty::tui::LIVE_HOURS)
 }
 
@@ -243,6 +243,7 @@ pub struct App {
     pub unfolded: HashSet<ProjectKey>,
     pub projects_unfolded: bool,
     pub rows: Vec<Row>,
+    pub live_since: Ts,
     pub selected: usize,
     pub scroll: usize,
     pub view: antty::timeline::View,
@@ -275,6 +276,7 @@ impl App {
             unfolded: HashSet::new(),
             projects_unfolded: false,
             rows: Vec::new(),
+            live_since: live_cutoff(),
             selected: 0,
             scroll: 0,
             view,
@@ -291,7 +293,7 @@ impl App {
             command_history: Vec::new(),
             search_history: Vec::new(),
         };
-        app.rebuild();
+        app.rebuild_at(app.live_since);
         app
     }
 
@@ -318,6 +320,10 @@ impl App {
     }
 
     fn rebuild(&mut self) {
+        self.rebuild_at(live_cutoff());
+    }
+
+    fn rebuild_at(&mut self, live_since: Ts) {
         let old = self.rows.get(self.selected).copied();
         let key = match old {
             Some(Row::Node { node, .. }) => Some(self.forest.nodes[node].key.clone()),
@@ -330,6 +336,7 @@ impl App {
             Order::Recent => recent_forest(&self.projects, &self.home),
             Order::Tree => tree_forest(&self.projects, &self.home),
         };
+        self.live_since = live_since;
         let rows = self.rows_for(false);
         let exact = rows.iter().position(|row| match (old, *row) {
             (Some(Row::Node { .. }), Row::Node { node, .. }) => key.as_ref() == Some(&self.forest.nodes[node].key),
@@ -383,7 +390,7 @@ impl App {
             }
         }
         let mut rows = Vec::new();
-        let live_since = live_since();
+        let live_since = self.live_since;
         let total = self.forest.roots.len();
         let shown = if full { total } else { self.roots_shown(live_since) };
         for &root in &self.forest.roots[..shown] {
@@ -428,7 +435,7 @@ impl App {
             Row::SessionFold { .. } | Row::ProjectFold => return,
         };
         let path = self.path_to(target);
-        let live_since = live_since();
+        let live_since = live_cutoff();
         let shown = self.roots_shown(live_since);
         if self.forest.roots[shown..].contains(&path[0]) {
             self.projects_unfolded = true;
@@ -442,7 +449,7 @@ impl App {
                 self.unfolded.insert(self.projects[project].key.clone());
             }
         }
-        self.rebuild();
+        self.rebuild_at(live_since);
         if let Some(i) = self.rows.iter().position(|&r| same_row(r, row)) {
             self.selected = i;
         }
@@ -495,7 +502,7 @@ impl App {
     }
 
     fn unfold_sessions(&mut self, project: usize) {
-        let first_hidden = self.sessions_shown(project, live_since());
+        let first_hidden = self.sessions_shown(project, self.live_since);
         self.unfolded.insert(self.projects[project].key.clone());
         self.rebuild();
         if let Some(i) = self.rows.iter().position(
@@ -506,7 +513,7 @@ impl App {
     }
 
     fn unfold_projects(&mut self) {
-        let first_hidden = self.roots_shown(live_since());
+        let first_hidden = self.roots_shown(self.live_since);
         self.projects_unfolded = true;
         self.rebuild();
         if let Some(&root) = self.forest.roots.get(first_hidden)
@@ -890,6 +897,22 @@ mod tests {
         assert_eq!(app.rows.len(), 9);
         assert!(app.rows[1..8].iter().all(|r| matches!(r, Row::Session { .. })));
         assert!(matches!(app.rows[8], Row::SessionFold { project: 0, .. }));
+    }
+
+    #[test]
+    fn fold_label_uses_the_cutoff_the_rows_were_built_with() {
+        let mut app = App::new(vec![project(0, [60, 60, 60, 60, 60, 150, 240])], PathBuf::new());
+        app.handle_key(KeyEvent::from(KeyCode::Char(' ')));
+        app.rebuild_at(chrono::Utc::now() - chrono::Duration::hours(3));
+        assert_eq!(app.rows.len(), 8);
+
+        app.layout = crate::ui::layout(ratatui::layout::Rect::new(0, 0, 160, 20));
+        app.clamp_scroll();
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 20)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &app)).unwrap();
+        let screen = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect::<String>();
+        assert!(screen.contains("⋯ 1 older"));
+        assert!(!screen.contains("⋯ 2 older"));
     }
 
     #[test]

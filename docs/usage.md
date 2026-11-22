@@ -225,6 +225,8 @@ active folded sessions (`▄` 1, `▆` 2, `█` 3+).
 Recent order shows the twelve most recently active projects and any others
 active in the last two hours, with older projects summarized in a
 `⋯ N older projects` row. Tree order shows all projects.
+Fold counts and their timeline strips use the same two-hour cutoff as the
+displayed rows, refreshed when those rows are rebuilt.
 
 | Key | Queen action |
 | --- | --- |

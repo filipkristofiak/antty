@@ -5,7 +5,7 @@ use ratatui::Frame;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::app::{App, Order, Row, live_since, overlaps};
+use crate::app::{App, Order, Row, overlaps};
 use crate::discover::Kind;
 
 use ratatui::layout::{Constraint, Direction, Layout as Split, Rect};
@@ -86,9 +86,8 @@ pub fn layout(root: Rect) -> Layout {
 }
 
 pub fn draw(f: &mut Frame, app: &App) {
-    let live_since = live_since();
-    tree(f, app, live_since);
-    gantt(f, app, live_since);
+    tree(f, app);
+    gantt(f, app);
     status(f, app);
     if let Some(scroll) = app.help {
         antty::tui::render_help(f, app.layout.help, scroll, HELP);
@@ -106,7 +105,7 @@ fn harness_color(h: Harness) -> Color {
     }
 }
 
-fn tree(f: &mut Frame, app: &App, live_since: antty::model::Ts) {
+fn tree(f: &mut Frame, app: &App) {
     let block = Block::default().borders(Borders::ALL).title("projects");
     let inner = block.inner(app.layout.tree);
     f.render_widget(block, app.layout.tree);
@@ -133,11 +132,11 @@ fn tree(f: &mut Frame, app: &App, live_since: antty::model::Ts) {
                 (text, Style::default().fg(harness_color(s.harness)))
             }
             Row::SessionFold { project, depth } => {
-                let folded = app.projects[project].sessions.len() - app.sessions_shown(project, live_since);
+                let folded = app.projects[project].sessions.len() - app.sessions_shown(project, app.live_since);
                 (format!("{}⋯ {folded} older", "  ".repeat(depth)), Style::default().fg(Color::DarkGray))
             }
             Row::ProjectFold => {
-                let folded = app.forest.roots.len() - app.roots_shown(live_since);
+                let folded = app.forest.roots.len() - app.roots_shown(app.live_since);
                 (format!("⋯ {folded} older projects"), Style::default().fg(Color::DarkGray))
             }
         };
@@ -158,7 +157,7 @@ fn tree(f: &mut Frame, app: &App, live_since: antty::model::Ts) {
     }
 }
 
-fn gantt(f: &mut Frame, app: &App, live_since: antty::model::Ts) {
+fn gantt(f: &mut Frame, app: &App) {
     let block = Block::default().borders(Borders::ALL).title("timeline");
     let inner = block.inner(app.layout.gantt);
     f.render_widget(block, app.layout.gantt);
@@ -174,12 +173,12 @@ fn gantt(f: &mut Frame, app: &App, live_since: antty::model::Ts) {
         let selected = app.scroll + r == app.selected;
         let y = inner.y + 2 + r as u16;
         let folded = if let Row::SessionFold { project, .. } = *row {
-            &app.projects[project].sessions[app.sessions_shown(project, live_since)..]
+            &app.projects[project].sessions[app.sessions_shown(project, app.live_since)..]
         } else {
             &[]
         };
         let folded_roots =
-            if *row == Row::ProjectFold { &app.forest.roots[app.roots_shown(live_since)..] } else { &[] };
+            if *row == Row::ProjectFold { &app.forest.roots[app.roots_shown(app.live_since)..] } else { &[] };
         for (col, &column) in cols.iter().enumerate() {
             let (ch, color) = match column {
                 Column::Break { .. } => ('~', Some(Color::DarkGray)),

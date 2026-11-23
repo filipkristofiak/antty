@@ -983,7 +983,10 @@ fn run_loop(
                     Event::Mouse(event) if mouse.0 => {
                         if let Some((pane, delta)) = app.wheel_action(event) {
                             // Do not cancel opposite directions at a scroll boundary.
-                            if let Some((target, amount)) = &mut wheel
+                            if pane == keys::WheelPane::OverlayArrows {
+                                input_changed |= app.apply_wheel(Some((pane, delta)));
+                                app.clamp_view();
+                            } else if let Some((target, amount)) = &mut wheel
                                 && *target == pane
                                 && amount.signum() == delta.signum()
                             {

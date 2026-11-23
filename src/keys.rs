@@ -18,6 +18,7 @@ pub(super) enum WheelPane {
     DetailText,
     Diff,
     Help,
+    OverlayArrows,
 }
 
 /// Index of the nth section header strictly after/before selection, or the end of the list.
@@ -47,7 +48,7 @@ fn section_target(rows: &[Row], selected: usize, forward: bool, n: usize) -> usi
 
 impl App {
     pub(super) fn wheel_action(&self, event: MouseEvent) -> Option<(WheelPane, i64)> {
-        let delta = match event.kind {
+        let delta: i64 = match event.kind {
             MouseEventKind::ScrollUp => -3,
             MouseEventKind::ScrollDown => 3,
             _ => return None,
@@ -55,6 +56,9 @@ impl App {
         let point = Position::new(event.column, event.row);
         let layout = &self.layout;
         let pane = match self.ui.mode {
+            // One arrow per report: terminals that send three arrows per notch
+            // without capture also send three mouse reports with capture.
+            Mode::Picker | Mode::Actions | Mode::Stats => return Some((WheelPane::OverlayArrows, delta.signum())),
             Mode::Help if layout.help_area.contains(point) => WheelPane::Help,
             Mode::Diff if point.y < layout.status_area.y && point.x < layout.status_area.right() => WheelPane::Diff,
             Mode::Detail if layout.detail_area.is_some_and(|area| ui::detail::text_area(area).contains(point)) => {
@@ -74,6 +78,11 @@ impl App {
     pub(super) fn apply_wheel(&mut self, action: Option<(WheelPane, i64)>) -> bool {
         let Some((pane, delta)) = action else { return false };
         match pane {
+            WheelPane::OverlayArrows => {
+                let code = if delta < 0 { KeyCode::Up } else { KeyCode::Down };
+                self.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+                true
+            }
             WheelPane::Rows => {
                 let before = self.ui.scroll;
                 let max = self.rows.len().saturating_sub(self.layout.body_height.into());
@@ -567,6 +576,42 @@ mod tests {
 
         app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
         assert_eq!((app.ui.scroll, app.ui.selected), (2, 2));
+        drop(app);
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn picker_wheel_moves_one_row_per_report_without_changing_checked_sessions() {
+        let base = std::env::temp_dir().join(format!("antty-keys-test-picker-wheel-{}", std::process::id()));
+        let root = base.join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut app = test_app(&root, &base.join("state"));
+        let at = chrono::Utc::now();
+        for i in 0..5 {
+            app.model.sessions.push(Session {
+                file: root.join(format!("{i}.jsonl")),
+                id: i.to_string(),
+                title: i.to_string(),
+                cwd: root.clone(),
+                start: at,
+                last_seen: at,
+                end: None,
+                main: Model::YOU,
+            });
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        let checked = app.ui.picker_selected.clone();
+        for (kind, expected) in [
+            (MouseEventKind::ScrollDown, 1),
+            (MouseEventKind::ScrollDown, 2),
+            (MouseEventKind::ScrollDown, 3),
+            (MouseEventKind::ScrollUp, 2),
+        ] {
+            let action = app.wheel_action(MouseEvent { kind, column: 100, row: 25, modifiers: KeyModifiers::NONE });
+            assert!(app.apply_wheel(action));
+            assert_eq!(app.ui.picker_cursor, expected);
+        }
+        assert_eq!(app.ui.picker_selected, checked);
         drop(app);
         std::fs::remove_dir_all(base).unwrap();
     }

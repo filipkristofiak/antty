@@ -118,6 +118,8 @@ Mouse capture is on by default. The tree and Gantt share a vertical viewport, so
 scrolling either moves both. The selected row can go offscreen; a row-navigation
 key brings its destination into view. The wheel also scrolls the Detail text,
 full-screen diff, and Help when the pointer is over them.
+In Picker, Actions, and the Stats popup, each wheel event acts like one
+Up/Down keypress instead, moving the cursor or the underlying row selection.
 
 For terminal text selection, use your terminal's bypass modifier (typically
 Shift or Option while dragging), or start `antty --no-mouse`. With capture off,

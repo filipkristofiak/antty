@@ -186,9 +186,10 @@ Needs the display cache (bundle C).
   unrelated projects never merge (`antty::stats::Tally`). Adds `share`: the
   selection's share of all calls.
 - **Dashboard `I`:** left column is selection vs all (projects, sessions per
-  harness, calls, files, prompts, tool mix); right column is projects ranked
-  by calls and a fixed "last 7 days" block. `v` limits everything to the
-  visible timeline range.
+  harness, calls, files, agent time, prompts, share, tool mix); right column
+  is projects ranked by calls and a fixed "last 7 days" block. `v` limits
+  everything except the 7-day block to the visible timeline range: sessions
+  count when their bars reach into it, and the stats panel follows too.
 - The panel rendering lives in `antty::tui` (`render_stats_panel`,
   `render_stats_column`), shared by both binaries.
 - **Action filter** (which projects and sessions used web, MCP, eval, …):
@@ -305,11 +306,15 @@ checks; the version bump happens once, when formi lands.
 - **Bundle D.1, stats panel:** `i` toggles the panel described in Stats and
   dashboard. The indexer sends each session's thin model with its activity,
   so stats use the same projection as the display cache.
+- **Bundle D.2, dashboard:** `I` opens the popup above; `j/k`, the wheel and
+  Enter act on the selection underneath. Release build on the local logs
+  (376 sessions): building the dashboard took 13–18 ms per draw, the panel's
+  stats 6–7 ms. Formi redraws on input, updates and once a second.
 
 ### Bundle D: analysis
 
 1. ~~Stats panel `i`~~ (done).
-2. Dashboard `I`.
+2. ~~Dashboard `I`~~ (done).
 3. Action filter.
 
 ### Landing

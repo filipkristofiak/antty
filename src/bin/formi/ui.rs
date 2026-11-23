@@ -1,14 +1,15 @@
 use antty::sessions::Harness;
 use antty::timeline::Column;
 use antty::tui::{
-    CURSOR_BG, HIGHLIGHT_FG, SELECTED_BG, STATS_MIN_WIDTH, STATS_PANEL_WIDTH, StatsView, fold_glyph,
-    render_stats_panel, truncate,
+    CURSOR_BG, HIGHLIGHT_FG, SELECTED_BG, STATS_MIN_WIDTH, STATS_PANEL_WIDTH, StatsView, bar_lines, compact, fmt_span,
+    fold_glyph, render_stats_panel, truncate,
 };
 use ratatui::Frame;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::text::Line;
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use crate::app::{App, Order, Row, overlaps};
+use crate::app::{App, Order, Row, Summary, overlaps};
 use crate::discover::Kind;
 
 use ratatui::layout::{Constraint, Direction, Layout as Split, Rect};
@@ -49,10 +50,11 @@ pub const HELP: antty::tui::HelpSections = &[
     ("Search", &[("/", "search project paths and session titles (smartcase)"), ("n/N", "next/prev match")]),
     (
         "Stats",
-        &[(
-            "i",
-            "stats panel on/off: selected session, project or directory vs all indexed sessions, with its share of calls",
-        )],
+        &[
+            ("i", "stats panel on/off: selected session, project or directory vs all indexed sessions"),
+            ("I", "dashboard: selection vs all, projects ranked by calls, last 7 days"),
+            ("In I", "v visible timeline range only · j/k move the selection · Enter open · q/Esc close"),
+        ],
     ),
     (
         "General",
@@ -108,11 +110,14 @@ pub fn draw(f: &mut Frame, app: &App) {
             label: &label,
             selected: selection.as_ref().unwrap_or(&all),
             all: &all,
-            range: false,
+            range: app.stats_window,
             // Against itself the share is always 100%; only a real selection gets the row.
             share: selection.is_some(),
         };
         render_stats_panel(f, area, &view);
+    }
+    if app.dashboard {
+        dashboard(f, app);
     }
     if let Some(scroll) = app.help {
         antty::tui::render_help(f, app.layout.help, scroll, HELP);
@@ -128,6 +133,88 @@ fn harness_color(h: Harness) -> Color {
         Harness::Claude => Color::Magenta,
         Harness::Codex => Color::Green,
     }
+}
+
+/// A dashboard KPI row: its name and how to format it for one side.
+type KpiRow = (&'static str, fn(&Summary) -> String);
+
+/// The last two components of a project path: `tools/antty`.
+fn short_label(path: &std::path::Path) -> String {
+    match (path.parent().and_then(|p| p.file_name()), path.file_name()) {
+        (Some(parent), Some(name)) => format!("{}/{}", parent.to_string_lossy(), name.to_string_lossy()),
+        _ => path.display().to_string(),
+    }
+}
+
+fn dashboard(f: &mut Frame, app: &App) {
+    use ratatui::style::Stylize;
+    let d = app.dashboard();
+    let area = antty::tui::centered_rect(80, 80, f.area());
+    f.render_widget(Clear, area);
+    let range = if app.stats_window { " · range" } else { "" };
+    let title = format!("Dashboard  (v range · j/k move selection · Enter open · q/Esc close){range}");
+    let block = Block::default().borders(Borders::ALL).title(title);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let [left, _, right] =
+        Split::horizontal([Constraint::Fill(1), Constraint::Length(2), Constraint::Fill(1)]).areas(inner);
+
+    let sel = d.selection.as_ref().unwrap_or(&d.all);
+    let span = if app.stats_window { "visible range" } else { "all time" };
+    let mut lines = vec![
+        Line::from(truncate(&format!("{} · {span}", d.label), left.width.into())).bold(),
+        Line::from(""),
+        Line::from(format!("{:<10}{:>9}{:>9}", "", "sel", "all")),
+    ];
+    let rows: [KpiRow; 10] = [
+        ("projects", |s| compact(s.projects)),
+        ("sessions", |s| compact(s.sessions.iter().sum())),
+        ("  omp", |s| compact(s.sessions[0])),
+        ("  claude", |s| compact(s.sessions[1])),
+        ("  codex", |s| compact(s.sessions[2])),
+        ("calls", |s| compact(s.stats.calls)),
+        ("read", |s| compact(s.stats.files_read)),
+        ("written", |s| compact(s.stats.files_written)),
+        ("agent", |s| s.stats.agent_secs.map_or_else(|| "–".into(), |x| fmt_span(chrono::Duration::seconds(x)))),
+        ("prompts", |s| s.stats.prompts.map_or_else(|| "–".into(), compact)),
+    ];
+    for (name, value) in rows {
+        lines.push(Line::from(format!("{name:<10}{:>9}{:>9}", value(sel), value(&d.all))));
+    }
+    if d.selection.is_some() {
+        let share = match d.all.stats.calls {
+            0 => "–".into(),
+            all => format!("{}%", (sel.stats.calls * 100).div_ceil(all).min(100)),
+        };
+        lines.push(Line::from(format!("{:<10}{share:>9}", "share")));
+    }
+    lines.push(Line::from("─".repeat(left.width.into())));
+    lines.push(Line::from("tool mix").bold());
+    let remaining = usize::from(left.height).saturating_sub(lines.len());
+    lines.extend(bar_lines(&sel.stats.tools, left.width, remaining, 12));
+    f.render_widget(Paragraph::new(lines), left);
+
+    let label = |&(p, calls): &(usize, usize)| {
+        let mark = if d.current == Some(p) { "▶" } else { " " };
+        (format!("{mark}{}", short_label(&app.projects[p].key.path)), calls)
+    };
+    let ranked: Vec<_> = d.ranked.iter().map(label).collect();
+    let week: Vec<_> = d.week.iter().map(label).collect();
+    // Header and blank line above each block, plus a blank line between the blocks.
+    let ranked_rows = usize::from(right.height).saturating_sub(5 + week.len().clamp(1, 8));
+    let mut lines = vec![Line::from("projects by calls").bold(), Line::from("")];
+    if ranked.len() > ranked_rows && ranked_rows > 0 {
+        let shown = ranked_rows - 1;
+        lines.extend(bar_lines(&ranked[..shown], right.width, shown, 22));
+        let rest: usize = ranked[shown..].iter().map(|&(_, calls)| calls).sum();
+        lines.push(Line::from(format!("⋯ {} more · Σ {}", ranked.len() - shown, compact(rest))).fg(Color::DarkGray));
+    } else {
+        lines.extend(bar_lines(&ranked, right.width, ranked_rows, 22));
+    }
+    lines.extend([Line::from(""), Line::from("last 7 days").bold(), Line::from("")]);
+    let remaining = usize::from(right.height).saturating_sub(lines.len());
+    lines.extend(bar_lines(&week, right.width, remaining, 22));
+    f.render_widget(Paragraph::new(lines), right);
 }
 
 fn tree(f: &mut Frame, app: &App) {
@@ -277,16 +364,17 @@ fn status(f: &mut Frame, app: &App) {
         f.render_widget(Paragraph::new(truncate(flash, width)).style(Style::default().fg(Color::Red)), area);
         return;
     }
-    let left = "Nav (j/k/h/l) | Zoom (+/-) | Now (t) | Fit (f) | Open (⏎) | Fold (␣) | Order (o) | Stats (i) | Help (?) | Quit (:q)";
+    let left = "Nav (j/k/h/l) | Zoom (+/-) | Now (t) | Fit (f) | Open (⏎) | Fold (␣) | Order (o) | Stats (i/I) | Help (?) | Quit (:q)";
     let right = format!(
-        "{} · {} projects · {} sessions · order:{} · gaps:{} · fold:{}{}",
+        "{} · {} projects · {} sessions · order:{} · gaps:{} · fold:{}{}{}",
         app.view.zoom_label(),
         app.projects.len(),
         app.projects.iter().map(|p| p.sessions.len()).sum::<usize>(),
         if app.order == Order::Recent { "recent" } else { "tree" },
         if app.view.collapse_gaps() { "on" } else { "off" },
         if app.fold { "on" } else { "off" },
-        if app.stats_panel && app.layout.stats.is_none() { " · stats:narrow" } else { "" }
+        if app.stats_panel && app.layout.stats.is_none() { " · stats:narrow" } else { "" },
+        if app.stats_window { " · stats:range" } else { "" }
     );
     let right = if let Some(s) = &app.index_status { format!("{s} · {right}") } else { right };
     let left_len = left.chars().count();

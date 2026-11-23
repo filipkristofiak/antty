@@ -259,11 +259,34 @@ enum Anchor {
     None,
 }
 
-/// Viewport a wheel event scrolls: the shared tree/Gantt rows or the Help overlay.
+/// What a wheel event acts on: the shared tree/Gantt rows, the Help overlay, or (over the
+/// dashboard) the selection underneath, one row per report like arrow keys.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum WheelPane {
     Rows,
     Help,
+    Arrows,
+}
+
+/// Project and session counts plus stats for one side of the dashboard.
+pub struct Summary {
+    pub projects: usize,
+    /// Sessions per harness: omp, Claude Code, Codex CLI.
+    pub sessions: [usize; 3],
+    pub stats: Stats,
+}
+
+pub struct Dashboard {
+    pub label: String,
+    /// `None` when the selection is everything.
+    pub selection: Option<Summary>,
+    pub all: Summary,
+    /// `(project, calls)` in the stats range, most calls first, projects without calls left out.
+    pub ranked: Vec<(usize, usize)>,
+    /// The same ranking over the last seven days, ignoring the stats range.
+    pub week: Vec<(usize, usize)>,
+    /// Project of the selected row, marked in both rankings.
+    pub current: Option<usize>,
 }
 
 pub struct App {
@@ -291,6 +314,10 @@ pub struct App {
     pub search: Option<String>,
     pub help: Option<u16>,
     pub stats_panel: bool,
+    /// The `I` dashboard is open.
+    pub dashboard: bool,
+    /// Stats count only the visible timeline range (`v` in the dashboard).
+    pub stats_window: bool,
     /// Thin activity models by session file, used for stats; missing until a session is indexed.
     pub models: HashMap<PathBuf, Arc<Model>>,
     pub no_color: bool,
@@ -329,6 +356,8 @@ impl App {
             search: None,
             help: None,
             stats_panel: false,
+            dashboard: false,
+            stats_window: false,
             models: HashMap::new(),
             no_color: std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()),
             launch: None,
@@ -343,35 +372,103 @@ impl App {
         app
     }
 
+    /// The selected row's label and `(project, session)` pairs; `None` on fold rows, which
+    /// stand for everything.
+    fn selected_sessions(&self) -> Option<(String, Vec<(usize, usize)>)> {
+        match self.rows.get(self.selected).copied()? {
+            Row::Session { project, session, .. } => {
+                Some((self.projects[project].sessions[session].title.clone(), vec![(project, session)]))
+            }
+            Row::Node { node, .. } => {
+                let mut projects = Vec::new();
+                self.forest.projects_under(node, &mut projects);
+                let sessions =
+                    projects.into_iter().flat_map(|p| (0..self.projects[p].sessions.len()).map(move |s| (p, s)));
+                Some((self.forest.nodes[node].full_label.clone(), sessions.collect()))
+            }
+            Row::SessionFold { .. } | Row::ProjectFold => None,
+        }
+    }
+
+    fn all_sessions(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.projects.iter().enumerate().flat_map(|(p, v)| (0..v.sessions.len()).map(move |s| (p, s)))
+    }
+
+    /// The visible timeline range when `v` limits stats to it.
+    pub fn stats_range(&self) -> Option<(Ts, Ts)> {
+        self.stats_window.then(|| {
+            let last = i64::from(self.layout.gantt_width.max(1) - 1);
+            (self.view.column(0).range().0, self.view.column(last).range().1)
+        })
+    }
+
     /// The stats panel's label, the selection's stats (`None` when it is everything), and the
     /// stats over every indexed session.
     pub fn stats(&self) -> (String, Option<Stats>, Stats) {
-        let selection = match self.rows.get(self.selected).copied() {
-            Some(Row::Session { project, session, .. }) => {
-                let s = &self.projects[project].sessions[session];
-                Some((s.title.clone(), self.tally([(project, s)])))
-            }
-            Some(Row::Node { node, .. }) => {
-                let mut projects = Vec::new();
-                self.forest.projects_under(node, &mut projects);
-                let sessions = projects.into_iter().flat_map(|p| self.projects[p].sessions.iter().map(move |s| (p, s)));
-                Some((self.forest.nodes[node].full_label.clone(), self.tally(sessions)))
-            }
-            Some(Row::SessionFold { .. } | Row::ProjectFold) | None => None,
-        };
-        let all =
-            self.tally(self.projects.iter().enumerate().flat_map(|(p, v)| v.sessions.iter().map(move |s| (p, s))));
-        match selection {
-            Some((label, stats)) => (label, Some(stats), all),
+        let window = self.stats_range();
+        let all = self.tally(self.all_sessions(), window);
+        match self.selected_sessions() {
+            Some((label, sessions)) => (label, Some(self.tally(sessions, window)), all),
             None => ("all".into(), None, all),
         }
     }
 
-    fn tally<'a>(&'a self, sessions: impl IntoIterator<Item = (usize, &'a SessionInfo)>) -> Stats {
+    pub fn dashboard(&self) -> Dashboard {
+        let window = self.stats_range();
+        let summary = |sessions: &[(usize, usize)]| {
+            // With a range, count only sessions whose bars reach into it.
+            let in_range = |&&(p, s): &&(usize, usize)| {
+                window.is_none_or(|(ws, we)| overlaps(self.projects[p].sessions[s].bars(), ws, we))
+            };
+            let mut harnesses = [0; 3];
+            let mut projects = Vec::new();
+            for &(p, s) in sessions.iter().filter(in_range) {
+                harnesses[self.projects[p].sessions[s].harness as usize] += 1;
+                projects.push(p);
+            }
+            projects.dedup();
+            Summary {
+                projects: projects.len(),
+                sessions: harnesses,
+                stats: self.tally(sessions.iter().copied(), window),
+            }
+        };
+        let (label, selection) = match self.selected_sessions() {
+            Some((label, sessions)) => (label, Some(summary(&sessions))),
+            None => ("all".into(), None),
+        };
+        let all: Vec<_> = self.all_sessions().collect();
+        let now = chrono::Utc::now();
+        let current = match self.rows.get(self.selected) {
+            Some(&Row::Session { project, .. }) => Some(project),
+            Some(&Row::Node { node, .. }) => self.forest.nodes[node].project,
+            _ => None,
+        };
+        Dashboard {
+            label,
+            selection,
+            all: summary(&all),
+            ranked: self.ranking(window),
+            week: self.ranking(Some((now - chrono::Duration::days(7), now + chrono::Duration::minutes(1)))),
+            current,
+        }
+    }
+
+    fn ranking(&self, window: Option<(Ts, Ts)>) -> Vec<(usize, usize)> {
+        let mut ranked: Vec<_> = (0..self.projects.len())
+            .map(|p| (p, self.tally((0..self.projects[p].sessions.len()).map(|s| (p, s)), window).calls))
+            .filter(|&(_, calls)| calls > 0)
+            .collect();
+        ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| self.projects[a.0].key.cmp(&self.projects[b.0].key)));
+        ranked
+    }
+
+    fn tally(&self, sessions: impl IntoIterator<Item = (usize, usize)>, window: Option<(Ts, Ts)>) -> Stats {
         let mut tally = Tally::default();
         for (project, session) in sessions {
-            if let Some(model) = self.models.get(&session.file) {
-                tally.add(model, &Subject::All, None, Some(&self.projects[project].key.path));
+            let project = &self.projects[project];
+            if let Some(model) = self.models.get(&project.sessions[session].file) {
+                tally.add(model, &Subject::All, window, Some(&project.key.path));
             }
         }
         tally.finish()
@@ -651,6 +748,9 @@ impl App {
         let layout = &self.layout;
         let pane = if self.help.is_some() {
             layout.help.contains(point).then_some(WheelPane::Help)?
+        } else if self.dashboard {
+            // One arrow per report, as terminals without capture send for each notch.
+            return Some((WheelPane::Arrows, delta.signum()));
         } else if layout.body_height > 0 && (layout.tree.contains(point) || layout.gantt.contains(point)) {
             WheelPane::Rows
         } else {
@@ -678,6 +778,13 @@ impl App {
                 let Some(scroll) = &mut self.help else { return false };
                 let next = (i64::from((*scroll).min(max)) + delta).clamp(0, i64::from(max)) as u16;
                 next != std::mem::replace(scroll, next)
+            }
+            WheelPane::Arrows => {
+                let code = if delta < 0 { KeyCode::Up } else { KeyCode::Down };
+                for _ in 0..delta.unsigned_abs() {
+                    self.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+                }
+                true
             }
         }
     }
@@ -794,6 +901,12 @@ impl App {
             self.suspend = true;
             return false;
         }
+        if self.dashboard {
+            if plain {
+                self.handle_key_dashboard(key);
+            }
+            return false;
+        }
         if plain && key.code == KeyCode::Esc {
             self.search = None;
             self.count = 0;
@@ -864,6 +977,7 @@ impl App {
             KeyCode::Char(':') => self.cmdline = Some(CmdLine::new(CmdKind::Command)),
             KeyCode::Char('/') => self.cmdline = Some(CmdLine::new(CmdKind::Search)),
             KeyCode::Char('i') => self.stats_panel = !self.stats_panel,
+            KeyCode::Char('I') => self.dashboard = true,
             KeyCode::Char('n' | 'N') => {
                 if let Some(query) = self.search.take() {
                     self.search_step(&query, key.code == KeyCode::Char('n'), n);
@@ -909,6 +1023,28 @@ impl App {
         }
         self.clamp_scroll();
         false
+    }
+
+    fn handle_key_dashboard(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('q' | 'I') | KeyCode::Esc => self.dashboard = false,
+            KeyCode::Char('?') => self.help = Some(0),
+            KeyCode::Char('v') => self.stats_window = !self.stats_window,
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.wheel_view = false;
+                self.selected = self.selected.saturating_add(1);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.wheel_view = false;
+                self.selected = self.selected.saturating_sub(1);
+            }
+            KeyCode::Enter => {
+                self.wheel_view = false;
+                self.drill_down();
+            }
+            _ => {}
+        }
+        self.clamp_scroll();
     }
 
     fn handle_key_command(&mut self, key: KeyEvent) -> bool {
@@ -1090,28 +1226,34 @@ mod tests {
         }
     }
 
-    #[test]
-    fn stats_sum_a_projects_sessions_and_count_its_files_once() {
+    /// Give each `(project, session, call id, at)` a thin model with one read of `src/main.rs`.
+    fn seed_reads(app: &mut App, reads: &[(usize, usize, &str, Ts)]) {
         use antty::model::{EventDetail, FileEvent, ParticipantKind, Scope, TouchKind, TouchSource};
-        let mut app = App::new(vec![project(0, [10, 20]), project(1, [30])], PathBuf::new(), roots());
-        for (p, s, id) in [(0, 0, "a"), (0, 1, "b"), (1, 0, "c")] {
+        for &(p, s, id, at) in reads {
             let session = &app.projects[p].sessions[s];
             let mut model = Model::new(vec![session.cwd.clone()]);
             let who = model.get_or_create_participant(&session.file, ParticipantKind::Main, "main".into(), None, None);
-            model.record_tool_call(who, id, "read", Ts::UNIX_EPOCH);
+            model.record_tool_call(who, id, "read", at);
             model.events.push(FileEvent {
                 who,
                 rel: "src/main.rs".into(),
                 scope: Scope::Project(0),
                 kind: TouchKind::Read,
                 source: TouchSource::Tool("read".into()),
-                start: Ts::UNIX_EPOCH,
-                end: Ts::UNIX_EPOCH,
+                start: at,
+                end: at,
                 tool_call_id: Some(id.into()),
                 detail: EventDetail::None,
             });
             app.models.insert(session.file.clone(), Arc::new(model));
         }
+    }
+
+    #[test]
+    fn stats_sum_a_projects_sessions_and_count_its_files_once() {
+        let mut app = App::new(vec![project(0, [10, 20]), project(1, [30])], PathBuf::new(), roots());
+        let epoch = Ts::UNIX_EPOCH;
+        seed_reads(&mut app, &[(0, 0, "a", epoch), (0, 1, "b", epoch), (1, 0, "c", epoch)]);
         let counts = |stats: &Stats| (stats.calls, stats.files_read);
         let (label, selection, all) = app.stats();
         assert_eq!((label.as_str(), selection.as_ref().map(counts), counts(&all)), ("/q/p0", Some((2, 1)), (3, 2)));
@@ -1120,6 +1262,31 @@ mod tests {
         app.handle_key(KeyEvent::from(KeyCode::Char('j')));
         let (label, selection, _) = app.stats();
         assert_eq!((label.as_str(), selection.as_ref().map(counts)), ("session 0", Some((1, 1))));
+    }
+
+    #[test]
+    fn dashboard_ranks_projects_and_moves_the_selection_underneath() {
+        let mut app = App::new(vec![project(0, [10, 20]), project(1, [30])], PathBuf::new(), roots());
+        let now = chrono::Utc::now();
+        seed_reads(&mut app, &[(0, 0, "a", Ts::UNIX_EPOCH), (0, 1, "b", Ts::UNIX_EPOCH), (1, 0, "c", now)]);
+        app.handle_key(KeyEvent::from(KeyCode::Char('I')));
+        assert!(app.dashboard);
+        let d = app.dashboard();
+        assert_eq!((d.ranked, d.week, d.current), (vec![(0, 2), (1, 1)], vec![(1, 1)], Some(0)));
+        let summary = d.selection.unwrap();
+        assert_eq!((summary.projects, summary.sessions, d.all.projects, d.all.sessions), (1, [2, 0, 0], 2, [3, 0, 0]));
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+        assert_eq!(app.dashboard().current, Some(1));
+        let up = MouseEvent { kind: MouseEventKind::ScrollUp, column: 0, row: 0, modifiers: KeyModifiers::NONE };
+        let action = app.wheel_action(up);
+        assert!(app.apply_wheel(action));
+        assert_eq!((app.selected, app.dashboard().current), (0, Some(0)));
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('v')));
+        assert!(app.stats_window && app.stats_range().is_some());
+        app.handle_key(KeyEvent::from(KeyCode::Char('q')));
+        assert!(!app.dashboard);
     }
 
     #[test]

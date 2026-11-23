@@ -431,7 +431,8 @@ pub struct StatsView<'a> {
     pub share: bool,
 }
 
-fn compact(n: usize) -> String {
+/// `n` in at most five characters: exact below 10k, then `12.3k`/`4.5M`.
+pub fn compact(n: usize) -> String {
     match n {
         0..10_000 => n.to_string(),
         10_000..1_000_000 => format!("{:.1}k", n as f64 / 1_000.0),
@@ -449,21 +450,24 @@ fn kpis(s: &crate::stats::Stats) -> [(&'static str, String); 5] {
     ]
 }
 
-fn bar_lines(tools: &[(String, usize)], width: u16, max_rows: usize) -> Vec<Line<'static>> {
+/// One labelled bar per `(label, count)` item, sorted by descending count; zero counts are
+/// dropped. Labels are cut to `label_max` characters. Rows past `max_rows` fold into `+N more`.
+pub fn bar_lines(items: &[(String, usize)], width: u16, max_rows: usize, label_max: usize) -> Vec<Line<'static>> {
     use ratatui::style::Stylize;
     use ratatui::text::Span;
     if max_rows == 0 {
         return Vec::new();
     }
-    let Some((_, max_count)) = tools.first() else {
+    let items = &items[..items.partition_point(|&(_, count)| count > 0)];
+    let Some((_, max_count)) = items.first() else {
         return vec![Line::from("no tool calls").fg(Color::DarkGray)];
     };
-    let label_w = tools.iter().map(|(tool, _)| tool.chars().count()).max().unwrap_or(0).min(10);
+    let label_w = items.iter().map(|(label, _)| label.chars().count()).max().unwrap_or(0).min(label_max);
     let count_w = max_count.ilog10() as usize + 1;
     let bar_w = usize::from(width).saturating_sub(label_w + count_w + 2);
-    let shown = if tools.len() > max_rows { max_rows - 1 } else { tools.len() };
-    let mut lines = Vec::with_capacity(tools.len().min(max_rows));
-    for (tool, count) in &tools[..shown] {
+    let shown = if items.len() > max_rows { max_rows - 1 } else { items.len() };
+    let mut lines = Vec::with_capacity(items.len().min(max_rows));
+    for (tool, count) in &items[..shown] {
         let label = truncate(tool, label_w);
         let bar_len = (*count as u128 * bar_w as u128).div_ceil(*max_count as u128) as usize;
         lines.push(Line::from(vec![
@@ -472,8 +476,8 @@ fn bar_lines(tools: &[(String, usize)], width: u16, max_rows: usize) -> Vec<Line
             Span::raw(format!(" {count:>count_w$}")),
         ]));
     }
-    if shown < tools.len() {
-        lines.push(Line::from(format!("+{} more", tools.len() - shown)).fg(Color::DarkGray));
+    if shown < items.len() {
+        lines.push(Line::from(format!("+{} more", items.len() - shown)).fg(Color::DarkGray));
     }
     lines
 }
@@ -481,7 +485,7 @@ fn bar_lines(tools: &[(String, usize)], width: u16, max_rows: usize) -> Vec<Line
 fn append_chart(lines: &mut Vec<Line<'static>>, area: Rect, stats: &crate::stats::Stats) {
     lines.push(Line::from("─".repeat(area.width.into())));
     let remaining = usize::from(area.height).saturating_sub(lines.len());
-    lines.extend(bar_lines(&stats.tools, area.width, remaining));
+    lines.extend(bar_lines(&stats.tools, area.width, remaining, 10));
 }
 
 pub fn render_stats_panel(f: &mut Frame, area: Rect, view: &StatsView) {

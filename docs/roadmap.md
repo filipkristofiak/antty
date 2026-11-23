@@ -32,28 +32,89 @@ avante.nvim and codecompanion.nvim remain.
 
 ## 3. Git branches and file moves (major)
 
-FILES already lists more than the files on disk: it is a disk walk plus
-every project file an event touched, and files no longer on disk show as
-deleted. What's missing:
+FILES combines current disk listings with every project path an event touched.
+Worktrees are already discovered and shown as merged paths or separate checkout
+groups, but a checkout's branch and tree shape can change during a session.
+Current gaps:
 
-- **Moves aren't linked.** A renamed or moved file shows as two unrelated
-  rows (old path, deleted; new path), each holding part of its history.
-- **No branch awareness.** Events from another git branch mix into the
-  current tree and show as deleted files. Content snapshots are keyed only by
-  path, so diffs can compare contents from different branches.
-- **No "as of time T" view.** The tree always has today's shape; you can't
-  see the tree as it was at the cursor time.
+- **Moves aren't linked.** Old and new paths hold separate histories.
+- **No branch/state awareness.** Snapshots are isolated per checkout, but keyed
+  by path and time within it. Switching branches can mix content baselines and
+  make another branch's paths look deleted.
+- **Merged paths lose structural differences.** Presence in several worktrees
+  does not mean equal content or type: a file in one can be a directory in another.
+- **No historical shape.** The tree includes today's disk shape rather than
+  the shape an agent actually worked with.
 
-How to show past files is not decided yet. Whatever we choose must be opt-in
-and leave the default view unchanged.
+Direction chosen: **context-safe snapshots → context-scoped tree → drift
+comparison → historical tree**. These share one recorded checkout-state model,
+not separate Git integrations. New views are opt-in and leave the default
+presentation unchanged; snapshot and attribution correctness apply in every view.
+Implementation remains pending.
 
-- [ ] Choose a strategy. Open options:
-  - follow renames (`EventDetail::Moved`, watcher rename pairs, git rename
-    detection) so a file keeps one row on its current path;
-  - record the active branch/HEAD per session and event, then filter, group
-    or key snapshots by branch;
-  - rebuild the tree as of the cursor time from events, snapshots or git;
-  - handle a checkout that changes the tree under a live session.
+### 3.1 Record context and protect snapshot boundaries
+
+- [ ] Record checkout-state intervals: checkout identity, observed branch/ref,
+  HEAD commit, observation times and evidence/coverage. Events reference their
+  context; a session can span several contexts. Branch names are labels, not
+  identities: refs move, branches are renamed and detached HEAD exists.
+- [ ] Scope mutable snapshots by checkout, context interval, path and time;
+  share immutable Git content by object ID. After a transition, re-establish
+  the baseline or explicitly carry a known one, never reuse same-path content
+  from an unrelated state.
+- [ ] Observe worktree-specific Git metadata and shared refs; reconcile HEAD,
+  index and working-tree changes off-thread. Represent Git transitions
+  separately from editing activity. Do not coalesce across context boundaries
+  or blanket-drop nearby writes: concurrent edits and delayed watcher delivery
+  require uncertain attribution to remain visible.
+- [ ] Keep older events in an unknown context unless historical evidence
+  supports reconstruction. Never assign today's branch retroactively.
+  Reflogs cannot recover unobserved dirty files or guarantee complete history.
+
+### 3.2 Add an opt-in context-scoped tree
+
+- [ ] Select checkout/branch context independently of `w`, which keeps its
+  merged/separate-worktree meaning. Distinguish tree source (working tree or
+  pinned committed tree) from activity scope (where events were observed).
+- [ ] Apply activity scope consistently to the tree, Gantt, Detail and stats.
+  Branch scope means recorded event context, not commit reachability: merging
+  a branch must not relabel where its activity happened.
+- [ ] Keep excluded and unknown-context activity reachable, with a visible
+  scope/reset control. A path absent from the selected context is not evidence
+  of deletion.
+
+### 3.3 Explain drift with a pinned comparison and move links
+
+- [ ] Add a comparison overlay with two explicit endpoints: refs resolved to
+  pinned commit IDs, or an explicitly captured working-tree snapshot. Inspect
+  other branches without checking them out.
+- [ ] Show only-A/only-B paths, content changes, type changes and likely renames,
+  with links to recorded participant activity. Preserve typed path variants
+  instead of flattening file/directory differences into one node.
+- [ ] Link moves with provenance (`EventDetail::Moved`, watcher rename pairs,
+  Git similarity detection). Keep original paths and offer follow-move history;
+  do not force divergent renames, copies or splits into one global current path.
+  Git rename detection is a heuristic, not permanent file identity.
+- [ ] If comparing both sides against a merge-base, label shared changes as
+  overlap, not proof of a merge conflict.
+
+### 3.4 Project a coverage-aware tree at cursor time
+
+- [ ] Add an explicit historical mode using the checkout's recorded HEAD at T,
+  not the latest commit dated before T. Reconstruct its committed tree plus
+  observed uncommitted changes, and limit file activity to T.
+- [ ] Show coverage separately: committed tree exact when available;
+  uncommitted overlay partial or unknown where observations are missing.
+  Never silently substitute today's disk for missing historical content.
+- [ ] Keep historical content read-only; opening its live counterpart for
+  editing is a separate action. Preserve selection through known move links
+  and show checkout transitions on a context lane.
+- [ ] Leave ordinary `h/l` navigation stable: tree shape follows the cursor
+  only inside historical mode, not whenever the normal timeline moves.
+
+Use Git tree queries without mutating the checkout; cache listings by tree
+object ID and load blobs/rename comparisons on demand. No Git subprocesses in
+rendering. Branch management is out of scope.
 
 ## 4. More mouse support (consideration)
 

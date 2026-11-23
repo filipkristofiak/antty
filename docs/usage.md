@@ -239,6 +239,7 @@ displayed rows, refreshed when those rows are rebuilt.
 | `i` | Toggle the stats panel (110+ columns wide): the selected session, project or directory vs all indexed sessions, with the selection's share of tool calls; fold rows show all |
 | `I` | Dashboard: selection vs all (projects, sessions per harness, calls, files, agent time, prompts, share, tool mix), projects ranked by calls with the selected one marked `▶`, and a fixed last-7-days ranking |
 | `v`, `j/k`, wheel, `Enter`, `q/Esc/I` in the dashboard | Limit counts and stats (panel too) to the visible timeline range; move the selection underneath; open in antty; close |
+| `F` | Action filter: list only sessions that used the checked actions (counts show sessions and events per action); their bars show only those events, and stats sum the listed sessions. `Space` toggles, `a` all, `n` none, `Enter` applies, `q/Esc` cancels; **scripts only** narrows file actions to script extensions. Check every action to clear it. Unindexed sessions are hidden while a filter is on |
 | `?` | Open help; scroll with `j/k`, `Ctrl-d/u`, or `g/G`; close with `q`, `?`, or `Esc` |
 | `Space/za` | Toggle node; on a session, close and select its project; on a fold row, reveal hidden rows |
 | `zo/zc`, `zR/zM` | Open/close node; expand/collapse all |

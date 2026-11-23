@@ -4,6 +4,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use antty::cmdline::{self, CmdKind, CmdLine};
+use antty::filter::{Action, ActionFilter, ActionKey, action_key};
 use antty::model::{Model, Ts};
 use antty::search;
 use antty::sessions::Harness;
@@ -20,6 +21,7 @@ fn live_cutoff() -> Ts {
     chrono::Utc::now() - chrono::Duration::hours(antty::tui::LIVE_HOURS)
 }
 
+#[derive(Clone)]
 pub struct ProjectView {
     pub key: ProjectKey,
     pub kind: Kind,
@@ -46,6 +48,25 @@ pub fn project_views(projects: Vec<Project<Vec<SessionInfo>>>) -> Vec<ProjectVie
             project
         })
         .collect()
+}
+
+/// One row of the `F` overlay: an action with how many indexed sessions and events used it,
+/// or the scripts-only checkbox, which is always last.
+pub enum ActionRow {
+    Action { action: Action, sessions: usize, events: usize },
+    ScriptsOnly,
+}
+
+pub struct ActionsOverlay {
+    pub rows: Vec<ActionRow>,
+    pub checked: HashSet<usize>,
+    pub scripts: bool,
+    pub cursor: usize,
+}
+
+/// Merged spans of `model`'s events that `filter` keeps.
+fn matching_activity(model: &Model, filter: &ActionFilter) -> Vec<(Ts, Ts)> {
+    merge(model.events.iter().filter(|e| filter.matches(e)).map(|e| (e.start.min(e.end), e.start.max(e.end))).collect())
 }
 
 fn last_active(p: &ProjectView) -> Option<Ts> {
@@ -290,7 +311,14 @@ pub struct Dashboard {
 }
 
 pub struct App {
+    /// The projects shown: `source` narrowed by `action_filter`.
     pub projects: Vec<ProjectView>,
+    /// Every discovered project and session, as last reported by the indexer.
+    source: Vec<ProjectView>,
+    /// Only sessions with a matching event are listed, and their bars show only those events.
+    pub action_filter: Option<ActionFilter>,
+    /// The `F` overlay, while open.
+    pub actions: Option<ActionsOverlay>,
     pub home: PathBuf,
     pub order: Order,
     pub forest: Forest,
@@ -333,7 +361,10 @@ pub struct App {
 impl App {
     pub fn new(projects: Vec<ProjectView>, home: PathBuf, roots: [(Harness, PathBuf); 3]) -> Self {
         let mut app = Self {
-            projects,
+            projects: Vec::new(),
+            source: projects,
+            action_filter: None,
+            actions: None,
             home,
             roots,
             order: Order::Recent,
@@ -367,9 +398,120 @@ impl App {
             command_history: Vec::new(),
             search_history: Vec::new(),
         };
+        app.refresh_view();
         app.refresh_activity();
         app.rebuild_at(app.live_since);
         app
+    }
+
+    /// Rebuild `projects` from `source` under the action filter. Unindexed sessions have no
+    /// events to match, so a filter hides them until they are indexed.
+    fn refresh_view(&mut self) {
+        let Some(filter) = &self.action_filter else {
+            self.projects = self.source.clone();
+            return;
+        };
+        self.projects = self
+            .source
+            .iter()
+            .filter_map(|p| {
+                let sessions: Vec<_> = p
+                    .sessions
+                    .iter()
+                    .filter_map(|s| {
+                        let activity = matching_activity(self.models.get(&s.file)?, filter);
+                        (!activity.is_empty()).then(|| SessionInfo { activity: Some(activity), ..s.clone() })
+                    })
+                    .collect();
+                (!sessions.is_empty()).then(|| ProjectView { sessions, ..p.clone() })
+            })
+            .collect();
+    }
+
+    fn open_actions(&mut self) {
+        let mut used = [(0, 0); Action::ALL.len()];
+        for s in self.source.iter().flat_map(|p| &p.sessions) {
+            let Some(model) = self.models.get(&s.file) else { continue };
+            let mut events = [0; Action::ALL.len()];
+            for e in &model.events {
+                if let ActionKey::Fixed(action) = action_key(e) {
+                    events[action as usize] += 1;
+                }
+            }
+            for (total, n) in used.iter_mut().zip(events) {
+                *total = (total.0 + usize::from(n > 0), total.1 + n);
+            }
+        }
+        let filter = self.action_filter.as_ref();
+        let rows: Vec<_> = Action::ALL
+            .into_iter()
+            .filter(|&action| used[action as usize].1 > 0 || filter.is_some_and(|f| f.actions.contains(&action)))
+            .map(|action| {
+                let (sessions, events) = used[action as usize];
+                ActionRow::Action { action, sessions, events }
+            })
+            .chain(std::iter::once(ActionRow::ScriptsOnly))
+            .collect();
+        let checked = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| match row {
+                ActionRow::Action { action, .. } => filter.is_none_or(|f| f.actions.contains(action)),
+                ActionRow::ScriptsOnly => false,
+            })
+            .map(|(i, _)| i)
+            .collect();
+        let scripts = filter.is_some_and(|f| f.scripts_only);
+        self.actions = Some(ActionsOverlay { rows, checked, scripts, cursor: 0 });
+    }
+
+    fn apply_actions(&mut self) {
+        let Some(overlay) = self.actions.take() else { return };
+        let all = overlay.checked.len() == overlay.rows.len() - 1;
+        self.action_filter = (overlay.scripts || !all).then(|| ActionFilter {
+            actions: overlay
+                .checked
+                .iter()
+                .filter_map(|&i| match overlay.rows[i] {
+                    ActionRow::Action { action, .. } => Some(action),
+                    ActionRow::ScriptsOnly => None,
+                })
+                .collect(),
+            scripts_only: overlay.scripts,
+            ..ActionFilter::default()
+        });
+        let anchor = self.anchor();
+        self.refresh_view();
+        self.refresh_activity();
+        self.rebuild_from(anchor, live_cutoff());
+    }
+
+    fn handle_key_actions(&mut self, key: KeyEvent) {
+        let half = (self.layout.help.height.saturating_sub(2) / 2).max(1) as usize;
+        let Some(overlay) = &mut self.actions else { return };
+        // Scripts-only is always the last row and has its own checkbox.
+        let last = overlay.rows.len() - 1;
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => self.actions = None,
+            KeyCode::Char('?') => self.help = Some(0),
+            KeyCode::Enter => self.apply_actions(),
+            KeyCode::Char('a') => overlay.checked = (0..last).collect(),
+            KeyCode::Char('n') => overlay.checked.clear(),
+            KeyCode::Char(' ') if overlay.cursor == last => overlay.scripts = !overlay.scripts,
+            KeyCode::Char(' ') => {
+                if !overlay.checked.remove(&overlay.cursor) {
+                    overlay.checked.insert(overlay.cursor);
+                }
+            }
+            KeyCode::Char('d') if ctrl => overlay.cursor = (overlay.cursor + half).min(last),
+            KeyCode::Char('u') if ctrl => overlay.cursor = overlay.cursor.saturating_sub(half),
+            KeyCode::Char('j') | KeyCode::Down => overlay.cursor = (overlay.cursor + 1).min(last),
+            KeyCode::Char('k') | KeyCode::Up => overlay.cursor = overlay.cursor.saturating_sub(1),
+            KeyCode::Char('g') => overlay.cursor = 0,
+            KeyCode::Char('G') => overlay.cursor = last,
+            _ => {}
+        }
     }
 
     /// The selected row's label and `(project, session)` pairs; `None` on fold rows, which
@@ -484,7 +626,7 @@ impl App {
         let mut touched = HashSet::new();
         for (info, fresh_title) in updates {
             if let Some((project, session)) = self
-                .projects
+                .source
                 .iter_mut()
                 .enumerate()
                 .find_map(|(p, project)| project.sessions.iter_mut().find(|s| s.file == info.file).map(|s| (p, s)))
@@ -498,20 +640,21 @@ impl App {
                 continue;
             }
             let p =
-                self.projects.iter().position(|p| p.sessions.iter().any(|s| s.cwd == info.cwd)).unwrap_or_else(|| {
+                self.source.iter().position(|p| p.sessions.iter().any(|s| s.cwd == info.cwd)).unwrap_or_else(|| {
                     let (key, kind) = project_of(&info.cwd);
-                    self.projects.iter().position(|p| p.key == key).unwrap_or_else(|| {
-                        let p = self.projects.len();
-                        self.projects.push(ProjectView { key, kind, drill: Drill::None, sessions: Vec::new() });
+                    self.source.iter().position(|p| p.key == key).unwrap_or_else(|| {
+                        let p = self.source.len();
+                        self.source.push(ProjectView { key, kind, drill: Drill::None, sessions: Vec::new() });
                         p
                     })
                 });
-            self.projects[p].sessions.push(info);
+            self.source[p].sessions.push(info);
             touched.insert(p);
         }
         for p in touched {
-            self.projects[p].refresh();
+            self.source[p].refresh();
         }
+        self.refresh_view();
         self.refresh_activity();
         self.rebuild_from(anchor, live_cutoff());
     }
@@ -748,7 +891,7 @@ impl App {
         let layout = &self.layout;
         let pane = if self.help.is_some() {
             layout.help.contains(point).then_some(WheelPane::Help)?
-        } else if self.dashboard {
+        } else if self.dashboard || self.actions.is_some() {
             // One arrow per report, as terminals without capture send for each notch.
             return Some((WheelPane::Arrows, delta.signum()));
         } else if layout.body_height > 0 && (layout.tree.contains(point) || layout.gantt.contains(point)) {
@@ -901,6 +1044,10 @@ impl App {
             self.suspend = true;
             return false;
         }
+        if self.actions.is_some() {
+            self.handle_key_actions(key);
+            return false;
+        }
         if self.dashboard {
             if plain {
                 self.handle_key_dashboard(key);
@@ -978,6 +1125,7 @@ impl App {
             KeyCode::Char('/') => self.cmdline = Some(CmdLine::new(CmdKind::Search)),
             KeyCode::Char('i') => self.stats_panel = !self.stats_panel,
             KeyCode::Char('I') => self.dashboard = true,
+            KeyCode::Char('F') => self.open_actions(),
             KeyCode::Char('n' | 'N') => {
                 if let Some(query) = self.search.take() {
                     self.search_step(&query, key.code == KeyCode::Char('n'), n);
@@ -1226,20 +1374,21 @@ mod tests {
         }
     }
 
-    /// Give each `(project, session, call id, at)` a thin model with one read of `src/main.rs`.
-    fn seed_reads(app: &mut App, reads: &[(usize, usize, &str, Ts)]) {
+    /// Give each `(project, session, call id, at)` a thin model with one `tool` call that
+    /// reads `src/main.rs`.
+    fn seed_events(app: &mut App, tool: &str, reads: &[(usize, usize, &str, Ts)]) {
         use antty::model::{EventDetail, FileEvent, ParticipantKind, Scope, TouchKind, TouchSource};
         for &(p, s, id, at) in reads {
             let session = &app.projects[p].sessions[s];
             let mut model = Model::new(vec![session.cwd.clone()]);
             let who = model.get_or_create_participant(&session.file, ParticipantKind::Main, "main".into(), None, None);
-            model.record_tool_call(who, id, "read", at);
+            model.record_tool_call(who, id, tool, at);
             model.events.push(FileEvent {
                 who,
                 rel: "src/main.rs".into(),
                 scope: Scope::Project(0),
                 kind: TouchKind::Read,
-                source: TouchSource::Tool("read".into()),
+                source: TouchSource::Tool(tool.into()),
                 start: at,
                 end: at,
                 tool_call_id: Some(id.into()),
@@ -1253,7 +1402,7 @@ mod tests {
     fn stats_sum_a_projects_sessions_and_count_its_files_once() {
         let mut app = App::new(vec![project(0, [10, 20]), project(1, [30])], PathBuf::new(), roots());
         let epoch = Ts::UNIX_EPOCH;
-        seed_reads(&mut app, &[(0, 0, "a", epoch), (0, 1, "b", epoch), (1, 0, "c", epoch)]);
+        seed_events(&mut app, "read", &[(0, 0, "a", epoch), (0, 1, "b", epoch), (1, 0, "c", epoch)]);
         let counts = |stats: &Stats| (stats.calls, stats.files_read);
         let (label, selection, all) = app.stats();
         assert_eq!((label.as_str(), selection.as_ref().map(counts), counts(&all)), ("/q/p0", Some((2, 1)), (3, 2)));
@@ -1265,10 +1414,50 @@ mod tests {
     }
 
     #[test]
+    fn action_filter_lists_only_sessions_that_used_the_chosen_actions() {
+        let mut app = App::new(vec![project(0, [10, 20]), project(1, [30])], PathBuf::new(), roots());
+        let at = Ts::UNIX_EPOCH + chrono::Duration::hours(1);
+        seed_events(&mut app, "eval", &[(0, 0, "e", at)]);
+        seed_events(&mut app, "read", &[(0, 1, "r", Ts::UNIX_EPOCH), (1, 0, "s", Ts::UNIX_EPOCH)]);
+        let key = |app: &mut App, code| app.handle_key(KeyEvent::from(code));
+
+        key(&mut app, KeyCode::Char('F'));
+        let rows: Vec<_> = app
+            .actions
+            .as_ref()
+            .unwrap()
+            .rows
+            .iter()
+            .map(|row| match row {
+                ActionRow::Action { action, sessions, events } => Some((*action, *sessions, *events)),
+                ActionRow::ScriptsOnly => None,
+            })
+            .collect();
+        assert_eq!(rows, [Some((Action::Eval, 1, 1)), Some((Action::Read, 2, 2)), None]);
+        for code in [KeyCode::Char('n'), KeyCode::Char(' '), KeyCode::Enter] {
+            key(&mut app, code);
+        }
+        assert!(app.actions.is_none());
+        let shown: Vec<_> = app.projects.iter().map(|p| (p.key.path.clone(), p.sessions.len())).collect();
+        assert_eq!(shown, [(PathBuf::from("/q/p0"), 1)]);
+        assert_eq!(app.projects[0].sessions[0].activity, Some(vec![(at, at)]));
+
+        // A live update keeps the filter; checking every action again clears it.
+        let update = app.source[1].sessions[0].clone();
+        app.apply(vec![(update, false)]);
+        assert_eq!(app.projects.len(), 1);
+        for code in [KeyCode::Char('F'), KeyCode::Char('a'), KeyCode::Enter] {
+            key(&mut app, code);
+        }
+        assert!(app.action_filter.is_none());
+        assert_eq!(app.projects.len(), 2);
+    }
+
+    #[test]
     fn dashboard_ranks_projects_and_moves_the_selection_underneath() {
         let mut app = App::new(vec![project(0, [10, 20]), project(1, [30])], PathBuf::new(), roots());
         let now = chrono::Utc::now();
-        seed_reads(&mut app, &[(0, 0, "a", Ts::UNIX_EPOCH), (0, 1, "b", Ts::UNIX_EPOCH), (1, 0, "c", now)]);
+        seed_events(&mut app, "read", &[(0, 0, "a", Ts::UNIX_EPOCH), (0, 1, "b", Ts::UNIX_EPOCH), (1, 0, "c", now)]);
         app.handle_key(KeyEvent::from(KeyCode::Char('I')));
         assert!(app.dashboard);
         let d = app.dashboard();

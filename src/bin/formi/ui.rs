@@ -7,9 +7,9 @@ use antty::tui::{
 use ratatui::Frame;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 
-use crate::app::{App, Order, Row, Summary, overlaps};
+use crate::app::{ActionRow, App, Order, Row, Summary, overlaps};
 use crate::discover::Kind;
 
 use ratatui::layout::{Constraint, Direction, Layout as Split, Rect};
@@ -54,6 +54,8 @@ pub const HELP: antty::tui::HelpSections = &[
             ("i", "stats panel on/off: selected session, project or directory vs all indexed sessions"),
             ("I", "dashboard: selection vs all, projects ranked by calls, last 7 days"),
             ("In I", "v visible timeline range only · j/k move the selection · Enter open · q/Esc close"),
+            ("F", "action filter: list only sessions that used the chosen actions; bars show those actions"),
+            ("In F", "Space toggle · a all · n none · Enter apply · q/Esc cancel; scripts only narrows file actions"),
         ],
     ),
     (
@@ -119,6 +121,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.dashboard {
         dashboard(f, app);
     }
+    if app.actions.is_some() {
+        actions(f, app);
+    }
     if let Some(scroll) = app.help {
         antty::tui::render_help(f, app.layout.help, scroll, HELP);
     }
@@ -144,6 +149,37 @@ fn short_label(path: &std::path::Path) -> String {
         (Some(parent), Some(name)) => format!("{}/{}", parent.to_string_lossy(), name.to_string_lossy()),
         _ => path.display().to_string(),
     }
+}
+
+fn actions(f: &mut Frame, app: &App) {
+    let Some(overlay) = &app.actions else { return };
+    let area = antty::tui::centered_rect(60, 60, f.area());
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Actions  (Space toggle · a all · n none · Enter apply · q/Esc cancel)");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let items: Vec<_> = overlay
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(i, row)| match row {
+            ActionRow::Action { action, sessions, events } => {
+                let checked = if overlay.checked.contains(&i) { 'x' } else { ' ' };
+                let label = antty::filter::label(antty::filter::ActionKey::Fixed(*action));
+                ListItem::new(format!("[{checked}] {label:<9} {sessions:>5} sessions · {events} events"))
+            }
+            ActionRow::ScriptsOnly => {
+                let checked = if overlay.scripts { 'x' } else { ' ' };
+                ListItem::new(format!("[{checked}] scripts only  ({})", antty::filter::SCRIPT_EXTS.join(", ")))
+            }
+        })
+        .collect();
+    let mut state = ListState::default().with_selected(Some(overlay.cursor));
+    let list = List::new(items)
+        .highlight_style(Style::default().bg(SELECTED_BG).fg(HIGHLIGHT_FG).add_modifier(Modifier::BOLD));
+    f.render_stateful_widget(list, inner, &mut state);
 }
 
 fn dashboard(f: &mut Frame, app: &App) {
@@ -364,25 +400,45 @@ fn status(f: &mut Frame, app: &App) {
         f.render_widget(Paragraph::new(truncate(flash, width)).style(Style::default().fg(Color::Red)), area);
         return;
     }
-    let left = "Nav (j/k/h/l) | Zoom (+/-) | Now (t) | Fit (f) | Open (⏎) | Fold (␣) | Order (o) | Stats (i/I) | Help (?) | Quit (:q)";
+    let left = "Nav (j/k/h/l) | Zoom (+/-) | Now (t) | Fit (f) | Open (⏎) | Fold (␣) | Order (o) | Stats (i/I) | Actions (F) | Help (?) | Quit (:q)";
+    // Filter and stats state stay readable even when the rest of the status line is clipped.
+    let mut flags = String::new();
+    if app.stats_panel && app.layout.stats.is_none() {
+        flags.push_str(" · stats:narrow");
+    }
+    if app.stats_window {
+        flags.push_str(" · stats:range");
+    }
+    if let Some(filter) = &app.action_filter {
+        let mut actions: Vec<_> = filter.actions.iter().copied().collect();
+        actions.sort_unstable();
+        let mut names: Vec<_> =
+            actions.into_iter().map(|a| antty::filter::label(antty::filter::ActionKey::Fixed(a))).collect();
+        if filter.scripts_only {
+            names.push("scripts".into());
+        }
+        flags.push_str(&format!(" · actions:{}", if names.is_empty() { "none".into() } else { names.join(",") }));
+    }
     let right = format!(
-        "{} · {} projects · {} sessions · order:{} · gaps:{} · fold:{}{}{}",
+        "{} · {} projects · {} sessions · order:{} · gaps:{} · fold:{}",
         app.view.zoom_label(),
         app.projects.len(),
         app.projects.iter().map(|p| p.sessions.len()).sum::<usize>(),
         if app.order == Order::Recent { "recent" } else { "tree" },
         if app.view.collapse_gaps() { "on" } else { "off" },
         if app.fold { "on" } else { "off" },
-        if app.stats_panel && app.layout.stats.is_none() { " · stats:narrow" } else { "" },
-        if app.stats_window { " · stats:range" } else { "" }
     );
     let right = if let Some(s) = &app.index_status { format!("{s} · {right}") } else { right };
+    // Clip the key hints first; the state on the right goes only when nothing else is left.
+    let width = width.saturating_sub(flags.chars().count());
     let left_len = left.chars().count();
     let right_len = right.chars().count();
     let text = if left_len + right_len + 2 <= width {
-        format!("{left}{}{right}", " ".repeat(width - left_len - right_len))
+        format!("{left}{}{right}{flags}", " ".repeat(width - left_len - right_len))
+    } else if right_len + 3 <= width {
+        format!("{}  {right}{flags}", truncate(left, width - right_len - 2))
     } else {
-        truncate(&format!("{left}  {right}"), width)
+        format!("{}{flags}", truncate(&right, width))
     };
     f.render_widget(Paragraph::new(text), area);
 }

@@ -192,8 +192,12 @@ Needs the display cache (bundle C).
   count when their bars reach into it, and the stats panel follows too.
 - The panel rendering lives in `antty::tui` (`render_stats_panel`,
   `render_stats_column`), shared by both binaries.
-- **Action filter** (which projects and sessions used web, MCP, eval, …):
-  after stats, least certain to pay off.
+- **Action filter `F`:** which projects and sessions used web, MCP, eval, …
+  The overlay reuses antty's `ActionFilter` and lists each action used by an
+  indexed session with its session and event counts. Applying it lists only
+  sessions with a matching event, draws their bars from those events, and
+  narrows stats and the dashboard to the listed sessions. Formi has no
+  watcher events, so antty's `fs during …` rows don't apply.
 
 Drafts at 2026-11-22 numbers:
 
@@ -310,12 +314,9 @@ checks; the version bump happens once, when formi lands.
   Enter act on the selection underneath. Release build on the local logs
   (376 sessions): building the dashboard took 13–18 ms per draw, the panel's
   stats 6–7 ms. Formi redraws on input, updates and once a second.
-
-### Bundle D: analysis
-
-1. ~~Stats panel `i`~~ (done).
-2. ~~Dashboard `I`~~ (done).
-3. Action filter.
+- **Bundle D.3, action filter:** `F` as described in Stats and dashboard. The
+  indexer's session list stays complete; the filter derives the shown
+  projects from it on every update, so live sessions keep appearing.
 
 ### Landing
 

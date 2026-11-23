@@ -202,19 +202,26 @@ fn dashboard(f: &mut Frame, app: &App) {
         Line::from(""),
         Line::from(format!("{:<10}{:>9}{:>9}", "", "sel", "all")),
     ];
-    let rows: [KpiRow; 10] = [
-        ("projects", |s| compact(s.projects)),
-        ("sessions", |s| compact(s.sessions.iter().sum())),
-        ("  omp", |s| compact(s.sessions[0])),
-        ("  claude", |s| compact(s.sessions[1])),
-        ("  codex", |s| compact(s.sessions[2])),
+    let head: [KpiRow; 2] = [("projects", |s| compact(s.projects)), ("sessions", |s| compact(s.sessions.iter().sum()))];
+    for (name, value) in head {
+        lines.push(Line::from(format!("{name:<10}{:>9}{:>9}", value(sel), value(&d.all))));
+    }
+    for (i, harness) in Harness::ALL.iter().enumerate() {
+        lines.push(Line::from(format!(
+            "  {:<8}{:>9}{:>9}",
+            harness.label(),
+            compact(sel.sessions[i]),
+            compact(d.all.sessions[i])
+        )));
+    }
+    let tail: [KpiRow; 5] = [
         ("calls", |s| compact(s.stats.calls)),
         ("read", |s| compact(s.stats.files_read)),
         ("written", |s| compact(s.stats.files_written)),
         ("agent", |s| s.stats.agent_secs.map_or_else(|| "–".into(), |x| fmt_span(chrono::Duration::seconds(x)))),
         ("prompts", |s| s.stats.prompts.map_or_else(|| "–".into(), compact)),
     ];
-    for (name, value) in rows {
+    for (name, value) in tail {
         lines.push(Line::from(format!("{name:<10}{:>9}{:>9}", value(sel), value(&d.all))));
     }
     if d.selection.is_some() {

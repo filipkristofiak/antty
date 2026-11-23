@@ -49,6 +49,10 @@ fn harness_roots(raw: RawArgs) -> [(Harness, PathBuf); 3] {
 }
 
 fn print(projects: &[Project<Vec<SessionInfo>>]) {
+    fn harness_counts(counts: [usize; 3]) -> String {
+        Harness::ALL.iter().zip(counts).map(|(h, n)| format!("{}={n}", h.label())).collect::<Vec<_>>().join(" ")
+    }
+
     let mut cwd_totals = [0; 3];
     let mut norepo_totals = [0; 3];
     let mut session_totals = [0; 3];
@@ -73,30 +77,28 @@ fn print(projects: &[Project<Vec<SessionInfo>>]) {
             Kind::NoGit => "no-git",
             Kind::Missing => "missing",
         };
-        println!(
-            "{}  [{}]  omp={} claude={} codex={}",
-            project.key.path.display(),
-            kind,
-            totals[0],
-            totals[1],
-            totals[2]
-        );
+        println!("{}  [{}]  {}", project.key.path.display(), kind, harness_counts(totals));
         for (cwd, sessions) in &project.cwds {
-            let counts = counts(sessions);
-            println!("  {}  omp={} claude={} codex={}", cwd.display(), counts[0], counts[1], counts[2]);
+            println!("  {}  {}", cwd.display(), harness_counts(counts(sessions)));
         }
     }
     if !projects.is_empty() {
         println!();
     }
-    for (h, name) in ["omp", "claude", "codex"].iter().enumerate() {
-        println!("{name}: {} cwds, {} without a repo, {} sessions", cwd_totals[h], norepo_totals[h], session_totals[h]);
+    for (h, harness) in Harness::ALL.iter().enumerate() {
+        println!(
+            "{}: {} cwds, {} without a repo, {} sessions",
+            harness.label(),
+            cwd_totals[h],
+            norepo_totals[h],
+            session_totals[h]
+        );
     }
     println!("{} projects", projects.len());
 }
 
 fn counts(sessions: &[SessionInfo]) -> [usize; 3] {
-    [Harness::Omp, Harness::Claude, Harness::Codex].map(|h| sessions.iter().filter(|s| s.harness == h).count())
+    Harness::ALL.map(|h| sessions.iter().filter(|s| s.harness == h).count())
 }
 
 fn main() -> anyhow::Result<()> {

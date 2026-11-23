@@ -15,7 +15,7 @@ A terminal Gantt timeline of coding-agent sessions and the files they touched.
 cargo install --path .
 ```
 
-Then run `antty` from inside a project directory.
+Then run `antty` from inside a project directory, or `formi` anywhere for an overview of every project.
 
 ## Harness support
 

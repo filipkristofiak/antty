@@ -16,9 +16,12 @@ Plain `cargo` works wherever it's already on `PATH`.
 ## Module map
 
 - `src/lib.rs` — library root; declares the modules shared with other binaries.
+- `src/editor.rs` — `e` key: on-disk path and first changed line of an event, and the `$EDITOR`/`nvim` invocation that opens it.
+- `src/tui.rs` — terminal pieces shared by antty and formi: highlight colours, timeline ruler, help overlay, stats panel rendering, mouse capture, handing the terminal to a child process.
 - `src/main.rs` — event loop, `App` state and actions, startup wiring.
 - `src/keys.rs` — per-mode key dispatch and Normal-mode vim grammar.
 - `src/cli.rs` — `RawArgs`/`Args`: flag parsing and resolution.
+- `src/filter.rs` — `Action` categories and `ActionFilter` matching for file events.
 - `src/dirs.rs` — default harness session roots, state dir and `~` expansion.
 - `src/cmdline.rs` — `:`/`/` line editing and in-memory history.
 - `src/delta.rs` — unified patch for an event and the optional `delta` invocation.
@@ -37,7 +40,7 @@ Plain `cargo` works wherever it's already on `PATH`.
 - `src/timeline.rs` — zoom levels, time↔column mapping, idle-gap span merging.
 - `src/tree.rs` — builds the `PARTICIPANTS`/`FILES`/`MOUNTS`/`WEB`/`MCP` row forests.
 - `src/search.rs` — smartcase full-tree search and wrapped match stepping.
-- `src/stats.rs` — stats subjects for tree rows; tool-call, file and time totals with visibility and time-range filters.
+- `src/stats.rs` — stats subjects for tree rows; `Tally` sums tool-call, file and time totals across models, counting each file once per owning project, with visibility and time-range filters.
 - `src/ui/mod.rs` — `Mode`, layout math, top-level `draw`.
 - `src/ui/tree_pane.rs` — left pane: sections, participants, file tree rows.
 - `src/ui/gantt_pane.rs` — right pane: the Gantt timeline.
@@ -45,8 +48,16 @@ Plain `cargo` works wherever it's already on `PATH`.
 - `src/ui/detail.rs` — Detail overlay: event/span list and diff text.
 - `src/ui/diff_view.rs` — full-screen diff overlay.
 - `src/ui/picker.rs` — session picker overlay.
-- `src/ui/stats.rs` — stats side panel and popup: KPI rows and tool-call bar chart.
+- `src/ui/actions.rs` — action filter overlay (`F`).
+- `src/ui/stats.rs` — selection-vs-all comparison for the stats side panel and popup; drawing comes from `antty::tui`.
 - `src/ui/help.rs` — help overlay and `KEYS` table.
+- `src/bin/formi/main.rs` — formi entry point: flags, `--list`, event loop with input draining and live updates.
+- `src/bin/formi/discover.rs` — formi's project and session discovery: cwd grouping into projects, session file groups, header/tail metadata.
+- `src/bin/formi/activity.rs` — background indexer: per-session ingest, display-cache reuse and the once-a-second live poll.
+- `src/bin/formi/activity/tests.rs` — split-ingest, cache-invalidation and live-poll tests for the indexer.
+- `src/bin/formi/cache.rs` — on-disk display cache (`<state-dir>/formi/activity.bin`): format, load, save, validation.
+- `src/bin/formi/app.rs` — formi `App` state: project forest, folds, search, wheel, stats, dashboard and action filter.
+- `src/bin/formi/ui.rs` — formi drawing: project tree, timeline, stats panel, dashboard, action overlay, status bar, `HELP` table.
 
 ## Conventions
 

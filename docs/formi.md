@@ -320,8 +320,7 @@ checks; the version bump happens once, when formi lands.
 
 ### Landing
 
-Docs (`docs/usage.md`, `AGENTS.md` module map), help keys, version bump (a
-new binary is backward-compatible: patch), then the first public push.
+Done locally at 0.2.25: harness labels from `Harness::label()`, a complete `AGENTS.md` module map, and install docs that name both binaries. Remaining: push `feat/formi` and open a PR to `main`.
 
 ## Open questions
 

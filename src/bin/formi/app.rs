@@ -292,7 +292,7 @@ pub enum WheelPane {
 /// Project and session counts plus stats for one side of the dashboard.
 pub struct Summary {
     pub projects: usize,
-    /// Sessions per harness: omp, Claude Code, Codex CLI.
+    /// Sessions per harness, indexed like `Harness::ALL`.
     pub sessions: [usize; 3],
     pub stats: Stats,
 }

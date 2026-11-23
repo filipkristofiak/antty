@@ -19,6 +19,18 @@ pub enum Harness {
 }
 
 impl Harness {
+    /// Every harness in declaration order, so `harness as usize` indexes per-harness arrays.
+    pub const ALL: [Harness; 3] = [Harness::Omp, Harness::Claude, Harness::Codex];
+
+    /// Short display name for per-harness counts.
+    pub fn label(self) -> &'static str {
+        match self {
+            Harness::Omp => "omp",
+            Harness::Claude => "claude",
+            Harness::Codex => "codex",
+        }
+    }
+
     pub fn index_root(self, root: &Path) -> RootIndex {
         let sessions = match self {
             Harness::Omp => omp_sessions_by_cwd(root),

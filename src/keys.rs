@@ -1,6 +1,7 @@
 //! Key handling: the per-mode key dispatch and Normal-mode vim grammar (counts, `z`/`g`/`Z` prefixes, the plain-vs-Ctrl modifier guard).
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+use ratatui::layout::Position;
 
 use crate::App;
 use crate::cmdline::{self, CmdKind, CmdLine};
@@ -10,6 +11,15 @@ use antty::tree::Row;
 
 /// Largest accepted Normal-mode count; further digits are ignored.
 const MAX_COUNT: usize = 9999;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum WheelPane {
+    Rows,
+    DetailText,
+    Diff,
+    Help,
+    OverlayArrows,
+}
 
 /// Index of the nth section header strictly after/before selection, or the end of the list.
 fn section_target(rows: &[Row], selected: usize, forward: bool, n: usize) -> usize {
@@ -37,6 +47,70 @@ fn section_target(rows: &[Row], selected: usize, forward: bool, n: usize) -> usi
 }
 
 impl App {
+    pub(super) fn wheel_action(&self, event: MouseEvent) -> Option<(WheelPane, i64)> {
+        let delta: i64 = match event.kind {
+            MouseEventKind::ScrollUp => -3,
+            MouseEventKind::ScrollDown => 3,
+            _ => return None,
+        };
+        let point = Position::new(event.column, event.row);
+        let layout = &self.layout;
+        let pane = match self.ui.mode {
+            // One arrow per report: terminals that send three arrows per notch
+            // without capture also send three mouse reports with capture.
+            Mode::Picker | Mode::Actions | Mode::Stats => return Some((WheelPane::OverlayArrows, delta.signum())),
+            Mode::Help if layout.help_area.contains(point) => WheelPane::Help,
+            Mode::Diff if point.y < layout.status_area.y && point.x < layout.status_area.right() => WheelPane::Diff,
+            Mode::Detail if layout.detail_area.is_some_and(|area| ui::detail::text_area(area).contains(point)) => {
+                WheelPane::DetailText
+            }
+            Mode::Normal | Mode::Detail
+                if layout.body_height > 0
+                    && (layout.tree_area.contains(point) || layout.gantt_area.contains(point)) =>
+            {
+                WheelPane::Rows
+            }
+            _ => return None,
+        };
+        Some((pane, delta))
+    }
+
+    pub(super) fn apply_wheel(&mut self, action: Option<(WheelPane, i64)>) -> bool {
+        let Some((pane, delta)) = action else { return false };
+        match pane {
+            WheelPane::OverlayArrows => {
+                let code = if delta < 0 { KeyCode::Up } else { KeyCode::Down };
+                self.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+                true
+            }
+            WheelPane::Rows => {
+                let before = self.ui.scroll;
+                let max = self.rows.len().saturating_sub(self.layout.body_height.into());
+                self.ui.scroll = before.saturating_add_signed(delta as isize).min(max);
+                if before != self.ui.scroll {
+                    self.wheel_view = true;
+                    self.clamp_scroll();
+                }
+                before != self.ui.scroll
+            }
+            WheelPane::Diff | WheelPane::DetailText => {
+                let app = self.as_ref();
+                let max = ui::detail::selected_item(&app)
+                    .map(|item| ui::detail::detail_lines(&app, &item).len().saturating_sub(1))
+                    .unwrap_or_default()
+                    .min(u16::MAX as usize) as u16;
+                let scroll =
+                    if pane == WheelPane::Diff { &mut self.ui.diff_scroll } else { &mut self.ui.detail_scroll };
+                step_scroll(scroll, delta, max)
+            }
+            WheelPane::Help => {
+                let page = self.layout.help_area.height.saturating_sub(2);
+                let max = (ui::help::line_count() as u16).saturating_sub(page);
+                step_scroll(&mut self.ui.help_scroll, delta, max)
+            }
+        }
+    }
+
     pub(super) fn handle_key(&mut self, key: KeyEvent) -> bool {
         self.ui.flash = None;
         if self.ui.cmdline.is_some() {
@@ -415,6 +489,11 @@ impl App {
     }
 }
 
+fn step_scroll(scroll: &mut u16, delta: i64, max: u16) -> bool {
+    let next = (i64::from((*scroll).min(max)) + delta).clamp(0, i64::from(max)) as u16;
+    next != std::mem::replace(scroll, next)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -445,6 +524,7 @@ mod tests {
             attributor: Attributor::new(state_dir, &[root.to_path_buf()]),
             idle_gap: 30,
             layout,
+            wheel_view: false,
             session_budget: 12,
             launch: None,
             suspend: false,
@@ -462,6 +542,78 @@ mod tests {
             },
             tx,
         }
+    }
+
+    #[test]
+    fn wheel_scrolls_shared_rows_without_moving_selection_or_consuming_a_count() {
+        let base = std::env::temp_dir().join(format!("antty-keys-test-wheel-{}", std::process::id()));
+        let root = base.join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        for i in 0..64 {
+            std::fs::write(root.join(format!("{i:02}.txt")), "").unwrap();
+        }
+        let mut app = test_app(&root, &base.join("state"));
+        let screen = Rect::new(0, 0, 120, 25);
+        app.ui.stats_panel = true;
+        app.update_layout(screen);
+        app.handle_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
+        let wheel = |app: &mut App, area: Rect, kind| {
+            let action = app.wheel_action(MouseEvent {
+                kind,
+                column: area.x + 1,
+                row: area.y + 4,
+                modifiers: KeyModifiers::NONE,
+            });
+            app.apply_wheel(action)
+        };
+        let (tree, gantt, stats) = (app.layout.tree_area, app.layout.gantt_area, app.layout.stats_area.unwrap());
+        assert!(!wheel(&mut app, stats, MouseEventKind::ScrollDown));
+        assert!(wheel(&mut app, tree, MouseEventKind::ScrollDown));
+        assert!(wheel(&mut app, gantt, MouseEventKind::ScrollDown));
+        app.rebuild();
+        app.clamp_view();
+        assert_eq!((app.ui.scroll, app.selected_row()), (6, Some(Row::Section("participants"))));
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!((app.ui.scroll, app.ui.selected), (2, 2));
+        drop(app);
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn picker_wheel_moves_one_row_per_report_without_changing_checked_sessions() {
+        let base = std::env::temp_dir().join(format!("antty-keys-test-picker-wheel-{}", std::process::id()));
+        let root = base.join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut app = test_app(&root, &base.join("state"));
+        let at = chrono::Utc::now();
+        for i in 0..5 {
+            app.model.sessions.push(Session {
+                file: root.join(format!("{i}.jsonl")),
+                id: i.to_string(),
+                title: i.to_string(),
+                cwd: root.clone(),
+                start: at,
+                last_seen: at,
+                end: None,
+                main: Model::YOU,
+            });
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        let checked = app.ui.picker_selected.clone();
+        for (kind, expected) in [
+            (MouseEventKind::ScrollDown, 1),
+            (MouseEventKind::ScrollDown, 2),
+            (MouseEventKind::ScrollDown, 3),
+            (MouseEventKind::ScrollUp, 2),
+        ] {
+            let action = app.wheel_action(MouseEvent { kind, column: 100, row: 25, modifiers: KeyModifiers::NONE });
+            assert!(app.apply_wheel(action));
+            assert_eq!(app.ui.picker_cursor, expected);
+        }
+        assert_eq!(app.ui.picker_selected, checked);
+        drop(app);
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

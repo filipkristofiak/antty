@@ -16,12 +16,16 @@ Background producers share one bounded `sync_channel(256)`:
 | Index writer | `Notice` on write failure |
 
 The main thread owns the live `Model`; cache loading constructs a replacement off-thread.
-`run_loop` drains messages for at most 30ms before checking input. During loading,
-background rebuilds and redraws wait at least 250ms, or four times the previous
-rebuild-and-draw cost, whichever is larger. This leaves most UI-thread time for
-ingestion as the model grows. Key and resize redraws bypass that delay; completion
-refreshes immediately. Input waits are 0ms with backlog, 50ms with a pending rebuild,
-or 200ms otherwise.
+`run_loop` drains background messages for at most 30ms before checking input.
+Once input is ready it drains the queue for up to 8ms, then draws at most once.
+Keys run in order because selecting a participant can change the rows for the
+next key. Consecutive wheel events on the same viewport and in the same direction
+are applied together; a key or resize flushes the pending scroll first.
+During loading, background rebuilds and redraws wait at least 250ms, or four
+times the previous rebuild-and-draw cost, whichever is larger. This leaves most
+UI-thread time for ingestion as the model grows. Input redraws bypass that delay;
+completion refreshes immediately. Input waits are 0ms with background backlog,
+50ms with a pending rebuild, or 200ms otherwise.
 
 ## Data flow
 

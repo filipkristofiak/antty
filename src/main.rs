@@ -8,11 +8,11 @@ mod ui;
 
 use std::collections::BTreeMap;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use antty::filter::{Action, ActionFilter, ActionKey, action_key};
 use antty::{attrib, disk, index, model, sessions, timeline, tree, watch, worktree};
-use crossterm::event::{self, Event, KeyEventKind};
+use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind};
 use ratatui::layout::Rect;
 
 use attrib::Attributor;
@@ -102,6 +102,8 @@ struct App {
     attributor: Attributor,
     idle_gap: i64,
     layout: ui::LayoutInfo,
+    /// Wheel scrolling may leave the selected row outside the shared tree/Gantt viewport.
+    wheel_view: bool,
     session_budget: usize,
     launch: Option<editor::Invocation>,
     suspend: bool,
@@ -179,6 +181,7 @@ impl App {
     /// it's a `Participant` row (`ExpandState::refocus` leaves it sticky otherwise), then rebuild
     /// rows and keep `row` selected even if that shifted its position.
     fn land_on(&mut self, row: Option<Row>) {
+        self.wheel_view = false;
         self.ui.expand.refocus(&self.model, &self.tree, row);
         self.finish_row_update(row);
     }
@@ -213,15 +216,36 @@ impl App {
 
     fn clamp_scroll(&mut self) {
         let h = self.layout.body_height.max(1) as usize;
-        if self.ui.selected < self.ui.scroll {
-            self.ui.scroll = self.ui.selected;
-        } else if self.ui.selected >= self.ui.scroll + h {
-            self.ui.scroll = self.ui.selected + 1 - h;
+        if !self.wheel_view {
+            if self.ui.selected < self.ui.scroll {
+                self.ui.scroll = self.ui.selected;
+            } else if self.ui.selected >= self.ui.scroll + h {
+                self.ui.scroll = self.ui.selected + 1 - h;
+            }
         }
-        let max_scroll = self.rows.len().saturating_sub(h);
-        if self.ui.scroll > max_scroll {
-            self.ui.scroll = max_scroll;
+        self.ui.scroll = self.ui.scroll.min(self.rows.len().saturating_sub(h));
+        self.wheel_view &= !(self.ui.scroll..self.ui.scroll + h).contains(&self.ui.selected);
+    }
+
+    fn update_layout(&mut self, root: Rect) {
+        let mode = self.ui.view_mode();
+        self.layout = ui::compute_layout(root, mode, self.ui.stats_panel);
+        // Detail shrinks the body without changing how many sessions should be listed.
+        let normal_body = if mode == Mode::Detail {
+            ui::compute_layout(root, Mode::Normal, false).body_height
+        } else {
+            self.layout.body_height
+        };
+        let budget = ui::session_budget(normal_body);
+        if budget != self.session_budget {
+            self.session_budget = budget;
+            self.refresh_rows();
         }
+    }
+
+    fn clamp_view(&mut self) {
+        self.clamp_scroll();
+        self.view.clamp_to_view(self.layout.gantt_width.max(1) as usize);
     }
 
     fn move_selected(&mut self, delta: i64) {
@@ -241,6 +265,7 @@ impl App {
     }
 
     fn place_selected(&mut self, offset: usize) {
+        self.wheel_view = false;
         let h = self.layout.body_height.max(1) as usize;
         self.ui.scroll = scroll_placing(self.ui.selected, self.rows.len(), h, offset);
     }
@@ -250,6 +275,7 @@ impl App {
         if len == 0 {
             return;
         }
+        self.wheel_view = false;
         let h = self.layout.body_height.max(1) as usize;
         let (scroll, selected) = scrolled(self.ui.scroll, self.ui.selected, len, h, delta, carry);
         self.ui.scroll = scroll;
@@ -418,6 +444,7 @@ impl App {
                 if let Some(p) = self.tree.nodes[idx].parent {
                     self.ui.expand.dir_overrides.insert(self.tree.nodes[p].key.clone(), false);
                     if let Some(pos) = self.rows.iter().position(|r| *r == Row::Node(p)) {
+                        self.wheel_view = false;
                         self.ui.selected = pos;
                     }
                 }
@@ -446,6 +473,7 @@ impl App {
         if let Some(target) = self.ui.expand.fold(&self.model, &self.tree, row, open, recursive)
             && let Some(pos) = self.rows.iter().position(|r| *r == target)
         {
+            self.wheel_view = false;
             self.ui.selected = pos;
         }
         self.refresh_rows();
@@ -821,6 +849,7 @@ fn main() -> anyhow::Result<()> {
         attributor,
         idle_gap: args.idle_gap,
         layout,
+        wheel_view: false,
         session_budget,
         launch: None,
         suspend: false,
@@ -837,20 +866,62 @@ fn main() -> anyhow::Result<()> {
     app.view.set_activity(timeline::visible_activity(&app.model));
     app.fit();
 
-    let result = run_loop(&mut terminal, &mut app, rx);
+    let mut mouse = MouseCapture(false);
+    let result = mouse
+        .set(!args.no_mouse)
+        .map_err(anyhow::Error::from)
+        .and_then(|()| run_loop(&mut terminal, &mut app, rx, &mut mouse, root_rect));
+    drop(mouse);
     ratatui::restore();
     result
 }
 
-fn run_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App, rx: mpsc::Receiver<Msg>) -> anyhow::Result<()> {
+struct MouseCapture(bool);
+
+impl MouseCapture {
+    fn set(&mut self, enabled: bool) -> std::io::Result<()> {
+        if enabled && !self.0 {
+            // Also attempt cleanup if enabling fails after writing only part of the sequence.
+            self.0 = true;
+            crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
+        } else if !enabled && self.0 {
+            crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
+            self.0 = false;
+        }
+        Ok(())
+    }
+
+    fn hand_off<T>(&mut self, run: impl FnOnce() -> std::io::Result<T>) -> std::io::Result<T> {
+        let enabled = self.0;
+        self.set(false)?;
+        let result = run()?;
+        self.set(enabled)?;
+        Ok(result)
+    }
+}
+
+impl Drop for MouseCapture {
+    fn drop(&mut self) {
+        let _ = self.set(false);
+    }
+}
+
+fn run_loop(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut App,
+    rx: mpsc::Receiver<Msg>,
+    mouse: &mut MouseCapture,
+    mut root: Rect,
+) -> anyhow::Result<()> {
     let mut dirty = true;
     let mut drawn_now_col = i64::MIN;
     const DRAIN_BUDGET: Duration = Duration::from_millis(30);
+    const INPUT_BUDGET: Duration = Duration::from_millis(8);
     const MIN_LOADING_REFRESH: Duration = Duration::from_millis(250);
-    let mut last_refresh = std::time::Instant::now();
+    let mut last_refresh = Instant::now();
     let mut refresh_delay = MIN_LOADING_REFRESH;
     loop {
-        let drain_started = std::time::Instant::now();
+        let drain_started = Instant::now();
         let mut backlog = false;
         while let Ok(msg) = rx.try_recv() {
             dirty |= app.handle_message(msg);
@@ -863,7 +934,7 @@ fn run_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App, rx: mpsc::Re
         let refresh_due = !loading || last_refresh.elapsed() >= refresh_delay;
         let mut refresh_cost = Duration::ZERO;
         if app.needs_rebuild && refresh_due {
-            let started = loading.then(std::time::Instant::now);
+            let started = loading.then(Instant::now);
             app.rebuild();
             if let Some(started) = started {
                 refresh_cost += started.elapsed();
@@ -880,26 +951,66 @@ fn run_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App, rx: mpsc::Re
         };
         let mut input_changed = false;
         if event::poll(Duration::from_millis(timeout))? {
-            match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    if app.handle_key(key) {
-                        return Ok(());
+            let started = Instant::now();
+            let mut wheel = None;
+            loop {
+                match event::read()? {
+                    // Keep keyboard actions in order. A motion can refocus a participant and
+                    // change the rows that the very next key sees.
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        app.apply_wheel(wheel.take());
+                        let layout_before = (app.ui.view_mode(), app.ui.stats_panel);
+                        if app.handle_key(key) {
+                            return Ok(());
+                        }
+                        if let Some(inv) = app.launch.take() {
+                            app.ui.flash = if inv.suspend {
+                                mouse.hand_off(|| editor::run(terminal, &inv))?
+                            } else {
+                                editor::run(terminal, &inv)?
+                            };
+                        }
+                        let suspended = std::mem::take(&mut app.suspend);
+                        if suspended {
+                            app.ui.flash = mouse.hand_off(|| editor::suspend(terminal))?;
+                        }
+                        if layout_before != (app.ui.view_mode(), app.ui.stats_panel) {
+                            app.update_layout(root);
+                        }
+                        app.clamp_view();
+                        input_changed = true;
                     }
-                    if let Some(inv) = app.launch.take() {
-                        app.ui.flash = editor::run(terminal, &inv)?;
+                    Event::Mouse(event) if mouse.0 => {
+                        if let Some((pane, delta)) = app.wheel_action(event) {
+                            // Do not cancel opposite directions at a scroll boundary.
+                            if pane == keys::WheelPane::OverlayArrows {
+                                input_changed |= app.apply_wheel(Some((pane, delta)));
+                                app.clamp_view();
+                            } else if let Some((target, amount)) = &mut wheel
+                                && *target == pane
+                                && amount.signum() == delta.signum()
+                            {
+                                *amount += delta;
+                            } else {
+                                input_changed |= app.apply_wheel(wheel.replace((pane, delta)));
+                            }
+                        }
                     }
-                    if std::mem::take(&mut app.suspend) {
-                        app.ui.flash = editor::suspend(terminal)?;
+                    Event::Resize(width, height) => {
+                        app.apply_wheel(wheel.take());
+                        root = Rect::new(0, 0, width, height);
+                        app.update_layout(root);
+                        app.clamp_view();
+                        input_changed = true;
                     }
-                    dirty = true;
-                    input_changed = true;
+                    _ => {}
                 }
-                Event::Resize(_, _) => {
-                    dirty = true;
-                    input_changed = true;
+                if started.elapsed() >= INPUT_BUDGET || !event::poll(Duration::ZERO)? {
+                    break;
                 }
-                _ => {}
             }
+            input_changed |= app.apply_wheel(wheel);
+            dirty |= input_changed;
         }
 
         if !dirty && app.view.col_for(chrono::Utc::now()) == drawn_now_col {
@@ -910,25 +1021,15 @@ fn run_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App, rx: mpsc::Re
         }
 
         let size = terminal.size()?;
-        let root_rect = Rect::new(0, 0, size.width, size.height);
-        let mode = app.ui.view_mode();
-        app.layout = ui::compute_layout(root_rect, mode, app.ui.stats_panel);
-        // Detail shrinks the body without changing how many sessions should be listed.
-        let normal_body = if mode == Mode::Detail {
-            ui::compute_layout(root_rect, Mode::Normal, false).body_height
-        } else {
-            app.layout.body_height
-        };
-        let budget = ui::session_budget(normal_body);
-        if budget != app.session_budget {
-            app.session_budget = budget;
-            app.refresh_rows();
+        let current_root = Rect::new(0, 0, size.width, size.height);
+        if root != current_root {
+            root = current_root;
+            app.update_layout(root);
         }
-        app.clamp_scroll();
-        app.view.clamp_to_view(app.layout.gantt_width.max(1) as usize);
+        app.clamp_view();
         drawn_now_col = app.view.col_for(chrono::Utc::now());
 
-        let draw_started = (loading && refresh_due).then(std::time::Instant::now);
+        let draw_started = (loading && refresh_due).then(Instant::now);
         terminal.draw(|f| {
             let app_ref = app.as_ref();
             ui::draw(f, &app_ref);
@@ -938,7 +1039,7 @@ fn run_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App, rx: mpsc::Re
             // Bound background view work to roughly one fifth of loading time.
             // Input-driven redraws bypass this cadence.
             refresh_delay = MIN_LOADING_REFRESH.max(refresh_cost * 4);
-            last_refresh = std::time::Instant::now();
+            last_refresh = Instant::now();
         }
         dirty = false;
     }

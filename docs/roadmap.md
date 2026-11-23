@@ -83,6 +83,10 @@ Implementation remains pending.
   scope/reset control. A path absent from the selected context is not evidence
   of deletion.
 
+Concept mockup (illustrative data; not implemented, controls not finalized):
+
+![Context-scoped tree with branch activity and excluded contexts](git-context-tree.svg)
+
 ### 3.3 Explain drift with a pinned comparison and move links
 
 - [ ] Add a comparison overlay with two explicit endpoints: refs resolved to
@@ -98,6 +102,10 @@ Implementation remains pending.
 - [ ] If comparing both sides against a merge-base, label shared changes as
   overlap, not proof of a merge conflict.
 
+Concept mockup (illustrative data; not implemented, controls not finalized):
+
+![Pinned branch comparison showing rename candidates and file-to-directory drift](git-drift-comparison.svg)
+
 ### 3.4 Project a coverage-aware tree at cursor time
 
 - [ ] Add an explicit historical mode using the checkout's recorded HEAD at T,
@@ -111,6 +119,10 @@ Implementation remains pending.
   and show checkout transitions on a context lane.
 - [ ] Leave ordinary `h/l` navigation stable: tree shape follows the cursor
   only inside historical mode, not whenever the normal timeline moves.
+
+Concept mockup (illustrative data; not implemented, controls not finalized):
+
+![Historical tree at the cursor with incomplete uncommitted coverage labelled](git-historical-tree.svg)
 
 Use Git tree queries without mutating the checkout; cache listings by tree
 object ID and load blobs/rename comparisons on demand. No Git subprocesses in

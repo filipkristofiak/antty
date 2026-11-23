@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 use crate::model::{FileEvent, Model, ParticipantId, ParticipantKind, Scope, TouchKind, Ts};
 use crate::tree::{self, Row, Tree};
@@ -57,75 +58,104 @@ pub fn subject_for(model: &Model, tree: &Tree, row: Option<Row>) -> (String, Sub
     (tree::row_label(model, tree, row), Subject::Events(events))
 }
 
-pub fn compute<'a>(model: &'a Model, subject: &Subject, window: Option<(Ts, Ts)>) -> Stats {
-    let matches_who = |who: ParticipantId| match subject {
-        Subject::All | Subject::Events(_) => true,
-        Subject::Session(session) => model.participants[who.0].session == Some(*session),
-        Subject::Participant(participant) => who == *participant,
-    };
-    let contains = |at| window.is_none_or(|(ws, we)| ws <= at && at < we);
-    let event_visible =
-        |e: &FileEvent| window.is_none_or(|(ws, we)| e.start < we && e.end >= ws) && model.event_visible(e);
+pub fn compute(model: &Model, subject: &Subject, window: Option<(Ts, Ts)>) -> Stats {
+    let mut tally = Tally::default();
+    tally.add(model, subject, window, None);
+    tally.finish()
+}
 
-    let mut tools = HashMap::<&str, usize>::new();
-    let (mut read, mut written) = (HashSet::new(), HashSet::new());
-    let mut count_file = |e: &'a FileEvent| {
-        if !matches!(e.scope, Scope::WebSearch | Scope::WebFetch | Scope::Mcp) {
-            let files = match e.kind {
-                TouchKind::Read => &mut read,
-                TouchKind::Write => &mut written,
-            };
-            files.insert((e.scope, e.rel.as_path()));
-        }
-    };
-    if let Subject::Events(indices) = subject {
-        let mut seen = HashSet::new();
-        // Reuse one owned lookup key instead of allocating a String per distinct call ID.
-        let mut key = (0, String::new());
-        for e in indices.iter().map(|&idx| &model.events[idx]).filter(|e| event_visible(e)) {
-            count_file(e);
-            if let Some(id) = e.tool_call_id.as_deref()
-                && seen.insert((e.who.0, id))
-            {
-                key.0 = e.who.0;
-                key.1.clear();
-                key.1.push_str(id);
-                if let Some(call) = model.tool_calls.get(&key) {
+/// One distinct file target: the project that owns a project-relative path (when merging
+/// models from several projects), the scope, and the path.
+type FileKey<'a> = (Option<&'a Path>, Scope, &'a Path);
+
+/// Stats summed over several models. Tool and call counts, agent time and prompts add up;
+/// files read and written are counted once across all models.
+#[derive(Default)]
+pub struct Tally<'a> {
+    tools: HashMap<&'a str, usize>,
+    read: HashSet<FileKey<'a>>,
+    written: HashSet<FileKey<'a>>,
+    agent_secs: Option<i64>,
+    prompts: Option<usize>,
+}
+
+impl<'a> Tally<'a> {
+    /// Add `model`'s stats. `project` identifies the project owning the model's single root,
+    /// so models of the same project (its worktrees) share project-relative files and models
+    /// of different projects do not; `None` keeps the model's own root index.
+    pub fn add(&mut self, model: &'a Model, subject: &Subject, window: Option<(Ts, Ts)>, project: Option<&'a Path>) {
+        let matches_who = |who: ParticipantId| match subject {
+            Subject::All | Subject::Events(_) => true,
+            Subject::Session(session) => model.participants[who.0].session == Some(*session),
+            Subject::Participant(participant) => who == *participant,
+        };
+        let contains = |at| window.is_none_or(|(ws, we)| ws <= at && at < we);
+        let event_visible =
+            |e: &FileEvent| window.is_none_or(|(ws, we)| e.start < we && e.end >= ws) && model.event_visible(e);
+
+        let (tools, read, written) = (&mut self.tools, &mut self.read, &mut self.written);
+        let mut count_file = |e: &'a FileEvent| {
+            if !matches!(e.scope, Scope::WebSearch | Scope::WebFetch | Scope::Mcp) {
+                let files = match e.kind {
+                    TouchKind::Read => &mut *read,
+                    TouchKind::Write => &mut *written,
+                };
+                let key = match e.scope {
+                    Scope::Project(_) if project.is_some() => (project, Scope::Project(0), e.rel.as_path()),
+                    // Session-scoped paths are absolute, so the session index is not part of identity.
+                    Scope::Session(_) => (None, Scope::Session(0), e.rel.as_path()),
+                    scope => (None, scope, e.rel.as_path()),
+                };
+                files.insert(key);
+            }
+        };
+        if let Subject::Events(indices) = subject {
+            let mut seen = HashSet::new();
+            // Reuse one owned lookup key instead of allocating a String per distinct call ID.
+            let mut key = (0, String::new());
+            for e in indices.iter().map(|&idx| &model.events[idx]).filter(|e| event_visible(e)) {
+                count_file(e);
+                if let Some(id) = e.tool_call_id.as_deref()
+                    && seen.insert((e.who.0, id))
+                {
+                    key.0 = e.who.0;
+                    key.1.clear();
+                    key.1.push_str(id);
+                    if let Some(call) = model.tool_calls.get(&key) {
+                        *tools.entry(&call.tool).or_default() += 1;
+                    }
+                }
+            }
+        } else {
+            for e in model.events.iter().filter(|e| matches_who(e.who) && event_visible(e)) {
+                count_file(e);
+            }
+            for (&(who, _), call) in &model.tool_calls {
+                let who = ParticipantId(who);
+                if contains(call.start) && matches_who(who) && model.visible(who) {
                     *tools.entry(&call.tool).or_default() += 1;
                 }
             }
         }
-    } else {
-        for e in model.events.iter().filter(|e| matches_who(e.who) && event_visible(e)) {
-            count_file(e);
-        }
-        for (&(who, _), call) in &model.tool_calls {
-            let who = ParticipantId(who);
-            if contains(call.start) && matches_who(who) && model.visible(who) {
-                *tools.entry(&call.tool).or_default() += 1;
-            }
-        }
-    }
-    let calls = tools.values().sum();
-    let mut tools: Vec<_> = tools.into_iter().map(|(tool, count)| (tool.to_owned(), count)).collect();
-    tools.sort_unstable_by(|(a, x), (b, y)| y.cmp(x).then_with(|| a.cmp(b)));
 
-    let agent_secs = (!matches!(subject, Subject::Events(_))).then(|| {
-        model
-            .spans
-            .iter()
-            .filter(|s| {
-                matches_who(s.who) && model.visible(s.who) && (!matches!(subject, Subject::All) || s.who != Model::YOU)
-            })
-            .map(|s| {
-                let (start, end) = window.map_or((s.start, s.end), |(ws, we)| (s.start.max(ws), s.end.min(we)));
-                (end - start).num_seconds().max(0)
-            })
-            .sum()
-    });
-    let prompts = match subject {
-        Subject::All | Subject::Participant(Model::YOU) | Subject::Session(_) => Some(
-            model
+        if !matches!(subject, Subject::Events(_)) {
+            let secs: i64 = model
+                .spans
+                .iter()
+                .filter(|s| {
+                    matches_who(s.who)
+                        && model.visible(s.who)
+                        && (!matches!(subject, Subject::All) || s.who != Model::YOU)
+                })
+                .map(|s| {
+                    let (start, end) = window.map_or((s.start, s.end), |(ws, we)| (s.start.max(ws), s.end.min(we)));
+                    (end - start).num_seconds().max(0)
+                })
+                .sum();
+            *self.agent_secs.get_or_insert(0) += secs;
+        }
+        if let Subject::All | Subject::Participant(Model::YOU) | Subject::Session(_) = subject {
+            let prompts = model
                 .prompts
                 .iter()
                 .filter(|p| {
@@ -133,11 +163,24 @@ pub fn compute<'a>(model: &'a Model, subject: &Subject, window: Option<(Ts, Ts)>
                         && model.session_visible(p.session)
                         && !matches!(subject, Subject::Session(s) if *s != p.session)
                 })
-                .count(),
-        ),
-        _ => None,
-    };
-    Stats { tools, calls, files_read: read.len(), files_written: written.len(), agent_secs, prompts }
+                .count();
+            *self.prompts.get_or_insert(0) += prompts;
+        }
+    }
+
+    pub fn finish(self) -> Stats {
+        let calls = self.tools.values().sum();
+        let mut tools: Vec<_> = self.tools.into_iter().map(|(tool, count)| (tool.to_owned(), count)).collect();
+        tools.sort_unstable_by(|(a, x), (b, y)| y.cmp(x).then_with(|| a.cmp(b)));
+        Stats {
+            tools,
+            calls,
+            files_read: self.read.len(),
+            files_written: self.written.len(),
+            agent_secs: self.agent_secs,
+            prompts: self.prompts,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -242,5 +285,40 @@ mod tests {
             compute(&model, &session, None),
             Stats { agent_secs: Some(0), prompts: Some(0), ..Default::default() }
         );
+    }
+
+    #[test]
+    fn tally_dedupes_project_files_only_within_one_project() {
+        let model = |root: &str, id: &str| {
+            let root = PathBuf::from(root);
+            let mut model = Model::new(vec![root.clone()]);
+            let who = model.get_or_create_participant(
+                &root.join("s.jsonl"),
+                ParticipantKind::Main,
+                "main".into(),
+                None,
+                None,
+            );
+            model.record_tool_call(who, id, "read", Ts::UNIX_EPOCH);
+            model.events.push(FileEvent {
+                who,
+                rel: "src/main.rs".into(),
+                scope: Scope::Project(0),
+                kind: TouchKind::Read,
+                source: TouchSource::Tool("read".into()),
+                start: Ts::UNIX_EPOCH,
+                end: Ts::UNIX_EPOCH,
+                tool_call_id: Some(id.into()),
+                detail: EventDetail::None,
+            });
+            model
+        };
+        let (repo, worktree, other) = (model("/repo", "a"), model("/repo-wt", "b"), model("/other", "c"));
+        let mut tally = Tally::default();
+        tally.add(&repo, &Subject::All, None, Some(Path::new("/repo")));
+        tally.add(&worktree, &Subject::All, None, Some(Path::new("/repo")));
+        tally.add(&other, &Subject::All, None, Some(Path::new("/other")));
+        let stats = tally.finish();
+        assert_eq!((stats.calls, stats.files_read), (3, 2));
     }
 }

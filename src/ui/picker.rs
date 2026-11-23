@@ -6,7 +6,8 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState};
 
 use antty::model::{Model, ParticipantKind, Session, Ts};
 
-use super::{AppRef, HIGHLIGHT_FG, SELECTED_BG};
+use super::AppRef;
+use antty::tui::{HIGHLIGHT_FG, SELECTED_BG};
 
 const LIVE_THRESHOLD_SECS: i64 = 120;
 

@@ -2,6 +2,7 @@
 
 pub mod attrib;
 mod claude;
+pub mod cmdline;
 mod codex;
 pub mod dirs;
 pub mod disk;
@@ -10,10 +11,12 @@ pub mod index;
 pub mod model;
 mod parse;
 mod remote;
+pub mod search;
 pub mod sessions;
 pub mod snapshot;
 pub mod stats;
 pub mod timeline;
 pub mod tree;
+pub mod tui;
 pub mod watch;
 pub mod worktree;

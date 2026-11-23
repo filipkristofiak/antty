@@ -33,7 +33,7 @@ A real frame at 112×34, with `Cargo.toml` selected (some FILES rows omitted):
 │                                   ││ M   T   W   T ~   ~  T   F   S ~ T ~ T  ~    W   ~    T ~   S   ~  S   M│
 │PARTICIPANTS                       ││               ~   ~            ~   ~    ~        ~      ~       ~       │
 │you                                ││ ●●  ●●  ●● ●● ~ ● ~ ●●● ●●   ● ~ ● ~ ●● ~ ●  ●●● ~ ●● ● ~ ●●  ● ~ ●● ●●●│
-│▸ Queen overview · 11-22 11:53     ││               ~   ~            ~   ~    ~        ~      ~       ~     ██│
+│▸ Formi overview · 11-22 11:53     ││               ~   ~            ~   ~    ~        ~      ~       ~     ██│
 │▸ Merge help rebase · 11-22 11:57  ││               ~   ~            ~   ~    ~        ~      ~       ~    █  │
 │▸ Help sections · 11-22 11:38      ││               ~   ~            ~   ~    ~        ~      ~       ~    █  │
 │▸ Defrag fold · 11-22 11:14        ││               ~   ~            ~   ~    ~        ~      ~       ~    █  │
@@ -118,7 +118,7 @@ panning. Needs a clear way to see and reset it.
 │PARTICIPANTS                        ││                                                 │
 │you                                 ││ ●   ●●  ●     ●●●                               │
 │▸ Stats panel · 11-22 00:05         ││                            ██ █                 │
-│▸ Queen bundle b · 11-14 15:30      ││       ██                                        │
+│▸ Formi bundle b · 11-14 15:30      ││       ██                                        │
 │  … 7 more in lens                  ││                                                 │
 │⋯ 69 outside lens                   ││ ▄  ▆ ▄  ▄▄ ▆                                    │
 │FILES  (scripts only)               ││                                                 │

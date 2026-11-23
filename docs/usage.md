@@ -206,3 +206,59 @@ With an action filter (`F`) active, PARTICIPANTS keeps `you` and sessions with a
 - `-` zooms out (paired with `+`); it does not open the parent directory as in oil.nvim/vim-vinegar. On a file, `zc` closes and selects its parent dir.
 - `H`/`L` pan the timeline by half the pane width; they do not jump to the top/bottom visible row. Use `zt`/`zb` to place the selected row instead.
 - `c` toggles gap collapsing; it is not vim's change operator.
+
+## Formi
+
+`formi [--omp-dir <PATH>] [--claude-dir <PATH>] [--codex-dir <PATH>] [--no-mouse] [--list]`
+shows all discovered projects. Harness-root flags and defaults match antty;
+`--no-mouse` disables mouse capture as in antty; `--list` prints per-project,
+per-cwd and total session counts instead of the TUI.
+
+Projects start collapsed, newest activity first. `o` toggles an alphabetical
+path tree; expansion keys are shared between both orders. `▓` bars are merged
+project/directory activity; session colours identify the harness. Missing
+projects are dimmed. `NO_COLOR` works as in antty.
+
+An expanded project shows the five most recent sessions and any others active
+in the last two hours. The `⋯ N older` row summarizes the rest; its bars count
+active folded sessions (`▄` 1, `▆` 2, `█` 3+).
+Recent order shows the twelve most recently active projects and any others
+active in the last two hours, with older projects summarized in a
+`⋯ N older projects` row. Tree order shows all projects.
+Fold counts and their timeline strips use the same two-hour cutoff as the
+displayed rows, refreshed when those rows are rebuilt.
+
+| Key | Formi action |
+| --- | --- |
+| `[count]j/k`, `↓/↑`, `gg/G`, `Ctrl-d/u` | Navigate rows; counts select/repeat as in antty |
+| Wheel | Scroll the rows (or Help) under the pointer by three rows per wheel event; keep the selection |
+| `[count]h/l`, `←/→`, `H/L` | Move the time cursor / half-pane pan |
+| `[count]+/-`, `=`, `t`, `f`, `c` | Zoom, now, fit, toggle collapsed gaps |
+| `o` | Toggle recent/path-tree order |
+| `p` | Toggle folding older sessions and projects |
+| `i` | Toggle the stats panel (110+ columns wide): the selected session, project or directory vs all indexed sessions, with the selection's share of tool calls; fold rows show all |
+| `I` | Dashboard: selection vs all (projects, sessions per harness, calls, files, agent time, prompts, share, tool mix), projects ranked by calls with the selected one marked `▶`, and a fixed last-7-days ranking |
+| `v`, `j/k`, wheel, `Enter`, `q/Esc/I` in the dashboard | Limit counts and stats (panel too) to the visible timeline range; move the selection underneath; open in antty; close |
+| `F` | Action filter: list only sessions that used the checked actions (counts show sessions and events per action); their bars show only those events, and stats sum the listed sessions. `Space` toggles, `a` all, `n` none, `Enter` applies, `q/Esc` cancels; **scripts only** narrows file actions to script extensions. Check every action to clear it. Unindexed sessions are hidden while a filter is on |
+| `?` | Open help; scroll with `j/k`, `Ctrl-d/u`, or `g/G`; close with `q`, `?`, or `Esc` |
+| `Space/za` | Toggle node; on a session, close and select its project; on a fold row, reveal hidden rows |
+| `zo/zc`, `zR/zM` | Open/close node; expand/collapse all |
+| `Enter` | Open session cwd, or project's most recently active existing cwd, in antty; directory-only nodes toggle |
+| `Enter`, `zo` on a fold row | Reveal hidden rows and select the first one |
+| `/pattern⏎` | Find full project paths in either order and session titles; uppercase makes the search case-sensitive. Opens any folds hiding the match. |
+| `[count]n/N`, `Esc` | Next/previous match (wraps); clear the active search |
+| `:q⏎`, `:q!`, `:qa`, `:qa!`, `:quit`, `ZZ/ZQ` | Quit (colon commands require Enter) |
+| `Ctrl-c`, `Ctrl-z` | Quit hint / suspend to shell |
+| `Esc`, `Ctrl-c`, `Backspace` in `:` or `/` | Cancel the line / erase a character (cancel if already empty) |
+| `Ctrl-U`, `Ctrl-W`, `↑/↓` in `:` or `/` | Clear the line, delete a word, or browse the separate histories |
+
+Returning from antty restores formi's selection and view. A cwd missing at
+discovery shows an error instead of launching. The companion antty binary is
+resolved beside formi first, then on PATH, and receives the same three harness
+roots formi used for discovery. `█` marks indexed activity and `▒` marks
+not-yet-indexed session spans; live polling runs once a second and the cache
+is stored at `<state-dir>/formi/activity.bin`.
+
+Mouse capture and wheel scrolling work as in antty: the tree and timeline share
+one viewport, the selected row can go offscreen, and a row-navigation key brings
+its destination back into view.

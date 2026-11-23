@@ -5,7 +5,8 @@ use ratatui::widgets::Paragraph;
 
 use antty::filter::{Action, ActionKey, label};
 
-use super::{AppRef, truncate};
+use super::AppRef;
+use antty::tui::truncate;
 
 pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
     if let Some(line) = &app.ui.cmdline {
@@ -77,7 +78,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
         right = format!("{showcmd} · {right}");
     }
     // Keep the stats state readable even when the narrow layout clips the other status text.
-    let stats = match (app.ui.stats_window, app.ui.stats_panel && area.width < super::STATS_MIN_WIDTH) {
+    let stats = match (app.ui.stats_window, app.ui.stats_panel && area.width < antty::tui::STATS_MIN_WIDTH) {
         (true, true) => " · stats:range · stats:narrow",
         (true, false) => " · stats:range",
         (false, true) => " · stats:narrow",

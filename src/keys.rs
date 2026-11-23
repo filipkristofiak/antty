@@ -4,8 +4,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKi
 use ratatui::layout::Position;
 
 use crate::App;
-use crate::cmdline::{self, CmdKind, CmdLine};
 use crate::ui::{self, Mode};
+use antty::cmdline::{self, CmdKind, CmdLine};
 use antty::timeline;
 use antty::tree::Row;
 
@@ -105,7 +105,7 @@ impl App {
             }
             WheelPane::Help => {
                 let page = self.layout.help_area.height.saturating_sub(2);
-                let max = (ui::help::line_count() as u16).saturating_sub(page);
+                let max = (antty::tui::help_line_count(ui::help::SECTIONS) as u16).saturating_sub(page);
                 step_scroll(&mut self.ui.help_scroll, delta, max)
             }
         }
@@ -337,20 +337,8 @@ impl App {
 
     fn handle_key_help(&mut self, key: KeyEvent) -> bool {
         let page = self.layout.help_area.height.saturating_sub(2);
-        let max = (ui::help::line_count() as u16).saturating_sub(page);
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let scroll = &mut self.ui.help_scroll;
-        // A taller terminal may already be drawing at a lower offset.
-        *scroll = (*scroll).min(max);
-        match key.code {
-            KeyCode::Char('q' | '?') | KeyCode::Esc => self.ui.mode = self.ui.help_return,
-            KeyCode::Char('d') if ctrl => *scroll = scroll.saturating_add(page / 2).min(max),
-            KeyCode::Char('u') if ctrl => *scroll = scroll.saturating_sub(page / 2),
-            KeyCode::Char('j') | KeyCode::Down => *scroll = scroll.saturating_add(1).min(max),
-            KeyCode::Char('k') | KeyCode::Up => *scroll = scroll.saturating_sub(1),
-            KeyCode::Char('g') => *scroll = 0,
-            KeyCode::Char('G') => *scroll = max,
-            _ => {}
+        if antty::tui::help_key(key, &mut self.ui.help_scroll, page, ui::help::SECTIONS) {
+            self.ui.mode = self.ui.help_return;
         }
         false
     }
@@ -880,7 +868,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let mut app = test_app(&root, &state_dir);
         let page = app.layout.help_area.height - 2;
-        let max = ui::help::line_count() as u16 - page;
+        let max = antty::tui::help_line_count(ui::help::SECTIONS) as u16 - page;
         assert!(max > 0);
 
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);

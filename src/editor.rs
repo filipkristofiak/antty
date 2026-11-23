@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use antty::model::{EventDetail, FileEvent, Model, Scope, TouchSource};
 use antty::snapshot;
+use antty::tui::Invocation;
 
 /// On-disk path of an event's target; None for remote/web targets and eval cells.
 pub fn event_path(model: &Model, e: &FileEvent) -> Option<PathBuf> {
@@ -57,14 +58,6 @@ pub fn event_line(model: &Model, e: &FileEvent) -> Option<usize> {
     }
 }
 
-pub struct Invocation {
-    pub program: OsString,
-    pub args: Vec<OsString>,
-    pub suspend: bool,
-    /// Bytes written to the child's stdin; honored only when `suspend` is true.
-    pub stdin: Option<String>,
-}
-
 pub fn invocation(
     path: &Path,
     line: Option<usize>,
@@ -93,96 +86,6 @@ pub fn invocation(
     }
     words.push(path.as_os_str().to_os_string());
     Ok(Invocation { program, args: words, suspend: true, stdin: None })
-}
-
-/// Run `inv`; returns a flash message on failure. Suspending invocations hand the terminal to
-/// the child and restore the TUI afterwards.
-pub fn run(terminal: &mut ratatui::DefaultTerminal, inv: &Invocation) -> std::io::Result<Option<String>> {
-    use crossterm::event::{self, Event, KeyEventKind};
-    use std::io::{Write, stdout};
-    use std::process::{Command, Stdio};
-
-    let program = inv.program.to_string_lossy();
-    if !inv.suspend {
-        let result = Command::new(&inv.program).args(&inv.args).stdin(Stdio::null()).output();
-        return Ok(match result {
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Some(format!("{program}: not found on PATH")),
-            Err(err) => Some(format!("{program}: {err}")),
-            Ok(out) if !out.status.success() => Some(
-                String::from_utf8_lossy(&out.stderr)
-                    .lines()
-                    .find(|line| !line.trim().is_empty())
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| format!("{program} exited with {}", out.status)),
-            ),
-            Ok(_) => None,
-        });
-    }
-
-    leave_tui()?;
-    let result = match &inv.stdin {
-        None => Command::new(&inv.program).args(&inv.args).status(),
-        Some(input) => {
-            Command::new(&inv.program).args(&inv.args).stdin(Stdio::piped()).spawn().and_then(|mut child| {
-                if let Some(mut pipe) = child.stdin.take() {
-                    let _ = pipe.write_all(input.as_bytes());
-                }
-                child.wait()
-            })
-        }
-    };
-    crossterm::terminal::enable_raw_mode()?;
-    // A pager may exit without waiting (less -F, cat, etc.). Keep its output on the
-    // primary screen until the user has had a chance to read it.
-    let pause = if inv.stdin.is_some() && result.is_ok() {
-        crossterm::execute!(stdout(), crossterm::style::Print("\r\n-- press any key to return to antty --"))?;
-        loop {
-            match event::read() {
-                Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => break Ok(()),
-                Ok(_) => {}
-                Err(err) => break Err(err),
-            }
-        }
-    } else {
-        Ok(())
-    };
-    enter_tui(terminal)?;
-    pause?;
-    Ok(match result {
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Some(format!("{program}: not found on PATH")),
-        Err(err) => Some(format!("{program}: {err}")),
-        Ok(status) if !status.success() => Some(format!("{program} exited with {status}")),
-        Ok(_) => None,
-    })
-}
-
-fn leave_tui() -> std::io::Result<()> {
-    ratatui::restore();
-    crossterm::execute!(std::io::stdout(), crossterm::cursor::Show)
-}
-
-fn enter_tui(terminal: &mut ratatui::DefaultTerminal) -> std::io::Result<()> {
-    crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen)?;
-    terminal.clear()?;
-    terminal.hide_cursor()
-}
-
-/// Stop antty like vim's `Ctrl-z`: hand the terminal back, SIGTSTP ourselves, and restore
-/// the TUI once the shell resumes us (`fg`). Returns a flash message on failure.
-#[cfg(unix)]
-pub fn suspend(terminal: &mut ratatui::DefaultTerminal) -> std::io::Result<Option<String>> {
-    leave_tui()?;
-    // SAFETY: raise(3) only delivers a signal to the calling process.
-    let failed = unsafe { libc::raise(libc::SIGTSTP) } != 0;
-    let err = failed.then(std::io::Error::last_os_error);
-    crossterm::terminal::enable_raw_mode()?;
-    enter_tui(terminal)?;
-    Ok(err.map(|e| format!("suspend: {e}")))
-}
-
-#[cfg(not(unix))]
-pub fn suspend(_terminal: &mut ratatui::DefaultTerminal) -> std::io::Result<Option<String>> {
-    Ok(Some("Ctrl-z: suspend is not supported on this platform".into()))
 }
 
 #[cfg(test)]

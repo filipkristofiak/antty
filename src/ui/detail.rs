@@ -9,7 +9,8 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use antty::model::{EventDetail, FileEvent, Model, ParticipantKind, Scope, TouchSource, Ts};
 use antty::tree::Row;
 
-use super::{AppRef, DetailItem, HIGHLIGHT_FG, SELECTED_BG};
+use super::{AppRef, DetailItem};
+use antty::tui::{HIGHLIGHT_FG, SELECTED_BG};
 
 pub fn event_kind_label(e: &FileEvent) -> &str {
     match &e.source {

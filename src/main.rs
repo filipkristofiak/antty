@@ -1,9 +1,7 @@
 mod cli;
-mod cmdline;
 mod delta;
 mod editor;
 mod keys;
-mod search;
 mod ui;
 
 use std::collections::BTreeMap;
@@ -11,8 +9,8 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use antty::filter::{Action, ActionFilter, ActionKey, action_key};
-use antty::{attrib, disk, index, model, sessions, timeline, tree, watch, worktree};
-use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind};
+use antty::{attrib, disk, index, model, search, sessions, timeline, tree, watch, worktree};
+use crossterm::event::{self, Event, KeyEventKind};
 use ratatui::layout::Rect;
 
 use attrib::Attributor;
@@ -22,9 +20,6 @@ use sessions::{Harness, Msg};
 use timeline::View;
 use tree::{Row, Tree};
 use ui::{ActionRow, AppRef, Mode, UiState};
-
-/// Sessions active this recently stay as PARTICIPANTS rows even past the fold budget.
-const LIVE_HOURS: i64 = 2;
 
 /// Earliest/latest timestamp for fit, restricted to matching events when filtered.
 fn model_time_range(model: &Model) -> Option<(Ts, Ts)> {
@@ -105,7 +100,7 @@ struct App {
     /// Wheel scrolling may leave the selected row outside the shared tree/Gantt viewport.
     wheel_view: bool,
     session_budget: usize,
-    launch: Option<editor::Invocation>,
+    launch: Option<antty::tui::Invocation>,
     suspend: bool,
     disk_tx: Option<mpsc::Sender<usize>>,
     walk_pending: std::collections::HashSet<usize>,
@@ -194,7 +189,7 @@ impl App {
     fn finish_row_update(&mut self, row: Option<Row>) {
         self.ui.expand.session_fold = self.ui.fold_sessions.then(|| tree::SessionFold {
             budget: self.session_budget,
-            live_since: chrono::Utc::now() - chrono::Duration::hours(LIVE_HOURS),
+            live_since: chrono::Utc::now() - chrono::Duration::hours(antty::tui::LIVE_HOURS),
         });
         self.rows = tree::build_rows(&self.model, &self.tree, &self.ui.expand);
         if let Some(r) = row
@@ -866,7 +861,7 @@ fn main() -> anyhow::Result<()> {
     app.view.set_activity(timeline::visible_activity(&app.model));
     app.fit();
 
-    let mut mouse = MouseCapture(false);
+    let mut mouse = antty::tui::MouseCapture::default();
     let result = mouse
         .set(!args.no_mouse)
         .map_err(anyhow::Error::from)
@@ -876,41 +871,11 @@ fn main() -> anyhow::Result<()> {
     result
 }
 
-struct MouseCapture(bool);
-
-impl MouseCapture {
-    fn set(&mut self, enabled: bool) -> std::io::Result<()> {
-        if enabled && !self.0 {
-            // Also attempt cleanup if enabling fails after writing only part of the sequence.
-            self.0 = true;
-            crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
-        } else if !enabled && self.0 {
-            crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
-            self.0 = false;
-        }
-        Ok(())
-    }
-
-    fn hand_off<T>(&mut self, run: impl FnOnce() -> std::io::Result<T>) -> std::io::Result<T> {
-        let enabled = self.0;
-        self.set(false)?;
-        let result = run()?;
-        self.set(enabled)?;
-        Ok(result)
-    }
-}
-
-impl Drop for MouseCapture {
-    fn drop(&mut self) {
-        let _ = self.set(false);
-    }
-}
-
 fn run_loop(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
     rx: mpsc::Receiver<Msg>,
-    mouse: &mut MouseCapture,
+    mouse: &mut antty::tui::MouseCapture,
     mut root: Rect,
 ) -> anyhow::Result<()> {
     let mut dirty = true;
@@ -965,14 +930,14 @@ fn run_loop(
                         }
                         if let Some(inv) = app.launch.take() {
                             app.ui.flash = if inv.suspend {
-                                mouse.hand_off(|| editor::run(terminal, &inv))?
+                                mouse.hand_off(|| antty::tui::run(terminal, &inv))?
                             } else {
-                                editor::run(terminal, &inv)?
+                                antty::tui::run(terminal, &inv)?
                             };
                         }
                         let suspended = std::mem::take(&mut app.suspend);
                         if suspended {
-                            app.ui.flash = mouse.hand_off(|| editor::suspend(terminal))?;
+                            app.ui.flash = mouse.hand_off(|| antty::tui::suspend(terminal))?;
                         }
                         if layout_before != (app.ui.view_mode(), app.ui.stats_panel) {
                             app.update_layout(root);
@@ -980,7 +945,7 @@ fn run_loop(
                         app.clamp_view();
                         input_changed = true;
                     }
-                    Event::Mouse(event) if mouse.0 => {
+                    Event::Mouse(event) if mouse.enabled() => {
                         if let Some((pane, delta)) = app.wheel_action(event) {
                             // Do not cancel opposite directions at a scroll boundary.
                             if pane == keys::WheelPane::OverlayArrows {

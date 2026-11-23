@@ -1,11 +1,4 @@
-use ratatui::Frame;
-use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
-
-/// Help overlay content: (section title, [(keys, description)]), in display order.
-const SECTIONS: &[(&str, &[(&str, &str)])] = &[
+pub const SECTIONS: antty::tui::HelpSections = &[
     (
         "Rows",
         &[
@@ -85,38 +78,3 @@ const SECTIONS: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
 ];
-
-fn lines() -> Vec<Line<'static>> {
-    let mut lines = Vec::with_capacity(line_count());
-    let heading = Style::default().add_modifier(Modifier::BOLD);
-    for (title, keys) in SECTIONS {
-        if !lines.is_empty() {
-            lines.push(Line::default());
-        }
-        lines.push(Line::styled(*title, heading));
-        lines.extend(keys.iter().map(|(k, d)| Line::from(format!("{k:<16} {d}"))));
-    }
-    lines
-}
-
-pub fn line_count() -> usize {
-    let separators = SECTIONS.len().saturating_sub(1);
-    separators + SECTIONS.iter().map(|(_, keys)| 1 + keys.len()).sum::<usize>()
-}
-
-pub fn render(f: &mut Frame, area: Rect, scroll: u16) {
-    f.render_widget(Clear, area);
-    let block = Block::default().borders(Borders::ALL);
-    let inner = block.inner(area);
-    let lines = lines();
-    let total = lines.len();
-    let visible = usize::from(inner.height);
-    let top = usize::from(scroll).min(total.saturating_sub(visible));
-    let block = if visible > 0 && total > visible {
-        block.title(format!("Help · {}-{}/{}", top + 1, top + visible, total))
-    } else {
-        block.title("Help")
-    };
-    f.render_widget(block, area);
-    f.render_widget(Paragraph::new(lines).scroll((top as u16, 0)), inner);
-}

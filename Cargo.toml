@@ -1,9 +1,17 @@
 [package]
 name = "antty"
-version = "0.2.26"
+version = "0.2.27"
 edition = "2024"
+rust-version = "1.88"
 default-run = "antty"
 license = "MIT OR Apache-2.0"
+description = "Terminal timelines for coding-agent sessions, tool calls, and file changes"
+repository = "https://github.com/filipkristofiak/antty"
+documentation = "https://github.com/filipkristofiak/antty#docs"
+readme = "README.md"
+keywords = ["coding-agents", "tui", "gantt", "timeline", "developer-tools"]
+categories = ["command-line-utilities", "development-tools", "visualization"]
+include = ["src/**", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE-*"]
 
 [dependencies]
 anyhow = "1.0.104"

@@ -21,32 +21,26 @@ sessions, rather than antty's single-project view.
 
 ## Packaging
 
-- Same repo, one package: extract `src/lib.rs`, keep `src/main.rs` as antty,
-  and add `src/bin/formi/main.rs` with `discover.rs`, `app.rs` and `ui.rs`.
-- Extracting the lib is a separate PR that lands before any formi code.
-- The lib must be closed under `crate::` imports. Today's graph has
-  `sessions` → `claude`/`codex`/`parse`/`index`/`disk`/`watch`,
-  `model` → `disk` → `tree`, `index` → `attrib` and `watch` → `sessions`, so
-  the lib is every module except `main`, `keys`, `cli`, `cmdline`, `ui/*`,
-  `delta`, `editor` and `search`. Shrinking it needs decoupling first, which
-  is not part of the extraction PR.
-- The harness-root and state-dir defaults (`default_claude_dir`,
-  `default_codex_dir`, `default_state_dir`, the omp default) move from
-  `cli.rs` into the lib, so both binaries share them.
-- `antty::tui` shares highlight colours, the timeline ruler and terminal handoff
-  between both binaries.
+- One package, two binaries: `src/main.rs` is antty and `src/bin/formi/` is
+  formi (`main.rs`, `discover.rs`, `activity.rs`, `cache.rs`, `app.rs`,
+  `ui.rs`). Both build on the library in `src/lib.rs`.
+- The harness-root and state-dir defaults live in `antty::dirs`
+  (`default_omp_dir`, `default_claude_dir`, `default_codex_dir`,
+  `default_state_dir`), so both binaries resolve the same roots.
+- `antty::tui` shares highlight colours, the timeline ruler, terminal handoff,
+  mouse capture and the stats panel between both binaries.
 - One version and the existing bump rule. Move to a Cargo workspace only if
   release cadences or dependencies diverge.
-- Cache lives under the antty state root (e.g. `~/.local/state/antty/formi/`).
+- The cache lives under the antty state root (`~/.local/state/antty/formi/`).
 
 ## Session discovery
 
 - Reuse antty's index. `Harness::index_root` maps every canonical launch cwd
   to its top-level session files across all session dirs of a harness root,
   so its keys are formi's cwds and `antty --project <cwd>` loads exactly the
-  sessions formi lists. The lib-extraction PR adds the one missing accessor,
-  `RootIndex::cwds()`, iterating the keys; `RootIndex::files(cwd)` already
-  lists each top-level session followed by its subagent logs.
+  sessions formi lists. `RootIndex::cwds()` iterates the keys, and
+  `RootIndex::files(cwd)` lists each top-level session followed by its
+  subagent logs.
 - Cwd rules come with the index: omp reads each top-level file's line-2
   header `cwd`; Claude Code takes the first `cwd` within a transcript's first
   50 lines; Codex CLI groups `rollout-*.jsonl` by `session_meta.cwd`. A file
@@ -68,7 +62,8 @@ sessions, rather than antty's single-project view.
 
 1. Startup (synchronous, fast): run `Harness::index_root` for each harness
    root, register each cwd's files (see Session discovery), then read each
-   top-level session's header and seek to its tail.
+   top-level session's header (first timestamped record or 50 lines) and its
+   tail (64 KiB, doubling up to 8 MiB).
    That gives cwd, start, last-seen (the last line in the tail that has a
    top-level `timestamp`) and, for omp, the end (a `session_exit` record).
    Titles: omp from the line-1 title slot, Codex from `session_index.jsonl`
@@ -115,9 +110,6 @@ sessions, rather than antty's single-project view.
   Claude Code and Codex CLI readers use the same fields.
 - If a file changed while formi was closed, its session is rescanned from 0,
   with its main file registered first (Codex CLI subagents need this).
-- Persisting resume state to disk is deferred. Add it only if rescanning grown
-  files proves slow, and only if the split-call test (bundle C) passes for a
-  resume from disk. antty's index does this by storing the whole `Model`.
 - omp rewrites its padded line-1 title slot in place, so omp titles are
   re-read from the header and never served from the cache.
 
@@ -148,6 +140,10 @@ Release `formi`, default harness roots, 240×50 tmux pane, warm OS page cache
 | Warm start | 0.21 s (0 of 374 sessions scanned) |
 | Display cache size | 9,208,436 bytes (9.21 MB) |
 
+Release build on the local logs (376 sessions): building the dashboard took
+13–18 ms per draw and the stats panel's stats 6–7 ms. formi redraws on input,
+on updates and once a second.
+
 ## Harness integration
 
 None. Antty stays a read-only observer. Only omp records a session end;
@@ -176,8 +172,6 @@ inside a fold.
 
 ## Stats and dashboard
 
-Needs the display cache (bundle C).
-
 - **Stats panel `i`:** selection vs all, as in antty. A session row uses that
   session; a project row sums its sessions' models; a directory row in tree
   order sums its projects; fold rows show all. Only indexed sessions count.
@@ -199,61 +193,6 @@ Needs the display cache (bundle C).
   narrows stats and the dashboard to the listed sessions. Formi has no
   watcher events, so antty's `fs during …` rows don't apply.
 
-Drafts at 2026-11-22 numbers:
-
-```
-┌projects────────────────────────────┐┌timeline───────────────────────────────┐┌Stats──────────────────────┐
-│                                    ││Nov 08 10 12 14 16 18 20 22            ││~/p/tools/antty · 3 wt     │
-│                                    ││S S M T W T F S S M T W T F S S M T W│ ││            sel      all   │
-│▾ ~/p/tools/antty  3wt   83  live   ││                 ▓▓▓▓▓▓  ▓▓▓▓▓▓▓▓▓▓▓▓▓ ││calls      8.6k    40.9k   │
-│    Formi overview · omp   11-22    ││                                   ██▌ ││read        431     2.8k   │
-│    Stats panel · omp      11-22    ││                                  ██   ││written     514     5.4k   │
-│    Help sections · omp    11-21    ││                                 █     ││prompts     254     2.3k   │
-│    ⋯ 80 older                      ││▄ ▆█▄▄ ▆█▄ ▄ ▆▄ ▄█▆▄▄▆  ▄▆▄█           ││share       21%            │
-│▸ ~/p/personal/side-project   9 1d  ││                       ▓▓▓▓▓▓▓▓  ▓▓    ││───────────────────────────│
-│▸ ~/p/workstations/dotfiles… 16 2d  ││  ▓▓    ▓▓▓▓▓▓   ▓      ▓     ▓        ││read     █████████  2.6k   │
-│▸ ~/p/web/my-website.org     38 7d  ││  ▓▓▓▓▓▓▓▓▓ ▓▓▓  ▓▓▓▓▓▓▓▓▓             ││bash     ████████▎  2.4k   │
-│▸ ~/p/home-infra             61 7d  ││ ▓▓▓▓▓▓▓▓▓▓▓▓▓▓      ▓▓                ││grep     ██▊        0.8k   │
-│▸ ~/p/exercises/try-tools     3 8d  ││               ▓                       ││+ more                     │
-│▸ ~/p/personal/demo-sandbox   2 8d  ││               ▓                       ││                           │
-│▸ ~/p/everyday/notes          1 9d  ││              ▓                        ││                           │
-│▸ ~/p/etl-experiments        23 9d  ││      ▓▓▓▓▓▓▓▓▓▓▓▓▓▓                   ││                           │
-│▸ ~/p/sandbox/slides-draft…   1 12d ││   ▓                                   ││                           │
-│▸ ~/p/sandbox/wip             6 17d ││▓▓▓▓                                   ││                           │
-│▸ ~/p/personal/demo-poster    1 18d ││▓▓▓▓▓▓▓                                ││                           │
-│⋯ 34 older projects                 ││▄▄▆▄ ▄ ▆ ▄▄ ▄ ▄  ▄                     ││                           │
-└────────────────────────────────────┘└───────────────────────────────────────┘└───────────────────────────┘
-Nav j/k h/l | Open ⏎ | Fold ␣ p | Stats i I | ? help        1d · 46 projects · 368 sessions · fold:on
-```
-
-```
-┌Dashboard  (v range · j/k move selection · Enter open · q/Esc close)──────────────────────────────────┐
-│ all projects · all time                             │ projects by calls                              │
-│                                                     │                                                │
-│ projects        46   sessions    368                │ ▶tools/antty           ████████████████  8.6k  │
-│ calls        40.9k   omp         330                │  web/my-website.org    ████████████▌     6.8k  │
-│ read          2.8k   claude       38                │  home-infra            ███████████▎      6.1k  │
-│ written       5.4k   codex         0                │  tools/hlit            ██████▎           3.4k  │
-│ prompts       2.3k                                  │  etl-experiments       █████             2.8k  │
-│ ────────────────────────────────────────────────    │  everyday/recipes-db   ████▉             2.6k  │
-│ tool mix                                            │  workstations/dotfiles ███▋              2.0k  │
-│ read       ████████████████████████████  11.8k      │  tools/notebook        ███               1.7k  │
-│ bash       ███████████████████████▉      10.0k      │  personal/side-project ███               1.6k  │
-│ eval       █████████▌                     4.0k      │  tools/formatter       ██▎               1.2k  │
-│ edit       █████████▌                     4.0k      │  ⋯ 36 more · Σ 4.0k                            │
-│ grep       ███████                        3.0k      │                                                │
-│ todo       █████▌                         2.3k      │ last 7 days                                    │
-│ write      ███▊                           1.6k      │                                                │
-│ advise     ███▍                           1.5k      │  tools/antty           ████████████████   783  │
-│ web_search █▊                             0.7k      │  personal/side-project █████████▍         464  │
-│ + more                                              │  web/my-website.org    ▏                    7  │
-│                                                     │  workstations/dotfiles                      1  │
-└──────────────────────────────────────────────────────────────────────────────────────────────────────┘
-```
-
-The read/written figures in the drafts are sums of per-cwd distinct counts, so
-they overcount; the shipped numbers use the path-set union above.
-
 ## Remote readiness
 
 Later, formi may show another machine's projects. Nothing remote is built now,
@@ -271,56 +210,6 @@ but these keep it possible:
 - Not a data source: antty's `index/*.bin` files (machine-local,
   invalidated on every version bump, only for projects opened in antty).
 - Polling carries over to remote; watchers don't.
-
-## Build plan
-
-Formi stays local on `feat/formi` until finished: no pushes, no PRs. Library
-changes it needs land on the same branch. Rebase onto `origin/main` whenever
-it moves. Each bundle ends in a local commit that builds and passes the CI
-checks; the version bump happens once, when formi lands.
-
-### Done
-
-- **Bundle A, discovery:** `formi --list` prints projects, cwds and per-harness
-  session counts. Worktree cwds fold by `worktree::git_common_dir`; missing or
-  repo-less cwds are their own projects.
-- **Bundle B, first screen:** collapsed projects in recent-activity order; `o`
-  switches to an alphabetical path trie. Startup reads only each top-level
-  session's header (first timestamped record or 50 lines) and tail (64 KiB,
-  doubling up to 8 MiB), so bars span start → last-seen, not real activity.
-  Subagent logs are registered, not read; an explicit session end wins over
-  last-seen. Drill-down runs `antty --project <most recently active worktree>`.
-  Discovery runs only at startup. See [usage](usage.md#formi).
-- **Bundle B.5, interaction:** project identity includes its origin, drill
-  targets are chosen at discovery, and older sessions and projects fold into
-  summary rows. `?` opens shared help; `/` searches paths and session titles
-  and reveals matches hidden by folds.
-- **Bundle C, real activity:** `█` replaces the startup estimate once session
-  activity is indexed. The display cache reuses unchanged sessions, and a
-  one-second poll finds new sessions and updates running ones. Split and
-  resumed ingest matched cold scans for all three harnesses; a grown file
-  invalidated its cache entry and matched a cold scan. The tmux smoke test
-  confirmed a warm cache hit and a second activity bar after a live append
-  without restarting.
-- **Wheel scrolling:** copied from antty's #20 fix: shared mouse capture
-  (`antty::tui::MouseCapture`, released while antty or a shell owns the
-  terminal), input drained under an 8 ms budget with same-direction wheel
-  reports merged, and the wheel scrolling the hovered rows or Help without
-  moving the selection.
-- **Bundle D.1, stats panel:** `i` toggles the panel described in Stats and
-  dashboard. The indexer sends each session's thin model with its activity,
-  so stats use the same projection as the display cache.
-- **Bundle D.2, dashboard:** `I` opens the popup above; `j/k`, the wheel and
-  Enter act on the selection underneath. Release build on the local logs
-  (376 sessions): building the dashboard took 13–18 ms per draw, the panel's
-  stats 6–7 ms. Formi redraws on input, updates and once a second.
-- **Bundle D.3, action filter:** `F` as described in Stats and dashboard. The
-  indexer's session list stays complete; the filter derives the shown
-  projects from it on every update, so live sessions keep appearing.
-
-### Landing
-
-Done locally at 0.2.25: harness labels from `Harness::label()`, a complete `AGENTS.md` module map, and install docs that name both binaries. Remaining: push `feat/formi` and open a PR to `main`.
 
 ## Open questions
 

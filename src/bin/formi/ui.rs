@@ -1,8 +1,8 @@
 use antty::sessions::Harness;
 use antty::timeline::Column;
 use antty::tui::{
-    CURSOR_BG, HIGHLIGHT_FG, SELECTED_BG, STATS_MIN_WIDTH, STATS_PANEL_WIDTH, StatsView, bar_lines, compact, fmt_span,
-    fold_glyph, render_stats_panel, truncate,
+    CURSOR_BG, HIGHLIGHT_FG, SELECTED_BG, STATS_MIN_WIDTH, STATS_PANEL_WIDTH, StatsView, bar_lines, bytes, compact,
+    fmt_span, fold_glyph, render_stats_panel, truncate,
 };
 use ratatui::Frame;
 use ratatui::style::{Color, Modifier, Style};
@@ -214,12 +214,13 @@ fn dashboard(f: &mut Frame, app: &App) {
             compact(d.all.sessions[i])
         )));
     }
-    let tail: [KpiRow; 5] = [
+    let tail: [KpiRow; 6] = [
         ("calls", |s| compact(s.stats.calls)),
         ("read", |s| compact(s.stats.files_read)),
         ("written", |s| compact(s.stats.files_written)),
         ("agent", |s| s.stats.agent_secs.map_or_else(|| "–".into(), |x| fmt_span(chrono::Duration::seconds(x)))),
         ("prompts", |s| s.stats.prompts.map_or_else(|| "–".into(), compact)),
+        ("disk", |s| s.stats.disk.map_or_else(|| "–".into(), bytes)),
     ];
     for (name, value) in tail {
         lines.push(Line::from(format!("{name:<10}{:>9}{:>9}", value(sel), value(&d.all))));

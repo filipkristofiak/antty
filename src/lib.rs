@@ -7,6 +7,7 @@ mod codex;
 pub mod dirs;
 pub mod disk;
 pub mod filter;
+pub mod footprint;
 pub mod index;
 pub mod model;
 mod parse;

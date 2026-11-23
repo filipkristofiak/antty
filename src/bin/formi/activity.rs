@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use antty::footprint;
 use antty::index::cached_file;
 use antty::model::{EventDetail, FileEvent, Model};
 use antty::sessions::{Harness, SessionFile, TailState, apply_records, read_appended};
@@ -66,7 +67,17 @@ fn thin(model: &Model, cwd: &Path) -> Model {
     thin
 }
 
-fn info_from(model: &Model, key: &Path, harness: Harness, cwd: &Path) -> SessionInfo {
+fn session_footprint(files: &[SessionFile]) -> u64 {
+    match files {
+        [file] => footprint::of_log(&file.path),
+        files => {
+            let logs: Vec<_> = files.iter().map(|f| f.path.as_path()).collect();
+            footprint::session(&logs, footprint::of_log)
+        }
+    }
+}
+
+fn info_from(model: &Model, key: &Path, harness: Harness, cwd: &Path, disk: u64) -> SessionInfo {
     let session = model.sessions.iter().find(|s| s.file == key);
     let activity = antty::timeline::visible_activity(model)
         .into_iter()
@@ -80,6 +91,7 @@ fn info_from(model: &Model, key: &Path, harness: Harness, cwd: &Path) -> Session
         title: session.map_or_else(|| "(untitled)".into(), |s| s.title.clone()),
         span: session.and_then(session_span),
         activity: Some(activity),
+        disk: Some(disk),
     }
 }
 
@@ -97,7 +109,7 @@ fn ingest_session(job: Job, session_roots: &[PathBuf]) -> Scanned {
         apply_records(&mut resume.model, harness, &f.project_dir, &f.path, &records, IDLE_GAP);
     }
     let model = Arc::new(thin(&resume.model, &cwd));
-    let info = info_from(&model, &key, harness, &cwd);
+    let info = info_from(&model, &key, harness, &cwd, session_footprint(&files));
     let cached_files: std::io::Result<Vec<_>> = files
         .into_iter()
         .map(|f| {
@@ -229,7 +241,7 @@ impl Indexer {
             let entry = cached.remove(&key).filter(|e| cache::valid(e, harness, &cwd, &files));
             let offsets = if let Some(e) = &entry {
                 hits += 1;
-                let info = info_from(&e.model, &key, harness, &cwd);
+                let info = info_from(&e.model, &key, harness, &cwd, session_footprint(&files));
                 if self.tx.send(Msg::Session { info, fresh_title: false, model: e.model.clone() }).is_err() {
                     return false;
                 }

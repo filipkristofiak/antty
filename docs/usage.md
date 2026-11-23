@@ -76,6 +76,12 @@ Stats cover all time by default. Press `v` in the Stats popup to count only the 
 the Gantt timeline; the side panel uses the same setting. The panel and time-range setting
 reset on launch.
 
+The `disk` row in both binaries reports the apparent size of session logs and files under
+their adjacent `<stem>/` artifact directories, in decimal units. Nested subagent logs count
+once per session; per-project directories such as `memory/` are excluded. Range mode counts
+the whole footprint of each overlapping session. In antty, file and other event rows and
+`you` show `–` for the selection.
+
 In Actions, `Space` toggles the highlighted checkbox, `a` checks every action, and `n` unchecks
 every action. `Enter` applies; `q` or `Esc` cancels. The separate **scripts only** checkbox narrows
 file-path actions to the listed extensions without hiding evals, web searches, fetches, or MCP
@@ -237,7 +243,7 @@ displayed rows, refreshed when those rows are rebuilt.
 | `o` | Toggle recent/path-tree order |
 | `p` | Toggle folding older sessions and projects |
 | `i` | Toggle the stats panel (110+ columns wide): the selected session, project or directory vs all indexed sessions, with the selection's share of tool calls; fold rows show all |
-| `I` | Dashboard: selection vs all (projects, sessions per harness, calls, files, agent time, prompts, share, tool mix), projects ranked by calls with the selected one marked `▶`, and a fixed last-7-days ranking |
+| `I` | Dashboard: selection vs all (projects, sessions per harness, calls, files, agent time, prompts, disk, share, tool mix), projects ranked by calls with the selected one marked `▶`, and a fixed last-7-days ranking |
 | `v`, `j/k`, wheel, `Enter`, `q/Esc/I` in the dashboard | Limit counts and stats (panel too) to the visible timeline range; move the selection underneath; open in antty; close |
 | `F` | Action filter: list only sessions that used the checked actions (counts show sessions and events per action); their bars show only those events, and stats sum the listed sessions. `Space` toggles, `a` all, `n` none, `Enter` applies, `q/Esc` cancels; **scripts only** narrows file actions to script extensions. Check every action to clear it. Unindexed sessions are hidden while a filter is on |
 | `?` | Open help; scroll with `j/k`, `Ctrl-d/u`, or `g/G`; close with `q`, `?`, or `Esc` |

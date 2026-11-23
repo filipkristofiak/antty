@@ -45,6 +45,8 @@ pub struct SessionInfo {
     pub span: Option<(Ts, Ts)>,
     /// Merged, sorted real activity, or `None` before indexing.
     pub activity: Option<Vec<(Ts, Ts)>>,
+    /// Bytes on disk for the session's logs and artifact directories; `None` before indexing.
+    pub disk: Option<u64>,
 }
 
 impl SessionInfo {
@@ -134,6 +136,7 @@ fn collect_cwd(harness: Harness, cwd: &Path, files: &[SessionFile]) -> Vec<(Sess
                 title: s.title.clone(),
                 span: session_span(s),
                 activity: None,
+                disk: None,
             };
             Some((info, Source { harness, cwd: cwd.to_path_buf(), files }))
         })
@@ -291,6 +294,7 @@ mod tests {
                 title: "Fix bug".into(),
                 span: Some((at("2026-01-01T00:00:00Z"), at("2026-01-01T01:00:00Z"))),
                 activity: None,
+                disk: None,
             }]
         );
         fs::remove_dir_all(base).unwrap();

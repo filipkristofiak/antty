@@ -609,8 +609,14 @@ impl App {
         let mut tally = Tally::default();
         for (project, session) in sessions {
             let project = &self.projects[project];
-            if let Some(model) = self.models.get(&project.sessions[session].file) {
+            let info = &project.sessions[session];
+            if let Some(model) = self.models.get(&info.file) {
                 tally.add(model, &Subject::All, window, Some(&project.key.path));
+            }
+            if let Some(bytes) = info.disk
+                && window.is_none_or(|(ws, we)| overlaps(info.bars(), ws, we))
+            {
+                tally.add_disk(bytes);
             }
         }
         tally.finish()
@@ -633,6 +639,7 @@ impl App {
             {
                 session.span = info.span;
                 session.activity = info.activity;
+                session.disk = info.disk;
                 if fresh_title {
                     session.title = info.title;
                 }
@@ -1296,6 +1303,7 @@ mod tests {
             title: "session".into(),
             span: Some((Ts::UNIX_EPOCH, Ts::UNIX_EPOCH)),
             activity: None,
+            disk: None,
         };
         let mut app = super::App::new(
             vec![super::ProjectView {
@@ -1363,6 +1371,7 @@ mod tests {
                     title: format!("session {i}"),
                     span: Some((end - chrono::Duration::minutes(1), end)),
                     activity: None,
+                    disk: None,
                 }
             })
             .collect();
@@ -1403,14 +1412,26 @@ mod tests {
         let mut app = App::new(vec![project(0, [10, 20]), project(1, [30])], PathBuf::new(), roots());
         let epoch = Ts::UNIX_EPOCH;
         seed_events(&mut app, "read", &[(0, 0, "a", epoch), (0, 1, "b", epoch), (1, 0, "c", epoch)]);
+        let mut first = app.projects[0].sessions[0].clone();
+        let mut second = app.projects[0].sessions[1].clone();
+        let mut other = app.projects[1].sessions[0].clone();
+        first.disk = Some(10);
+        second.disk = Some(20);
+        other.disk = Some(50);
+        let (start, end) = second.span.unwrap();
+        app.apply(vec![(first, false), (second, false), (other, false)]);
         let counts = |stats: &Stats| (stats.calls, stats.files_read);
         let (label, selection, all) = app.stats();
         assert_eq!((label.as_str(), selection.as_ref().map(counts), counts(&all)), ("/q/p0", Some((2, 1)), (3, 2)));
+        assert_eq!((selection.unwrap().disk, all.disk), (Some(30), Some(80)));
+        assert_eq!(app.tally(app.all_sessions(), Some((start, end))).disk, Some(20));
+        assert_eq!(app.tally(app.all_sessions(), Some((epoch, epoch))).disk, None);
 
         app.handle_key(KeyEvent::from(KeyCode::Char(' ')));
         app.handle_key(KeyEvent::from(KeyCode::Char('j')));
         let (label, selection, _) = app.stats();
         assert_eq!((label.as_str(), selection.as_ref().map(counts)), ("session 0", Some((1, 1))));
+        assert_eq!(selection.unwrap().disk, Some(10));
     }
 
     #[test]
@@ -1678,6 +1699,7 @@ mod tests {
                         title: "gone".into(),
                         span: None,
                         activity: None,
+                        disk: None,
                     }],
                 )],
             }]),
@@ -1712,6 +1734,7 @@ mod tests {
                         title: path.to_string(),
                         span: Some((start, start + chrono::Duration::minutes(1))),
                         activity: None,
+                        disk: None,
                     };
                     let sessions = if i == 3 {
                         vec![SessionInfo { file: Path::new(path).join("s1.jsonl"), ..session.clone() }, session]

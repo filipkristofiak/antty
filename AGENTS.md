@@ -27,6 +27,7 @@ Plain `cargo` works wherever it's already on `PATH`.
 - `src/delta.rs` — unified patch for an event and the optional `delta` invocation.
 - `src/model.rs` — core data model: participants, sessions, file events, spans, snapshots.
 - `src/sessions.rs` — shared harness discovery indexes, parallel initial parsing and live tailing with progress.
+- `src/footprint.rs` — apparent size of session logs and their artifact directories, without double-counting nested logs.
 - `src/parse.rs` — ingests omp jsonl lines into model events; path normalization and scoping.
 - `src/claude.rs` — Claude Code reader: project-dir discovery (first-`cwd` matching), transcript scan, participants, ingest.
 - `src/codex.rs` — Codex CLI reader: rollout discovery (header-`cwd` matching), title index, participants, ingest.

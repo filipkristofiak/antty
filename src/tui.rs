@@ -440,13 +440,29 @@ pub fn compact(n: usize) -> String {
     }
 }
 
-fn kpis(s: &crate::stats::Stats) -> [(&'static str, String); 5] {
+/// `n` bytes in decimal units: `512 B`, `9.2 MB`, `664.0 MB`.
+pub fn bytes(n: u64) -> String {
+    if n < 1000 {
+        return format!("{n} B");
+    }
+    let mut value = n as f64 / 1000.0;
+    for unit in ["kB", "MB", "GB", "TB", "PB"] {
+        if value < 999.95 {
+            return format!("{value:.1} {unit}");
+        }
+        value /= 1000.0;
+    }
+    format!("{value:.1} EB")
+}
+
+fn kpis(s: &crate::stats::Stats) -> [(&'static str, String); 6] {
     [
         ("calls", compact(s.calls)),
         ("read", compact(s.files_read)),
         ("written", compact(s.files_written)),
         ("agent", s.agent_secs.map_or_else(|| "–".into(), |secs| fmt_span(chrono::Duration::seconds(secs)))),
         ("prompts", s.prompts.map_or_else(|| "–".into(), compact)),
+        ("disk", s.disk.map_or_else(|| "–".into(), bytes)),
     ]
 }
 
@@ -527,6 +543,20 @@ mod tests {
     use super::*;
     use chrono::{Duration, Local, TimeZone};
     use ratatui::buffer::Buffer;
+
+    #[test]
+    fn bytes_rounds_and_promotes_decimal_units() {
+        for (n, label) in [
+            (0, "0 B"),
+            (999, "999 B"),
+            (1000, "1.0 kB"),
+            (999_949, "999.9 kB"),
+            (999_950, "1.0 MB"),
+            (9_208_436, "9.2 MB"),
+        ] {
+            assert_eq!(bytes(n), label);
+        }
+    }
 
     #[test]
     fn fold_glyph_encodes_session_count() {

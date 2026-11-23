@@ -179,8 +179,9 @@ inside a fold.
   formi project, so worktrees of one project don't count a path twice and
   unrelated projects never merge (`antty::stats::Tally`). Adds `share`: the
   selection's share of all calls.
+  The `disk` row sums the indexed sessions' log and artifact sizes.
 - **Dashboard `I`:** left column is selection vs all (projects, sessions per
-  harness, calls, files, agent time, prompts, share, tool mix); right column
+  harness, calls, files, agent time, prompts, disk, share, tool mix); right column
   is projects ranked by calls and a fixed "last 7 days" block. `v` limits
   everything except the 7-day block to the visible timeline range: sessions
   count when their bars reach into it, and the stats panel follows too.

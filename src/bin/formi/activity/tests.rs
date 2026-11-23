@@ -172,19 +172,27 @@ fn grown_file_is_rescanned_and_equals_a_cold_scan() {
     let turn = omp_turn(start(), "t1");
     let a = omp_header(&job.cwd, start()) + &records(&turn[..2]);
     fs::write(&job.key, a).unwrap();
-    let initial = |expected| {
+    let artifacts = footprint::artifact_dir(&job.key);
+    fs::create_dir(&artifacts).unwrap();
+    let artifact = artifacts.join("result.txt");
+    fs::write(&artifact, "tool output").unwrap();
+    let initial = |expected, artifact_bytes| {
         let (tx, rx) = mpsc::sync_channel(1024);
         let mut indexer = Indexer::new(roots.clone(), Some(path.clone()), tx);
         assert!(indexer.initial(collect(&roots).1));
-        assert!(
-            rx.try_iter().any(|msg| matches!(msg, Msg::Indexed { sessions: 1, scanned, .. } if scanned == expected))
-        );
+        let mut messages = rx.try_iter();
+        assert!(messages.any(|msg| {
+            matches!(msg, Msg::Session { info, .. }
+                if info.disk == Some(fs::metadata(&job.key).unwrap().len() + artifact_bytes))
+        }));
+        assert!(messages.any(|msg| matches!(msg, Msg::Indexed { sessions: 1, scanned, .. } if scanned == expected)));
         indexer
     };
-    initial(1);
-    initial(0);
+    initial(1, 11);
+    fs::remove_file(&artifact).unwrap();
+    initial(0, 0);
     append(&job.key, &records(&turn[2..]));
-    let rescanned = initial(1);
+    let rescanned = initial(1, 0);
     let model = &rescanned.tracked[&job.key].entry.as_ref().unwrap().model;
     let cold = scan(&job, None);
     assert_eq!(digest(model), digest(&thin(&cold.resume.model, &job.cwd)));

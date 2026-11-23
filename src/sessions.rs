@@ -7,6 +7,7 @@ use std::sync::{LazyLock, Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
+use crate::footprint;
 use crate::model::{Model, ParticipantId, ParticipantKind, Session};
 use crate::watch::RawFs;
 
@@ -125,6 +126,7 @@ pub enum Msg {
     Tick,
     WatchError(String),
     Disk { snapshot: Box<crate::disk::DiskSnapshot>, walked: Vec<usize> },
+    Footprints(Vec<(PathBuf, u64)>),
     Seed { at: crate::model::Ts, files: Vec<(PathBuf, String)> },
     Progress { done: usize, total: usize },
     Loaded { found: bool, tails: Result<Vec<crate::index::CachedTail>, String> },
@@ -350,10 +352,14 @@ pub fn apply_records(
 
 const RECORDS_PER_MSG: usize = 2048;
 
-fn poll_source(src: &mut TailSource, files: Vec<SessionFile>, tx: &SyncSender<Msg>) -> bool {
-    for file in files {
+fn poll_source(src: &mut TailSource, files: Vec<SessionFile>, tx: &SyncSender<Msg>, measure_all: bool) -> bool {
+    let mut changed = Vec::new();
+    for file in &files {
         let Ok(meta) = fs::metadata(&file.path) else { continue };
         let state = src.states.entry(file.path.clone()).or_insert(TailState { offset: 0, partial: Vec::new() });
+        if !measure_all && meta.len() != state.offset {
+            changed.push(file.path.as_path());
+        }
         if meta.len() < state.offset {
             state.offset = 0;
             state.partial.clear();
@@ -379,7 +385,16 @@ fn poll_source(src: &mut TailSource, files: Vec<SessionFile>, tx: &SyncSender<Ms
             }
         }
     }
-    true
+    if !measure_all && changed.is_empty() {
+        return true;
+    }
+    let measured: Vec<_> = files
+        .iter()
+        .map(|f| f.path.as_path())
+        .filter(|log| measure_all || changed.iter().any(|&c| c == *log || footprint::in_artifact_dir(log, c)))
+        .map(|log| (log.to_path_buf(), footprint::of_log(log)))
+        .collect();
+    measured.is_empty() || tx.send(Msg::Footprints(measured)).is_ok()
 }
 
 /// Discover once per harness root each tick and parse sources on bounded background workers.
@@ -440,7 +455,7 @@ pub fn spawn_tailer(
                                 let files = indexes
                                     .get(&(src.harness, src.root.clone()))
                                     .map_or_else(Vec::new, |i| i.files(&src.project_root));
-                                if !poll_source(src, files, tx)
+                                if !poll_source(src, files, tx, first)
                                     || (first
                                         && tx
                                             .send(Msg::Progress {
@@ -493,11 +508,15 @@ pub fn load_blocking(model: &mut Model, harness: Harness, root: &Path, project_r
     let (tx, rx) = std::sync::mpsc::sync_channel(4096);
     thread::scope(|scope| {
         scope.spawn(move || {
-            poll_source(&mut src, files, &tx);
+            poll_source(&mut src, files, &tx, true);
         });
         for msg in rx {
-            if let Msg::Records { harness, project_dir, participant_file, records } = msg {
-                apply_records(model, harness, &project_dir, &participant_file, &records, idle_gap);
+            match msg {
+                Msg::Records { harness, project_dir, participant_file, records } => {
+                    apply_records(model, harness, &project_dir, &participant_file, &records, idle_gap);
+                }
+                Msg::Footprints(measured) => model.footprints.extend(measured),
+                _ => {}
             }
         }
     });
@@ -535,7 +554,7 @@ mod tests {
         let mut src = TailSource { harness: Harness::Omp, root: sessions_root, project_root, states: HashMap::new() };
         let (tx, rx) = std::sync::mpsc::sync_channel(16);
         let files = vec![SessionFile { project_dir, path: file.clone() }];
-        assert!(poll_source(&mut src, files.clone(), &tx));
+        assert!(poll_source(&mut src, files.clone(), &tx, true));
         for _ in rx.try_iter() {}
 
         // The writer finishes the line and appends more, exactly like a live tailer tick would see.
@@ -544,7 +563,7 @@ mod tests {
         f.write_all(rest.as_bytes()).unwrap();
         drop(f);
 
-        assert!(poll_source(&mut src, files, &tx));
+        assert!(poll_source(&mut src, files, &tx, false));
         let records: Vec<_> = rx
             .try_iter()
             .flat_map(|msg| match msg {
@@ -554,6 +573,36 @@ mod tests {
             .collect();
         assert_eq!(records.len(), 1, "the completed record must appear exactly once");
         assert_eq!(records[0]["title"], "Real Title");
+    }
+
+    #[test]
+    fn tailer_measures_cached_logs_and_refreshes_parent_on_child_append() {
+        let base = std::env::temp_dir().join(format!("antty-sessions-test-footprint-{}", std::process::id()));
+        fs::create_dir_all(base.join("main")).unwrap();
+        let main = base.join("main.jsonl");
+        let sub = base.join("main/sub.jsonl");
+        fs::write(&main, "{}\n").unwrap();
+        fs::write(&sub, "{}\n").unwrap();
+        let files = Vec::from([&main, &sub].map(|path| SessionFile { project_dir: base.clone(), path: path.clone() }));
+        let states = [&main, &sub].map(|path| (path.clone(), TailState { offset: 3, partial: Vec::new() })).into();
+        let mut src = TailSource { harness: Harness::Omp, root: base.clone(), project_root: base.clone(), states };
+        let (tx, rx) = std::sync::mpsc::sync_channel(16);
+        let measured = || {
+            rx.try_iter()
+                .find_map(|msg| match msg {
+                    Msg::Footprints(measured) => Some(measured),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert!(poll_source(&mut src, files.clone(), &tx, true));
+        assert_eq!(measured(), [(main.clone(), 6), (sub.clone(), 3)]);
+        assert!(poll_source(&mut src, files.clone(), &tx, false));
+        assert!(rx.try_recv().is_err());
+        fs::write(&sub, "{}\n{}\n").unwrap();
+        assert!(poll_source(&mut src, files, &tx, false));
+        assert_eq!(measured(), [(main, 9), (sub, 6)]);
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

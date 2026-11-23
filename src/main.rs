@@ -703,6 +703,10 @@ impl App {
                 self.needs_rebuild = true;
                 true
             }
+            Msg::Footprints(measured) => {
+                self.model.footprints.extend(measured);
+                self.ui.stats_panel || self.ui.view_mode() == Mode::Stats
+            }
             Msg::Seed { at, files } => {
                 if self.ui.loading.is_some() {
                     self.pending_seed = Some((at, files));
@@ -724,9 +728,11 @@ impl App {
             }
             Msg::Cached(model) => {
                 let disk = std::mem::take(&mut self.model.disk);
+                let footprints = std::mem::take(&mut self.model.footprints);
                 let session_roots = std::mem::take(&mut self.model.session_roots);
                 self.model = *model;
                 self.model.disk = disk;
+                self.model.footprints = footprints;
                 self.model.session_roots = session_roots;
                 self.needs_rebuild = true;
                 true

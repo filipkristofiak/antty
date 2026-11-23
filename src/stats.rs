@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use crate::footprint;
 use crate::model::{FileEvent, Model, ParticipantId, ParticipantKind, Scope, TouchKind, Ts};
 use crate::tree::{self, Row, Tree};
 
@@ -27,6 +28,8 @@ pub struct Stats {
     pub agent_secs: Option<i64>,
     /// Absent for event subjects and individual agents.
     pub prompts: Option<usize>,
+    /// Bytes on disk for session logs and their artifacts; absent for event subjects and `you`.
+    pub disk: Option<u64>,
 }
 
 pub fn subject_for(model: &Model, tree: &Tree, row: Option<Row>) -> (String, Subject) {
@@ -61,7 +64,51 @@ pub fn subject_for(model: &Model, tree: &Tree, row: Option<Row>) -> (String, Sub
 pub fn compute(model: &Model, subject: &Subject, window: Option<(Ts, Ts)>) -> Stats {
     let mut tally = Tally::default();
     tally.add(model, subject, window, None);
+    if let Some(bytes) = disk(model, subject, window) {
+        tally.add_disk(bytes);
+    }
     tally.finish()
+}
+
+pub fn disk(model: &Model, subject: &Subject, window: Option<(Ts, Ts)>) -> Option<u64> {
+    let counted = |idx| {
+        model.session_visible(idx)
+            && window.is_none_or(|(ws, we)| {
+                let s = &model.sessions[idx];
+                s.start < we && s.end.unwrap_or(s.last_seen) >= ws
+            })
+    };
+    let bytes = |p: &Path| model.footprints.get(p).copied().unwrap_or(0);
+    match subject {
+        Subject::All => {
+            let mut logs = vec![Vec::new(); model.sessions.len()];
+            for p in &model.participants {
+                if let (Some(idx), Some(file)) = (p.session, p.file.as_deref())
+                    && counted(idx)
+                {
+                    logs[idx].push(file);
+                }
+            }
+            Some(logs.iter().map(|logs| footprint::session(logs, bytes)).sum())
+        }
+        Subject::Session(idx) => {
+            if !counted(*idx) {
+                return Some(0);
+            }
+            let logs: Vec<_> = model
+                .participants
+                .iter()
+                .filter(|p| p.session == Some(*idx))
+                .filter_map(|p| p.file.as_deref())
+                .collect();
+            Some(footprint::session(&logs, bytes))
+        }
+        Subject::Participant(who) => {
+            let p = &model.participants[who.0];
+            p.file.as_deref().map(|file| if p.session.is_none_or(counted) { bytes(file) } else { 0 })
+        }
+        Subject::Events(_) => None,
+    }
 }
 
 /// One distinct file target: the project that owns a project-relative path (when merging
@@ -77,6 +124,7 @@ pub struct Tally<'a> {
     written: HashSet<FileKey<'a>>,
     agent_secs: Option<i64>,
     prompts: Option<usize>,
+    disk: Option<u64>,
 }
 
 impl<'a> Tally<'a> {
@@ -168,6 +216,10 @@ impl<'a> Tally<'a> {
         }
     }
 
+    pub fn add_disk(&mut self, bytes: u64) {
+        *self.disk.get_or_insert(0) += bytes;
+    }
+
     pub fn finish(self) -> Stats {
         let calls = self.tools.values().sum();
         let mut tools: Vec<_> = self.tools.into_iter().map(|(tool, count)| (tool.to_owned(), count)).collect();
@@ -179,6 +231,7 @@ impl<'a> Tally<'a> {
             files_written: self.written.len(),
             agent_secs: self.agent_secs,
             prompts: self.prompts,
+            disk: self.disk,
         }
     }
 }
@@ -205,6 +258,7 @@ mod tests {
             Some(0),
             Some(main),
         );
+        model.footprints = HashMap::from([("/project/main.jsonl".into(), 100), ("/project/sub.jsonl".into(), 30)]);
         model.sessions.push(Session {
             file,
             id: "session".into(),
@@ -259,23 +313,29 @@ mod tests {
             files_written: 1,
             agent_secs: Some(14),
             prompts: Some(2),
+            disk: Some(130),
         };
         assert_eq!(compute(&model, &session, None), total);
         assert_eq!(compute(&model, &Subject::All, None), total);
         let agent = compute(&model, &Subject::Participant(sub), None);
         assert_eq!(agent.tools, vec![("grep".into(), 1)]);
         assert_eq!(agent.prompts, None);
+        assert_eq!(agent.disk, Some(30));
+        assert_eq!(compute(&model, &Subject::Participant(Model::YOU), None).disk, None);
 
         let file = Subject::Events(vec![0, 2]);
         let selected = compute(&model, &file, None);
         assert_eq!(selected.tools, vec![("read".into(), 1)]);
         assert_eq!(selected.agent_secs, None);
+        assert_eq!(selected.disk, None);
         let window = Some((time(5), time(20)));
         assert_eq!(compute(&model, &file, window), selected);
         let ranged = compute(&model, &session, window);
         assert_eq!(ranged.tools, vec![("grep".into(), 1)]);
         assert_eq!(ranged.agent_secs, Some(9));
         assert_eq!(ranged.prompts, Some(1));
+        assert_eq!(ranged.disk, Some(130));
+        assert_eq!(compute(&model, &session, Some((time(30), time(40)))).disk, Some(0));
 
         model.action_filter = Some(ActionFilter { actions: HashSet::from([Action::Write]), ..Default::default() });
         assert_eq!(compute(&model, &file, None), Stats::default());
@@ -283,7 +343,7 @@ mod tests {
         model.session_filter.insert(1);
         assert_eq!(
             compute(&model, &session, None),
-            Stats { agent_secs: Some(0), prompts: Some(0), ..Default::default() }
+            Stats { agent_secs: Some(0), prompts: Some(0), disk: Some(0), ..Default::default() }
         );
     }
 

@@ -188,6 +188,9 @@ pub struct Model {
     pub roots: Vec<ProjectRoot>,
     #[serde(skip)]
     pub disk: crate::disk::DiskSnapshot,
+    /// Footprint (`footprint::of_log`) per participant log, filled by the tailer.
+    #[serde(skip)]
+    pub footprints: HashMap<PathBuf, u64>,
     pub participants: Vec<Participant>,
     pub sessions: Vec<Session>,
     pub events: Vec<FileEvent>,
@@ -258,6 +261,7 @@ impl Model {
         Model {
             roots: project_roots,
             disk: crate::disk::DiskSnapshot::default(),
+            footprints: HashMap::new(),
             participants: vec![you],
             sessions: Vec::new(),
             events: Vec::new(),

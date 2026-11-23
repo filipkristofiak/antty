@@ -16,6 +16,7 @@ const SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl-d/Ctrl-u", "half page down/up; [count]: N rows"),
             ("Ctrl-f/Ctrl-b", "page down/up"),
             ("Ctrl-e/Ctrl-y", "scroll rows down/up by one"),
+            ("Wheel", "scroll hovered viewport by 3 rows; keep selection"),
             ("zz/zt/zb", "selected row to middle/top/bottom"),
         ],
     ),

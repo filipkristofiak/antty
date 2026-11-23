@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span as TSpan};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
@@ -255,6 +255,14 @@ pub fn detail_lines(app: &AppRef, item: &DetailItem) -> Vec<Line<'static>> {
     }
 }
 
+pub(crate) fn text_area(area: Rect) -> Rect {
+    columns(Block::default().borders(Borders::ALL).inner(area))[1]
+}
+
+fn columns(inner: Rect) -> [Rect; 2] {
+    Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(inner)
+}
+
 pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
     let block = Block::default().borders(Borders::ALL).title("Detail");
     let inner = block.inner(area);
@@ -262,10 +270,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppRef) {
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
-        .split(inner);
+    let cols = columns(inner);
 
     let items = resolve_items(app);
     if items.is_empty() {

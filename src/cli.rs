@@ -31,6 +31,9 @@ pub struct RawArgs {
     /// Disable the live filesystem watcher; FILES is listed once at startup.
     #[arg(long)]
     pub no_watch: bool,
+    /// Disable mouse capture so the terminal handles wheel input and text selection.
+    #[arg(long)]
+    pub no_mouse: bool,
     /// Show only --project itself, not the other Git worktrees of its repository.
     #[arg(long)]
     pub no_worktrees: bool,
@@ -55,6 +58,7 @@ pub struct Args {
     pub codex_dir: PathBuf,
     pub state_dir: PathBuf,
     pub no_watch: bool,
+    pub no_mouse: bool,
     pub no_worktrees: bool,
     pub separate_worktrees: bool,
     pub no_collapse_gaps: bool,
@@ -98,6 +102,7 @@ impl Args {
             codex_dir,
             state_dir,
             no_watch: raw.no_watch,
+            no_mouse: raw.no_mouse,
             no_worktrees: raw.no_worktrees,
             separate_worktrees: raw.separate_worktrees,
             no_collapse_gaps: raw.no_collapse_gaps,

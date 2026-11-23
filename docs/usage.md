@@ -16,6 +16,7 @@ antty [OPTIONS]
 | `--codex-dir <CODEX_DIR>` | Codex sessions directory holding rollout jsonl files (default: `$CODEX_HOME/sessions`, else `~/.codex/sessions`). |
 | `--state-dir <STATE_DIR>` | Directory used to persist watcher-observed filesystem changes and the binary session index (default: `$XDG_STATE_HOME/antty`, else `~/.local/state/antty`). |
 | `--no-watch` | Disable the live filesystem watcher; FILES is listed once at startup. |
+| `--no-mouse` | Disable mouse capture so the terminal handles wheel input and text selection. |
 | `--no-collapse-gaps` | Keep the timeline linear instead of collapsing idle stretches into `~` breaks. |
 | `--idle-gap <IDLE_GAP>` | Idle gap (seconds) used to merge raw activity intervals into spans. Default: 30. |
 
@@ -110,7 +111,18 @@ are not traced.
 | `Ctrl-d/Ctrl-u` | half page down/up; [count]: N rows |
 | `Ctrl-f/Ctrl-b` | page down/up |
 | `Ctrl-e/Ctrl-y` | scroll rows down/up by one |
+| Wheel | scroll the viewport under the pointer by three rows per wheel event; keep selection |
 | `zz/zt/zb` | selected row to middle/top/bottom |
+
+Mouse capture is on by default. The tree and Gantt share a vertical viewport, so
+scrolling either moves both. The selected row can go offscreen; a row-navigation
+key brings its destination into view. The wheel also scrolls the Detail text,
+full-screen diff, and Help when the pointer is over them.
+
+For terminal text selection, use your terminal's bypass modifier (typically
+Shift or Option while dragging), or start `antty --no-mouse`. With capture off,
+wheel behavior depends on your terminal or multiplexer; arrows sent by the
+terminal still move the selection.
 
 ### Timeline
 

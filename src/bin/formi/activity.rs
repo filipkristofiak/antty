@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, SyncSender};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -35,6 +35,8 @@ pub struct Scanned {
     pub key: PathBuf,
     pub resume: Resume,
     pub info: SessionInfo,
+    /// Thin projection behind `info`, shared with the cache entry and the UI's stats.
+    pub model: Arc<Model>,
     pub entry: Option<cache::Entry>,
 }
 
@@ -94,7 +96,7 @@ fn ingest_session(job: Job, session_roots: &[PathBuf]) -> Scanned {
         // Register even a file with no complete records, preserving main-first order.
         apply_records(&mut resume.model, harness, &f.project_dir, &f.path, &records, IDLE_GAP);
     }
-    let model = thin(&resume.model, &cwd);
+    let model = Arc::new(thin(&resume.model, &cwd));
     let info = info_from(&model, &key, harness, &cwd);
     let cached_files: std::io::Result<Vec<_>> = files
         .into_iter()
@@ -103,12 +105,12 @@ fn ingest_session(job: Job, session_roots: &[PathBuf]) -> Scanned {
             Ok(cache::CachedSessionFile { project_dir: f.project_dir, file })
         })
         .collect();
-    let entry = cached_files.ok().map(|files| cache::Entry { harness, cwd, files, model });
-    Scanned { key, resume, info, entry }
+    let entry = cached_files.ok().map(|files| cache::Entry { harness, cwd, files, model: model.clone() });
+    Scanned { key, resume, info, model, entry }
 }
 
 pub enum Msg {
-    Session { info: SessionInfo, fresh_title: bool },
+    Session { info: SessionInfo, fresh_title: bool, model: Arc<Model> },
     Progress { done: usize, total: usize },
     Indexed { sessions: usize, scanned: usize, elapsed: Duration },
     Notice(String),
@@ -189,7 +191,7 @@ impl Indexer {
         let live_since = Utc::now() - chrono::Duration::hours(antty::tui::LIVE_HOURS);
         tracked.resume = s.info.span.is_some_and(|(_, end)| end >= live_since).then_some(s.resume);
         self.dirty = true;
-        self.tx.send(Msg::Session { info: s.info, fresh_title }).is_ok()
+        self.tx.send(Msg::Session { info: s.info, fresh_title, model: s.model }).is_ok()
     }
 
     fn process(&mut self, jobs: Vec<Job>, progress: bool) -> bool {
@@ -228,7 +230,7 @@ impl Indexer {
             let offsets = if let Some(e) = &entry {
                 hits += 1;
                 let info = info_from(&e.model, &key, harness, &cwd);
-                if self.tx.send(Msg::Session { info, fresh_title: false }).is_err() {
+                if self.tx.send(Msg::Session { info, fresh_title: false, model: e.model.clone() }).is_err() {
                     return false;
                 }
                 e.files.iter().map(|f| (f.file.path.clone(), f.file.offset)).collect()

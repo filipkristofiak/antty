@@ -415,6 +415,109 @@ pub fn suspend(terminal: &mut ratatui::DefaultTerminal) -> std::io::Result<Optio
 pub fn suspend(_terminal: &mut ratatui::DefaultTerminal) -> std::io::Result<Option<String>> {
     Ok(Some("Ctrl-z: suspend is not supported on this platform".into()))
 }
+
+pub const STATS_PANEL_WIDTH: u16 = 34;
+/// Narrower terminals leave no room for the panel beside the tree and timeline.
+pub const STATS_MIN_WIDTH: u16 = 110;
+
+/// Selection-vs-all comparison drawn by the stats panel.
+pub struct StatsView<'a> {
+    pub label: &'a str,
+    pub selected: &'a crate::stats::Stats,
+    pub all: &'a crate::stats::Stats,
+    /// Limited to the visible timeline range.
+    pub range: bool,
+    /// Add a row with the selection's share of all tool calls.
+    pub share: bool,
+}
+
+fn compact(n: usize) -> String {
+    match n {
+        0..10_000 => n.to_string(),
+        10_000..1_000_000 => format!("{:.1}k", n as f64 / 1_000.0),
+        _ => format!("{:.1}M", n as f64 / 1_000_000.0),
+    }
+}
+
+fn kpis(s: &crate::stats::Stats) -> [(&'static str, String); 5] {
+    [
+        ("calls", compact(s.calls)),
+        ("read", compact(s.files_read)),
+        ("written", compact(s.files_written)),
+        ("agent", s.agent_secs.map_or_else(|| "–".into(), |secs| fmt_span(chrono::Duration::seconds(secs)))),
+        ("prompts", s.prompts.map_or_else(|| "–".into(), compact)),
+    ]
+}
+
+fn bar_lines(tools: &[(String, usize)], width: u16, max_rows: usize) -> Vec<Line<'static>> {
+    use ratatui::style::Stylize;
+    use ratatui::text::Span;
+    if max_rows == 0 {
+        return Vec::new();
+    }
+    let Some((_, max_count)) = tools.first() else {
+        return vec![Line::from("no tool calls").fg(Color::DarkGray)];
+    };
+    let label_w = tools.iter().map(|(tool, _)| tool.chars().count()).max().unwrap_or(0).min(10);
+    let count_w = max_count.ilog10() as usize + 1;
+    let bar_w = usize::from(width).saturating_sub(label_w + count_w + 2);
+    let shown = if tools.len() > max_rows { max_rows - 1 } else { tools.len() };
+    let mut lines = Vec::with_capacity(tools.len().min(max_rows));
+    for (tool, count) in &tools[..shown] {
+        let label = truncate(tool, label_w);
+        let bar_len = (*count as u128 * bar_w as u128).div_ceil(*max_count as u128) as usize;
+        lines.push(Line::from(vec![
+            Span::raw(format!("{label:<label_w$} ")),
+            Span::raw("█".repeat(bar_len.max(1))).fg(Color::Cyan),
+            Span::raw(format!(" {count:>count_w$}")),
+        ]));
+    }
+    if shown < tools.len() {
+        lines.push(Line::from(format!("+{} more", tools.len() - shown)).fg(Color::DarkGray));
+    }
+    lines
+}
+
+fn append_chart(lines: &mut Vec<Line<'static>>, area: Rect, stats: &crate::stats::Stats) {
+    lines.push(Line::from("─".repeat(area.width.into())));
+    let remaining = usize::from(area.height).saturating_sub(lines.len());
+    lines.extend(bar_lines(&stats.tools, area.width, remaining));
+}
+
+pub fn render_stats_panel(f: &mut Frame, area: Rect, view: &StatsView) {
+    use ratatui::style::Stylize;
+    let title = if view.range { "Stats · range" } else { "Stats" };
+    let block = Block::default().borders(Borders::ALL).title(title);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let mut lines = vec![
+        Line::from(truncate(view.label, inner.width.into())).bold(),
+        Line::from(format!("{:<8}{:>11}{:>11}", "", "sel", "all")),
+    ];
+    for ((name, sel), (_, all)) in kpis(view.selected).into_iter().zip(kpis(view.all)) {
+        lines.push(Line::from(format!("{name:<8}{sel:>11}{all:>11}")));
+    }
+    if view.share {
+        let share = match view.all.calls {
+            0 => "–".into(),
+            all => format!("{}%", (view.selected.calls * 100).div_ceil(all).min(100)),
+        };
+        lines.push(Line::from(format!("{:<8}{share:>11}", "share")));
+    }
+    append_chart(&mut lines, inner, view.selected);
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+pub fn render_stats_column(f: &mut Frame, area: Rect, label: &str, stats: &crate::stats::Stats) {
+    use ratatui::style::Stylize;
+    let mut lines = vec![Line::from(truncate(label, area.width.into())).bold()];
+    for (name, value) in kpis(stats) {
+        lines.push(Line::from(format!("{name:<8}{value:>11}")));
+    }
+    append_chart(&mut lines, area, stats);
+    f.render_widget(Paragraph::new(lines), area);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

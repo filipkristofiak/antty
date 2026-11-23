@@ -179,16 +179,18 @@ inside a fold.
 Needs the display cache (bundle C).
 
 - **Stats panel `i`:** selection vs all, as in antty. A session row uses that
-  session; a project row sums over its cwds' models; a directory row in tree
-  order sums its projects. Distinct files read/written are a union of path
-  sets, so worktrees of one project don't count a path twice. Adds `share`:
-  the selection's share of all calls.
+  session; a project row sums its sessions' models; a directory row in tree
+  order sums its projects; fold rows show all. Only indexed sessions count.
+  Distinct files read/written are a union of path sets keyed by the owning
+  formi project, so worktrees of one project don't count a path twice and
+  unrelated projects never merge (`antty::stats::Tally`). Adds `share`: the
+  selection's share of all calls.
 - **Dashboard `I`:** left column is selection vs all (projects, sessions per
   harness, calls, files, prompts, tool mix); right column is projects ranked
   by calls and a fixed "last 7 days" block. `v` limits everything to the
   visible timeline range.
-- The panel and popup rendering moves from antty's `src/ui/stats.rs` into
-  `antty::tui`, shared by both binaries.
+- The panel rendering lives in `antty::tui` (`render_stats_panel`,
+  `render_stats_column`), shared by both binaries.
 - **Action filter** (which projects and sessions used web, MCP, eval, …):
   after stats, least certain to pay off.
 
@@ -300,10 +302,13 @@ checks; the version bump happens once, when formi lands.
   terminal), input drained under an 8 ms budget with same-direction wheel
   reports merged, and the wheel scrolling the hovered rows or Help without
   moving the selection.
+- **Bundle D.1, stats panel:** `i` toggles the panel described in Stats and
+  dashboard. The indexer sends each session's thin model with its activity,
+  so stats use the same projection as the display cache.
 
 ### Bundle D: analysis
 
-1. Stats panel `i` (see Stats and dashboard).
+1. ~~Stats panel `i`~~ (done).
 2. Dashboard `I`.
 3. Action filter.
 

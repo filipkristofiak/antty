@@ -19,13 +19,11 @@ use antty::cmdline::CmdLine;
 use antty::model::{Model, ParticipantId, ParticipantKind};
 use antty::timeline::View;
 use antty::tree::{ExpandState, FilesView, Row, Tree};
-use antty::tui::centered_rect;
+use antty::tui::{STATS_MIN_WIDTH, STATS_PANEL_WIDTH, centered_rect};
 
 /// Soft row tint for participants that touched the selected file/dir. Dark slate-teal so the
 /// participant's palette foreground stays readable and it differs from CURSOR_BG's column.
 pub const TOUCHED_BG: Color = Color::Rgb(32, 48, 62);
-pub const STATS_PANEL_WIDTH: u16 = 34;
-pub const STATS_MIN_WIDTH: u16 = 110;
 
 const PALETTE: [Color; 8] = [
     Color::Cyan,

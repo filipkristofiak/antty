@@ -1,6 +1,9 @@
 use antty::sessions::Harness;
 use antty::timeline::Column;
-use antty::tui::{CURSOR_BG, HIGHLIGHT_FG, SELECTED_BG, fold_glyph, truncate};
+use antty::tui::{
+    CURSOR_BG, HIGHLIGHT_FG, SELECTED_BG, STATS_MIN_WIDTH, STATS_PANEL_WIDTH, StatsView, fold_glyph,
+    render_stats_panel, truncate,
+};
 use ratatui::Frame;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -45,6 +48,13 @@ pub const HELP: antty::tui::HelpSections = &[
     ),
     ("Search", &[("/", "search project paths and session titles (smartcase)"), ("n/N", "next/prev match")]),
     (
+        "Stats",
+        &[(
+            "i",
+            "stats panel on/off: selected session, project or directory vs all indexed sessions, with its share of calls",
+        )],
+    ),
+    (
         "General",
         &[
             ("?", "this help. In help: j/k, Ctrl-d/Ctrl-u, g/G scroll"),
@@ -60,25 +70,27 @@ pub const HELP: antty::tui::HelpSections = &[
 pub struct Layout {
     pub tree: Rect,
     pub gantt: Rect,
+    /// The stats panel, when it is on and the terminal is wide enough.
+    pub stats: Option<Rect>,
     pub status: Rect,
     pub help: Rect,
     pub body_height: u16,
     pub gantt_width: u16,
 }
 
-pub fn layout(root: Rect) -> Layout {
+pub fn layout(root: Rect, stats_panel: bool) -> Layout {
     let outer = Split::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(1)])
         .split(root);
     let tw = (root.width / 3).clamp(20, 40);
-    let panes = Split::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(tw), Constraint::Min(10)])
-        .split(outer[0]);
+    let columns = [Constraint::Length(tw), Constraint::Min(10), Constraint::Length(STATS_PANEL_WIDTH)];
+    let panel = stats_panel && root.width >= STATS_MIN_WIDTH;
+    let panes = Split::horizontal(&columns[..if panel { 3 } else { 2 }]).split(outer[0]);
     Layout {
         tree: panes[0],
         gantt: panes[1],
+        stats: panes.get(2).copied(),
         status: outer[1],
         help: antty::tui::centered_rect(60, 80, root),
         body_height: panes[1].height.saturating_sub(4),
@@ -90,6 +102,18 @@ pub fn draw(f: &mut Frame, app: &App) {
     tree(f, app);
     gantt(f, app);
     status(f, app);
+    if let Some(area) = app.layout.stats {
+        let (label, selection, all) = app.stats();
+        let view = StatsView {
+            label: &label,
+            selected: selection.as_ref().unwrap_or(&all),
+            all: &all,
+            range: false,
+            // Against itself the share is always 100%; only a real selection gets the row.
+            share: selection.is_some(),
+        };
+        render_stats_panel(f, area, &view);
+    }
     if let Some(scroll) = app.help {
         antty::tui::render_help(f, app.layout.help, scroll, HELP);
     }
@@ -253,16 +277,16 @@ fn status(f: &mut Frame, app: &App) {
         f.render_widget(Paragraph::new(truncate(flash, width)).style(Style::default().fg(Color::Red)), area);
         return;
     }
-    let left =
-        "Nav (j/k/h/l) | Zoom (+/-) | Now (t) | Fit (f) | Open (⏎) | Fold (␣) | Order (o) | Help (?) | Quit (:q)";
+    let left = "Nav (j/k/h/l) | Zoom (+/-) | Now (t) | Fit (f) | Open (⏎) | Fold (␣) | Order (o) | Stats (i) | Help (?) | Quit (:q)";
     let right = format!(
-        "{} · {} projects · {} sessions · order:{} · gaps:{} · fold:{}",
+        "{} · {} projects · {} sessions · order:{} · gaps:{} · fold:{}{}",
         app.view.zoom_label(),
         app.projects.len(),
         app.projects.iter().map(|p| p.sessions.len()).sum::<usize>(),
         if app.order == Order::Recent { "recent" } else { "tree" },
         if app.view.collapse_gaps() { "on" } else { "off" },
-        if app.fold { "on" } else { "off" }
+        if app.fold { "on" } else { "off" },
+        if app.stats_panel && app.layout.stats.is_none() { " · stats:narrow" } else { "" }
     );
     let right = if let Some(s) = &app.index_status { format!("{s} · {right}") } else { right };
     let left_len = left.chars().count();

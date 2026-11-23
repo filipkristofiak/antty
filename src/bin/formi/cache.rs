@@ -28,7 +28,7 @@ pub struct Entry {
     pub harness: Harness,
     pub cwd: PathBuf,
     pub files: Vec<CachedSessionFile>,
-    pub model: Model,
+    pub model: std::sync::Arc<Model>,
 }
 
 pub fn load(path: &Path) -> HashMap<PathBuf, Entry> {

@@ -236,6 +236,7 @@ displayed rows, refreshed when those rows are rebuilt.
 | `[count]+/-`, `=`, `t`, `f`, `c` | Zoom, now, fit, toggle collapsed gaps |
 | `o` | Toggle recent/path-tree order |
 | `p` | Toggle folding older sessions and projects |
+| `i` | Toggle the stats panel (110+ columns wide): the selected session, project or directory vs all indexed sessions, with the selection's share of tool calls; fold rows show all |
 | `?` | Open help; scroll with `j/k`, `Ctrl-d/u`, or `g/G`; close with `q`, `?`, or `Esc` |
 | `Space/za` | Toggle node; on a session, close and select its project; on a fold row, reveal hidden rows |
 | `zo/zc`, `zR/zM` | Open/close node; expand/collapse all |

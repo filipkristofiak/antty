@@ -143,7 +143,8 @@ fn run_loop(
     const INPUT_BUDGET: Duration = Duration::from_millis(8);
 
     let size = terminal.size()?;
-    app.layout = ui::layout(ratatui::layout::Rect::new(0, 0, size.width, size.height));
+    let mut root = ratatui::layout::Rect::new(0, 0, size.width, size.height);
+    app.layout = ui::layout(root, app.stats_panel);
     app.fit();
     let mut dirty = true;
     let mut last_draw = Instant::now();
@@ -154,7 +155,10 @@ fn run_loop(
             let Ok(msg) = rx.try_recv() else { break };
             dirty = true;
             match msg {
-                Msg::Session { info, fresh_title } => updates.push((info, fresh_title)),
+                Msg::Session { info, fresh_title, model } => {
+                    app.models.insert(info.file.clone(), model);
+                    updates.push((info, fresh_title));
+                }
                 Msg::Progress { done, total } => app.index_status = Some(format!("indexing {done}/{total}")),
                 Msg::Indexed { sessions, scanned, elapsed } => {
                     app.index_status =
@@ -168,7 +172,8 @@ fn run_loop(
             app.apply(updates);
         }
         let size = terminal.size()?;
-        app.layout = ui::layout(ratatui::layout::Rect::new(0, 0, size.width, size.height));
+        root = ratatui::layout::Rect::new(0, 0, size.width, size.height);
+        app.layout = ui::layout(root, app.stats_panel);
         app.clamp_scroll();
         app.view.clamp_to_view(app.layout.gantt_width as usize);
         if dirty || last_draw.elapsed() >= Duration::from_secs(1) {
@@ -188,6 +193,8 @@ fn run_loop(
                         if app.handle_key(key) {
                             return Ok(());
                         }
+                        // `i` changes the columns that later wheel events in this batch hit.
+                        app.layout = ui::layout(root, app.stats_panel);
                         if let Some(inv) = app.launch.take() {
                             app.flash = if inv.suspend {
                                 mouse.hand_off(|| antty::tui::run(terminal, &inv))?
@@ -214,7 +221,8 @@ fn run_loop(
                     }
                     Event::Resize(width, height) => {
                         app.apply_wheel(wheel.take());
-                        app.layout = ui::layout(ratatui::layout::Rect::new(0, 0, width, height));
+                        root = ratatui::layout::Rect::new(0, 0, width, height);
+                        app.layout = ui::layout(root, app.stats_panel);
                         app.clamp_scroll();
                         dirty = true;
                     }

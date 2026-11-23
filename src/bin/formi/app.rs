@@ -1,11 +1,13 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use antty::cmdline::{self, CmdKind, CmdLine};
-use antty::model::Ts;
+use antty::model::{Model, Ts};
 use antty::search;
 use antty::sessions::Harness;
+use antty::stats::{Stats, Subject, Tally};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::layout::Position;
 
@@ -96,6 +98,14 @@ pub fn overlaps(spans: &[(Ts, Ts)], bs: Ts, be: Ts) -> bool {
 }
 
 impl Forest {
+    /// Every project at `node` or below it.
+    fn projects_under(&self, node: usize, out: &mut Vec<usize>) {
+        out.extend(self.nodes[node].project);
+        for &child in &self.nodes[node].children {
+            self.projects_under(child, out);
+        }
+    }
+
     fn aggregate(&mut self, node: usize, projects: &[ProjectView]) {
         let mut spans = Vec::new();
         let mut sessions = 0;
@@ -280,6 +290,9 @@ pub struct App {
     pub cmdline: Option<CmdLine>,
     pub search: Option<String>,
     pub help: Option<u16>,
+    pub stats_panel: bool,
+    /// Thin activity models by session file, used for stats; missing until a session is indexed.
+    pub models: HashMap<PathBuf, Arc<Model>>,
     pub no_color: bool,
     pub launch: Option<antty::tui::Invocation>,
     pub suspend: bool,
@@ -309,12 +322,14 @@ impl App {
             wheel_view: false,
             no_mouse: false,
             view: antty::timeline::View::new(true),
-            layout: crate::ui::layout(ratatui::layout::Rect::default()),
+            layout: crate::ui::layout(ratatui::layout::Rect::default(), false),
             flash: None,
             index_status: Some("indexing".into()),
             cmdline: None,
             search: None,
             help: None,
+            stats_panel: false,
+            models: HashMap::new(),
             no_color: std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()),
             launch: None,
             suspend: false,
@@ -326,6 +341,40 @@ impl App {
         app.refresh_activity();
         app.rebuild_at(app.live_since);
         app
+    }
+
+    /// The stats panel's label, the selection's stats (`None` when it is everything), and the
+    /// stats over every indexed session.
+    pub fn stats(&self) -> (String, Option<Stats>, Stats) {
+        let selection = match self.rows.get(self.selected).copied() {
+            Some(Row::Session { project, session, .. }) => {
+                let s = &self.projects[project].sessions[session];
+                Some((s.title.clone(), self.tally([(project, s)])))
+            }
+            Some(Row::Node { node, .. }) => {
+                let mut projects = Vec::new();
+                self.forest.projects_under(node, &mut projects);
+                let sessions = projects.into_iter().flat_map(|p| self.projects[p].sessions.iter().map(move |s| (p, s)));
+                Some((self.forest.nodes[node].full_label.clone(), self.tally(sessions)))
+            }
+            Some(Row::SessionFold { .. } | Row::ProjectFold) | None => None,
+        };
+        let all =
+            self.tally(self.projects.iter().enumerate().flat_map(|(p, v)| v.sessions.iter().map(move |s| (p, s))));
+        match selection {
+            Some((label, stats)) => (label, Some(stats), all),
+            None => ("all".into(), None, all),
+        }
+    }
+
+    fn tally<'a>(&'a self, sessions: impl IntoIterator<Item = (usize, &'a SessionInfo)>) -> Stats {
+        let mut tally = Tally::default();
+        for (project, session) in sessions {
+            if let Some(model) = self.models.get(&session.file) {
+                tally.add(model, &Subject::All, None, Some(&self.projects[project].key.path));
+            }
+        }
+        tally.finish()
     }
 
     fn refresh_activity(&mut self) {
@@ -814,6 +863,7 @@ impl App {
         match key.code {
             KeyCode::Char(':') => self.cmdline = Some(CmdLine::new(CmdKind::Command)),
             KeyCode::Char('/') => self.cmdline = Some(CmdLine::new(CmdKind::Search)),
+            KeyCode::Char('i') => self.stats_panel = !self.stats_panel,
             KeyCode::Char('n' | 'N') => {
                 if let Some(query) = self.search.take() {
                     self.search_step(&query, key.code == KeyCode::Char('n'), n);
@@ -1041,10 +1091,42 @@ mod tests {
     }
 
     #[test]
+    fn stats_sum_a_projects_sessions_and_count_its_files_once() {
+        use antty::model::{EventDetail, FileEvent, ParticipantKind, Scope, TouchKind, TouchSource};
+        let mut app = App::new(vec![project(0, [10, 20]), project(1, [30])], PathBuf::new(), roots());
+        for (p, s, id) in [(0, 0, "a"), (0, 1, "b"), (1, 0, "c")] {
+            let session = &app.projects[p].sessions[s];
+            let mut model = Model::new(vec![session.cwd.clone()]);
+            let who = model.get_or_create_participant(&session.file, ParticipantKind::Main, "main".into(), None, None);
+            model.record_tool_call(who, id, "read", Ts::UNIX_EPOCH);
+            model.events.push(FileEvent {
+                who,
+                rel: "src/main.rs".into(),
+                scope: Scope::Project(0),
+                kind: TouchKind::Read,
+                source: TouchSource::Tool("read".into()),
+                start: Ts::UNIX_EPOCH,
+                end: Ts::UNIX_EPOCH,
+                tool_call_id: Some(id.into()),
+                detail: EventDetail::None,
+            });
+            app.models.insert(session.file.clone(), Arc::new(model));
+        }
+        let counts = |stats: &Stats| (stats.calls, stats.files_read);
+        let (label, selection, all) = app.stats();
+        assert_eq!((label.as_str(), selection.as_ref().map(counts), counts(&all)), ("/q/p0", Some((2, 1)), (3, 2)));
+
+        app.handle_key(KeyEvent::from(KeyCode::Char(' ')));
+        app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+        let (label, selection, _) = app.stats();
+        assert_eq!((label.as_str(), selection.as_ref().map(counts)), ("session 0", Some((1, 1))));
+    }
+
+    #[test]
     fn wheel_scrolls_rows_without_moving_selection_until_a_row_key() {
         let projects = (0..14).map(|i| project(i, [(i as i64 + 3) * 60])).collect();
         let mut app = App::new(projects, PathBuf::new(), roots());
-        app.layout = crate::ui::layout(ratatui::layout::Rect::new(0, 0, 160, 12));
+        app.layout = crate::ui::layout(ratatui::layout::Rect::new(0, 0, 160, 12), false);
         app.clamp_scroll();
         let gantt = app.layout.gantt;
         let wheel = |app: &mut App, kind| {
@@ -1123,7 +1205,7 @@ mod tests {
         app.rebuild_at(chrono::Utc::now() - chrono::Duration::hours(3));
         assert_eq!(app.rows.len(), 8);
 
-        app.layout = crate::ui::layout(ratatui::layout::Rect::new(0, 0, 160, 20));
+        app.layout = crate::ui::layout(ratatui::layout::Rect::new(0, 0, 160, 20), false);
         app.clamp_scroll();
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 20)).unwrap();
         terminal.draw(|f| crate::ui::draw(f, &app)).unwrap();
@@ -1164,7 +1246,7 @@ mod tests {
     #[test]
     fn help_scrolls_without_moving_the_selected_row() {
         let mut app = App::new(vec![project(0, [180]), project(1, [240])], PathBuf::new(), roots());
-        app.layout = crate::ui::layout(ratatui::layout::Rect::new(0, 0, 160, 24));
+        app.layout = crate::ui::layout(ratatui::layout::Rect::new(0, 0, 160, 24), false);
         app.handle_key(KeyEvent::from(KeyCode::Char('?')));
         assert_eq!(app.help, Some(0));
         app.handle_key(KeyEvent::from(KeyCode::Char('j')));

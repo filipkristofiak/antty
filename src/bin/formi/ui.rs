@@ -18,6 +18,7 @@ pub const HELP: antty::tui::HelpSections = &[
             ("j/k, ↓/↑", "row down/up"),
             ("gg/G", "first/last row; [count]: row N"),
             ("Ctrl-d/Ctrl-u", "half page down/up; [count]: N rows"),
+            ("Wheel", "scroll the rows or help under the pointer by 3 rows; keep selection"),
         ],
     ),
     (

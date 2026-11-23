@@ -209,9 +209,10 @@ With an action filter (`F`) active, PARTICIPANTS keeps `you` and sessions with a
 
 ## Formi
 
-`formi [--omp-dir <PATH>] [--claude-dir <PATH>] [--codex-dir <PATH>] [--list]`
+`formi [--omp-dir <PATH>] [--claude-dir <PATH>] [--codex-dir <PATH>] [--no-mouse] [--list]`
 shows all discovered projects. Harness-root flags and defaults match antty;
-`--list` prints per-project, per-cwd and total session counts instead of the TUI.
+`--no-mouse` disables mouse capture as in antty; `--list` prints per-project,
+per-cwd and total session counts instead of the TUI.
 
 Projects start collapsed, newest activity first. `o` toggles an alphabetical
 path tree; expansion keys are shared between both orders. `▓` bars are merged
@@ -230,6 +231,7 @@ displayed rows, refreshed when those rows are rebuilt.
 | Key | Formi action |
 | --- | --- |
 | `[count]j/k`, `↓/↑`, `gg/G`, `Ctrl-d/u` | Navigate rows; counts select/repeat as in antty |
+| Wheel | Scroll the rows (or Help) under the pointer by three rows per wheel event; keep the selection |
 | `[count]h/l`, `←/→`, `H/L` | Move the time cursor / half-pane pan |
 | `[count]+/-`, `=`, `t`, `f`, `c` | Zoom, now, fit, toggle collapsed gaps |
 | `o` | Toggle recent/path-tree order |
@@ -252,3 +254,7 @@ resolved beside formi first, then on PATH, and receives the same three harness
 roots formi used for discovery. `█` marks indexed activity and `▒` marks
 not-yet-indexed session spans; live polling runs once a second and the cache
 is stored at `<state-dir>/formi/activity.bin`.
+
+Mouse capture and wheel scrolling work as in antty: the tree and timeline share
+one viewport, the selected row can go offscreen, and a row-navigation key brings
+its destination back into view.

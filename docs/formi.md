@@ -295,19 +295,17 @@ checks; the version bump happens once, when formi lands.
   invalidated its cache entry and matched a cold scan. The tmux smoke test
   confirmed a warm cache hit and a second activity bar after a live append
   without restarting.
+- **Wheel scrolling:** copied from antty's #20 fix: shared mouse capture
+  (`antty::tui::MouseCapture`, released while antty or a shell owns the
+  terminal), input drained under an 8 ms budget with same-direction wheel
+  reports merged, and the wheel scrolling the hovered rows or Help without
+  moving the selection.
 
 ### Bundle D: analysis
 
 1. Stats panel `i` (see Stats and dashboard).
 2. Dashboard `I`.
 3. Action filter.
-
-### Scrolling
-
-Not solved in formi. Wheel scrolling is tracked for antty in
-[#20](https://github.com/filipkristofiak/antty/issues/20). Once that lands on
-`main`, rebase and copy only the input handling that proved itself there into
-formi's own `run_loop`.
 
 ### Landing
 

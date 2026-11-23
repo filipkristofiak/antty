@@ -29,6 +29,9 @@ struct RawArgs {
     /// Print the project list with per-harness session counts instead of opening the TUI.
     #[arg(long)]
     list: bool,
+    /// Disable mouse capture so the terminal handles wheel input and text selection.
+    #[arg(long)]
+    no_mouse: bool,
 }
 
 fn harness_roots(raw: RawArgs) -> [(Harness, PathBuf); 3] {
@@ -99,6 +102,7 @@ fn counts(sessions: &[SessionInfo]) -> [usize; 3] {
 fn main() -> anyhow::Result<()> {
     let raw = RawArgs::parse();
     let list = raw.list;
+    let no_mouse = raw.no_mouse;
     let roots = harness_roots(raw);
     let (by_cwd, sources) = collect(&roots);
     let projects = group(by_cwd);
@@ -112,9 +116,15 @@ fn main() -> anyhow::Result<()> {
     let (tx, rx) = mpsc::sync_channel(256);
     let mut app =
         app::App::new(app::project_views(projects), home.map(PathBuf::from).unwrap_or_default(), roots.clone());
+    app.no_mouse = no_mouse;
     activity::spawn(roots, sources, cache_path, tx);
     let mut terminal = ratatui::init();
-    let result = run_loop(&mut terminal, &mut app, rx);
+    let mut mouse = antty::tui::MouseCapture::default();
+    let result = mouse
+        .set(!no_mouse)
+        .map_err(anyhow::Error::from)
+        .and_then(|()| run_loop(&mut terminal, &mut app, rx, &mut mouse));
+    drop(mouse);
     ratatui::restore();
     result
 }
@@ -123,11 +133,14 @@ fn run_loop(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut app::App,
     rx: mpsc::Receiver<activity::Msg>,
+    mouse: &mut antty::tui::MouseCapture,
 ) -> anyhow::Result<()> {
     use crossterm::event::{self, Event, KeyEventKind};
     use std::time::{Duration, Instant};
 
     use activity::Msg;
+
+    const INPUT_BUDGET: Duration = Duration::from_millis(8);
 
     let size = terminal.size()?;
     app.layout = ui::layout(ratatui::layout::Rect::new(0, 0, size.width, size.height));
@@ -164,23 +177,54 @@ fn run_loop(
             dirty = false;
         }
         if event::poll(Duration::from_millis(if backlog { 0 } else { 200 }))? {
-            match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    dirty = true;
-                    if app.handle_key(key) {
-                        break;
+            let started = Instant::now();
+            // Same-direction wheel reports for one pane, applied once before the next other event.
+            let mut wheel = None;
+            loop {
+                match event::read()? {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        app.apply_wheel(wheel.take());
+                        dirty = true;
+                        if app.handle_key(key) {
+                            return Ok(());
+                        }
+                        if let Some(inv) = app.launch.take() {
+                            app.flash = if inv.suspend {
+                                mouse.hand_off(|| antty::tui::run(terminal, &inv))?
+                            } else {
+                                antty::tui::run(terminal, &inv)?
+                            };
+                        }
+                        if std::mem::take(&mut app.suspend) {
+                            app.flash = mouse.hand_off(|| antty::tui::suspend(terminal))?;
+                        }
                     }
-                    if let Some(inv) = app.launch.take() {
-                        app.flash = antty::tui::run(terminal, &inv)?;
+                    Event::Mouse(event) if mouse.enabled() => {
+                        if let Some((pane, delta)) = app.wheel_action(event) {
+                            // Do not cancel opposite directions at a scroll boundary.
+                            if let Some((target, amount)) = &mut wheel
+                                && *target == pane
+                                && amount.signum() == delta.signum()
+                            {
+                                *amount += delta;
+                            } else {
+                                dirty |= app.apply_wheel(wheel.replace((pane, delta)));
+                            }
+                        }
                     }
-                    if std::mem::take(&mut app.suspend) {
-                        app.flash = antty::tui::suspend(terminal)?;
+                    Event::Resize(width, height) => {
+                        app.apply_wheel(wheel.take());
+                        app.layout = ui::layout(ratatui::layout::Rect::new(0, 0, width, height));
+                        app.clamp_scroll();
+                        dirty = true;
                     }
+                    _ => {}
                 }
-                Event::Resize(..) => dirty = true,
-                _ => {}
+                if started.elapsed() >= INPUT_BUDGET || !event::poll(Duration::ZERO)? {
+                    break;
+                }
             }
+            dirty |= app.apply_wheel(wheel);
         }
     }
-    Ok(())
 }

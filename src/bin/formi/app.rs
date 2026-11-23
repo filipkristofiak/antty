@@ -6,7 +6,8 @@ use antty::cmdline::{self, CmdKind, CmdLine};
 use antty::model::Ts;
 use antty::search;
 use antty::sessions::Harness;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+use ratatui::layout::Position;
 
 use crate::discover::{Drill, Kind, Origin, Project, ProjectKey, SessionInfo, project_of};
 
@@ -248,6 +249,13 @@ enum Anchor {
     None,
 }
 
+/// Viewport a wheel event scrolls: the shared tree/Gantt rows or the Help overlay.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum WheelPane {
+    Rows,
+    Help,
+}
+
 pub struct App {
     pub projects: Vec<ProjectView>,
     pub home: PathBuf,
@@ -261,6 +269,10 @@ pub struct App {
     pub live_since: Ts,
     pub selected: usize,
     pub scroll: usize,
+    /// Forwarded to antty on drill-down so capture stays off there too.
+    pub no_mouse: bool,
+    /// Wheel scrolling may leave the selected row outside the shared tree/Gantt viewport.
+    wheel_view: bool,
     pub view: antty::timeline::View,
     pub layout: crate::ui::Layout,
     pub flash: Option<String>,
@@ -294,6 +306,8 @@ impl App {
             live_since: live_cutoff(),
             selected: 0,
             scroll: 0,
+            wheel_view: false,
+            no_mouse: false,
             view: antty::timeline::View::new(true),
             layout: crate::ui::layout(ratatui::layout::Rect::default()),
             flash: None,
@@ -524,6 +538,7 @@ impl App {
         }
         self.rebuild_at(live_since);
         if let Some(i) = self.rows.iter().position(|&r| same_row(r, row)) {
+            self.wheel_view = false;
             self.selected = i;
         }
         self.clamp_scroll();
@@ -565,12 +580,56 @@ impl App {
     pub fn clamp_scroll(&mut self) {
         self.selected = self.selected.min(self.rows.len().saturating_sub(1));
         let height = self.layout.body_height.max(1) as usize;
-        self.scroll = self.scroll.min(self.rows.len().saturating_sub(height));
-        if self.selected < self.scroll {
-            self.scroll = self.selected;
+        if !self.wheel_view {
+            if self.selected < self.scroll {
+                self.scroll = self.selected;
+            }
+            if self.selected >= self.scroll + height {
+                self.scroll = self.selected + 1 - height;
+            }
         }
-        if self.selected >= self.scroll + height {
-            self.scroll = self.selected + 1 - height;
+        self.scroll = self.scroll.min(self.rows.len().saturating_sub(height));
+        self.wheel_view &= !(self.scroll..self.scroll + height).contains(&self.selected);
+    }
+
+    pub fn wheel_action(&self, event: MouseEvent) -> Option<(WheelPane, i64)> {
+        let delta: i64 = match event.kind {
+            MouseEventKind::ScrollUp => -3,
+            MouseEventKind::ScrollDown => 3,
+            _ => return None,
+        };
+        let point = Position::new(event.column, event.row);
+        let layout = &self.layout;
+        let pane = if self.help.is_some() {
+            layout.help.contains(point).then_some(WheelPane::Help)?
+        } else if layout.body_height > 0 && (layout.tree.contains(point) || layout.gantt.contains(point)) {
+            WheelPane::Rows
+        } else {
+            return None;
+        };
+        Some((pane, delta))
+    }
+
+    pub fn apply_wheel(&mut self, action: Option<(WheelPane, i64)>) -> bool {
+        let Some((pane, delta)) = action else { return false };
+        match pane {
+            WheelPane::Rows => {
+                let before = self.scroll;
+                let max = self.rows.len().saturating_sub(self.layout.body_height.into());
+                self.scroll = before.saturating_add_signed(delta as isize).min(max);
+                if before != self.scroll {
+                    self.wheel_view = true;
+                    self.clamp_scroll();
+                }
+                before != self.scroll
+            }
+            WheelPane::Help => {
+                let page = self.layout.help.height.saturating_sub(2);
+                let max = (antty::tui::help_line_count(crate::ui::HELP) as u16).saturating_sub(page);
+                let Some(scroll) = &mut self.help else { return false };
+                let next = (i64::from((*scroll).min(max)) + delta).clamp(0, i64::from(max)) as u16;
+                next != std::mem::replace(scroll, next)
+            }
         }
     }
 
@@ -661,7 +720,7 @@ impl App {
             self.flash = Some(format!("cwd no longer exists: {}", cwd.display()));
             return;
         };
-        self.launch = Some(antty_invocation(target, &self.roots));
+        self.launch = Some(antty_invocation(target, &self.roots, self.no_mouse));
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
@@ -695,6 +754,8 @@ impl App {
         let width = self.layout.gantt_width.max(1) as usize;
         if let Some(prefix) = self.pending.take() {
             let count = std::mem::take(&mut self.count);
+            // Every prefix command selects or folds rows; bring the result into view.
+            self.wheel_view = false;
             if plain {
                 match (prefix, key.code) {
                     ('Z', KeyCode::Char('Z' | 'Q')) => return true,
@@ -719,6 +780,9 @@ impl App {
         }
         if !plain {
             let count = std::mem::take(&mut self.count);
+            if matches!(key.code, KeyCode::Char('d' | 'u')) {
+                self.wheel_view = false;
+            }
             if key.modifiers == KeyModifiers::CONTROL {
                 let half = if count > 0 { count } else { (self.layout.body_height as usize / 2).max(1) };
                 match key.code {
@@ -744,6 +808,9 @@ impl App {
         }
         let count = std::mem::take(&mut self.count);
         let n = count.max(1);
+        if matches!(key.code, KeyCode::Char('j' | 'k' | 'G' | ' ') | KeyCode::Down | KeyCode::Up | KeyCode::Enter) {
+            self.wheel_view = false;
+        }
         match key.code {
             KeyCode::Char(':') => self.cmdline = Some(CmdLine::new(CmdKind::Command)),
             KeyCode::Char('/') => self.cmdline = Some(CmdLine::new(CmdKind::Search)),
@@ -858,14 +925,14 @@ fn same_row(a: Row, b: Row) -> bool {
     }
 }
 
-fn antty_invocation(target: &Path, roots: &[(Harness, PathBuf); 3]) -> antty::tui::Invocation {
+fn antty_invocation(target: &Path, roots: &[(Harness, PathBuf); 3], no_mouse: bool) -> antty::tui::Invocation {
     let program = std::env::current_exe()
         .ok()
         .map(|p| p.with_file_name(format!("antty{}", std::env::consts::EXE_SUFFIX)))
         .filter(|p| p.exists())
         .map(PathBuf::into_os_string)
         .unwrap_or_else(|| "antty".into());
-    let mut args = Vec::with_capacity(2 + 2 * roots.len());
+    let mut args = Vec::with_capacity(3 + 2 * roots.len());
     args.extend(["--project".into(), target.as_os_str().to_owned()]);
     for (harness, dir) in roots {
         let flag = match harness {
@@ -874,6 +941,9 @@ fn antty_invocation(target: &Path, roots: &[(Harness, PathBuf); 3]) -> antty::tu
             Harness::Codex => "--codex-dir",
         };
         args.extend([flag.into(), dir.as_os_str().to_owned()]);
+    }
+    if no_mouse {
+        args.push("--no-mouse".into());
     }
     antty::tui::Invocation { program, args, suspend: true, stdin: None }
 }
@@ -913,20 +983,20 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
         assert!(app.launch.is_none());
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        let inv = app.launch.take().unwrap();
-        assert_eq!(
-            inv.args,
-            [
-                OsString::from("--project"),
-                cwd.into_os_string(),
-                OsString::from("--omp-dir"),
-                OsString::from("/q/omp"),
-                OsString::from("--claude-dir"),
-                OsString::from("/q/claude"),
-                OsString::from("--codex-dir"),
-                OsString::from("/q/codex"),
-            ]
-        );
+        let expected = [
+            OsString::from("--project"),
+            cwd.into_os_string(),
+            OsString::from("--omp-dir"),
+            OsString::from("/q/omp"),
+            OsString::from("--claude-dir"),
+            OsString::from("/q/claude"),
+            OsString::from("--codex-dir"),
+            OsString::from("/q/codex"),
+        ];
+        assert_eq!(app.launch.take().unwrap().args, expected);
+        app.no_mouse = true;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.launch.take().unwrap().args[expected.len()..], [OsString::from("--no-mouse")]);
         app.handle_key(key('9'));
         app.handle_key(key('g'));
         app.handle_key(key('g'));
@@ -968,6 +1038,33 @@ mod tests {
             drill: Drill::Local(path),
             sessions,
         }
+    }
+
+    #[test]
+    fn wheel_scrolls_rows_without_moving_selection_until_a_row_key() {
+        let projects = (0..14).map(|i| project(i, [(i as i64 + 3) * 60])).collect();
+        let mut app = App::new(projects, PathBuf::new(), roots());
+        app.layout = crate::ui::layout(ratatui::layout::Rect::new(0, 0, 160, 12));
+        app.clamp_scroll();
+        let gantt = app.layout.gantt;
+        let wheel = |app: &mut App, kind| {
+            let event = MouseEvent { kind, column: gantt.x + 1, row: gantt.y + 3, modifiers: KeyModifiers::NONE };
+            let action = app.wheel_action(event);
+            app.apply_wheel(action)
+        };
+        assert!(wheel(&mut app, MouseEventKind::ScrollDown));
+        assert!(wheel(&mut app, MouseEventKind::ScrollDown));
+        app.rebuild();
+        app.clamp_scroll();
+        assert_eq!((app.scroll, app.selected), (6, 0));
+        assert!(!wheel(&mut app, MouseEventKind::ScrollDown));
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+        assert_eq!((app.scroll, app.selected), (1, 1));
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+        assert!(wheel(&mut app, MouseEventKind::ScrollDown));
+        assert_eq!((app.help, app.scroll), (Some(3), 1));
     }
 
     #[test]

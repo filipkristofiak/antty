@@ -360,6 +360,44 @@ fn enter_tui(terminal: &mut ratatui::DefaultTerminal) -> std::io::Result<()> {
     terminal.hide_cursor()
 }
 
+/// Terminal mouse reporting that is switched off while a child process owns the terminal
+/// and when dropped.
+#[derive(Default)]
+pub struct MouseCapture(bool);
+
+impl MouseCapture {
+    pub fn enabled(&self) -> bool {
+        self.0
+    }
+
+    pub fn set(&mut self, enabled: bool) -> std::io::Result<()> {
+        use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+        if enabled && !self.0 {
+            // Also attempt cleanup if enabling fails after writing only part of the sequence.
+            self.0 = true;
+            crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
+        } else if !enabled && self.0 {
+            crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
+            self.0 = false;
+        }
+        Ok(())
+    }
+
+    pub fn hand_off<T>(&mut self, run: impl FnOnce() -> std::io::Result<T>) -> std::io::Result<T> {
+        let enabled = self.0;
+        self.set(false)?;
+        let result = run()?;
+        self.set(enabled)?;
+        Ok(result)
+    }
+}
+
+impl Drop for MouseCapture {
+    fn drop(&mut self) {
+        let _ = self.set(false);
+    }
+}
+
 /// Stop antty like vim's `Ctrl-z`: hand the terminal back, SIGTSTP ourselves, and restore
 /// the TUI once the shell resumes us (`fg`). Returns a flash message on failure.
 #[cfg(unix)]

@@ -85,9 +85,9 @@ Implementation remains pending.
 
 Concept mockup (illustrative data; not implemented, controls not finalized):
 
-![Context-scoped tree with branch activity and excluded contexts](git-context-tree.png)
+![Context-scoped tree with branch activity and excluded contexts](img/git-context-tree.png)
 
-[SVG source](git-context-tree.svg)
+[SVG source](img/git-context-tree.svg)
 
 ### 3.3 Explain drift with a pinned comparison and move links
 
@@ -106,9 +106,9 @@ Concept mockup (illustrative data; not implemented, controls not finalized):
 
 Concept mockup (illustrative data; not implemented, controls not finalized):
 
-![Pinned branch comparison showing rename candidates and file-to-directory drift](git-drift-comparison.png)
+![Pinned branch comparison showing rename candidates and file-to-directory drift](img/git-drift-comparison.png)
 
-[SVG source](git-drift-comparison.svg)
+[SVG source](img/git-drift-comparison.svg)
 
 ### 3.4 Project a coverage-aware tree at cursor time
 
@@ -126,9 +126,9 @@ Concept mockup (illustrative data; not implemented, controls not finalized):
 
 Concept mockup (illustrative data; not implemented, controls not finalized):
 
-![Historical tree at the cursor with incomplete uncommitted coverage labelled](git-historical-tree.png)
+![Historical tree at the cursor with incomplete uncommitted coverage labelled](img/git-historical-tree.png)
 
-[SVG source](git-historical-tree.svg)
+[SVG source](img/git-historical-tree.svg)
 
 Use Git tree queries without mutating the checkout; cache listings by tree
 object ID and load blobs/rename comparisons on demand. No Git subprocesses in

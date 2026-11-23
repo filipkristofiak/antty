@@ -8,15 +8,21 @@ plus let-chains, used in `src/dirs.rs`).
 ## Install
 
 ```
-cargo install --path .
+cargo install --locked --git https://github.com/filipkristofiak/antty --tag v0.2.27
 ```
 
-This installs two binaries into `~/.cargo/bin`: `antty` (one project's timeline) and `formi` (an overview of every project with coding-agent sessions); make sure that directory is on `PATH`.
+This installs two binaries into `~/.cargo/bin`: `antty` (one project's timeline) and `formi` (an overview of every project with coding-agent sessions); make sure that directory is on `PATH`. `--locked` builds with the shipped `Cargo.lock`, the dependency versions CI tested.
+
+From a checkout:
+
+```
+cargo install --locked --path .
+```
 
 With a Homebrew-installed rustup, plain `cargo` may not be on `PATH`. Use:
 
 ```
-rustup run stable cargo install --path .
+rustup run stable cargo install --locked --path .
 ```
 
 ## Running from source

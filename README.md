@@ -23,7 +23,7 @@ Every project with agent sessions on one timeline; Enter opens it in antty.
 ## Quick start
 
 ```
-cargo install --path .
+cargo install --locked --git https://github.com/filipkristofiak/antty --tag v0.2.27
 ```
 
 Then run `antty` from inside a project directory, or `formi` anywhere for an overview of every project.

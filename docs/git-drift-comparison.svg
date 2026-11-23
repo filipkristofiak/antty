@@ -1,9 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 336" role="img" aria-labelledby="drift-title drift-desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="336" viewBox="0 0 920 336" xml:space="preserve" role="img" aria-labelledby="drift-title drift-desc">
 <title id="drift-title">Branch drift comparison concept</title>
 <desc id="drift-desc">Two pinned commit trees compared by path, including rename candidates and a file to directory change, with agent activity as provenance. Illustrative data, not an implemented screen.</desc>
-<style>:root { color-scheme: light dark; color: CanvasText; } text { white-space: pre; }</style>
-<g fill="none" stroke="var(--border, currentColor)"><rect x="4" y="4" width="912" height="328"/><path d="M4 44H916 M4 100H916 M4 236H916 M4 296H916"/></g>
-<g fill="var(--fg, currentColor)" font-family="monospace" font-size="14">
+<style>text { white-space: pre; }</style>
+<rect width="920" height="336" fill="#20242c"/>
+<g fill="none" stroke="#8690a0"><rect x="4" y="4" width="912" height="328"/><path d="M4 44H916 M4 100H916 M4 236H916 M4 296H916"/></g>
+<g fill="#eef0f4" font-family="monospace" font-size="16" style="white-space:pre">
 <text x="16" y="28" font-weight="bold">antty  /  compare trees</text>
 <text x="16" y="68">A: main @ 4a10e2</text><text x="448" y="68">B: feat/auth @ 9b42c1</text>
 <text x="16" y="88" opacity="0.7">Committed trees · pinned endpoints · working changes excluded</text>

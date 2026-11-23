@@ -1,13 +1,14 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 336" role="img" aria-labelledby="past-title past-desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="336" viewBox="0 0 920 336" xml:space="preserve" role="img" aria-labelledby="past-title past-desc">
 <title id="past-title">Historical tree at cursor concept</title>
 <desc id="past-desc">The old file tree before an observed checkout switch, with incomplete uncommitted history explicitly labelled. Illustrative data, not an implemented screen.</desc>
-<style>:root { color-scheme: light dark; color: CanvasText; } text { white-space: pre; }</style>
-<g fill="none" stroke="var(--border, currentColor)"><rect x="4" y="4" width="912" height="328"/><path d="M4 44H916 M4 100H916 M360 100V296 M4 296H916"/></g>
-<path d="M556 156V288" fill="none" stroke="var(--accent, currentColor)" stroke-dasharray="4 4"/>
-<g fill="var(--fg, currentColor)" font-family="monospace" font-size="14">
+<style>text { white-space: pre; }</style>
+<rect width="920" height="336" fill="#20242c"/>
+<g fill="none" stroke="#8690a0"><rect x="4" y="4" width="912" height="328"/><path d="M4 44H916 M4 100H916 M360 100V296 M4 296H916"/></g>
+<path d="M556 156V288" fill="none" stroke="#86b5ff" stroke-dasharray="4 4"/>
+<g fill="#eef0f4" font-family="monospace" font-size="16" style="white-space:pre">
 <text x="16" y="28" font-weight="bold">antty  /  tree at cursor</text>
 <text x="16" y="68">app @ 10:14  ·  observed branch: main  ·  HEAD: 4a10e2  ·  read-only</text>
-<text x="16" y="88" fill="var(--warning, currentColor)" font-weight="bold">Committed tree exact · uncommitted overlay incomplete</text>
+<text x="16" y="88" fill="#ffd27c" font-weight="bold">Committed tree exact · uncommitted overlay incomplete</text>
 <text x="16" y="124" font-weight="bold">CHECKOUT CONTEXT</text>
 <text x="376" y="124" opacity="0.7">10:00</text><text x="556" y="124" text-anchor="middle">10:14</text><text x="648" y="124" opacity="0.7">10:20</text><text x="804" y="124" opacity="0.7">10:30</text>
 <text x="16" y="148">app</text>
@@ -15,12 +16,12 @@
 <text x="16" y="184" font-weight="bold">FILES  /  at 10:14</text>
 <text x="16" y="208">▾ src</text>
 <text x="32" y="232" font-weight="bold">&gt; auth.rs</text>
-<text x="396" y="232" fill="var(--c1, currentColor)">██████   █████</text>
+<text x="396" y="232" fill="#86b5ff">██████   █████</text>
 <text x="32" y="256">  main.rs</text>
-<text x="416" y="256" fill="var(--c1, currentColor)">███</text>
+<text x="416" y="256" fill="#86b5ff">███</text>
 <text x="16" y="280">  config [file]</text>
 <text x="592" y="280" opacity="0.7">file events stop at cursor</text>
 <text x="16" y="320">h/l move time  ·  Enter historical detail  ·  leave historical mode → live tree</text>
 </g>
-<path d="M420 144H672 M672 136V152 M776 144H896" fill="none" stroke="var(--fg, currentColor)"/>
+<path d="M420 144H672 M672 136V152 M776 144H896" fill="none" stroke="#eef0f4"/>
 </svg>

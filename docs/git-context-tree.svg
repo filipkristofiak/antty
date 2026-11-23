@@ -1,22 +1,23 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 336" role="img" aria-labelledby="lens-title lens-desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="336" viewBox="0 0 920 336" xml:space="preserve" role="img" aria-labelledby="lens-title lens-desc">
 <title id="lens-title">Context-scoped file tree concept</title>
 <desc id="lens-desc">A checkout and branch scope above the existing file tree and aligned activity timeline, with excluded contexts folded separately. Illustrative data, not an implemented screen.</desc>
-<style>:root { color-scheme: light dark; color: CanvasText; } text { white-space: pre; }</style>
-<g fill="none" stroke="var(--border, currentColor)"><rect x="4" y="4" width="912" height="328"/><path d="M4 44H916 M4 80H916 M360 80V296 M4 296H916"/></g>
-<g fill="var(--fg, currentColor)" font-family="monospace" font-size="14">
+<style>text { white-space: pre; }</style>
+<rect width="920" height="336" fill="#20242c"/>
+<g fill="none" stroke="#8690a0"><rect x="4" y="4" width="912" height="328"/><path d="M4 44H916 M4 80H916 M360 80V296 M4 296H916"/></g>
+<g fill="#eef0f4" font-family="monospace" font-size="16" style="white-space:pre">
 <text x="16" y="28" font-weight="bold">antty  /  context-scoped tree</text>
 <text x="16" y="68">checkout: app   branch: feat/auth   HEAD: 9b42c1   tree: working + dirty</text>
 <text x="16" y="104" font-weight="bold">PARTICIPANTS</text>
 <text x="376" y="104" opacity="0.7">10:20          10:30          10:40</text>
 <text x="16" y="128">▸ Extract auth</text>
-<text x="376" y="128" fill="var(--c1, currentColor)">██████████     ███████</text>
+<text x="376" y="128" fill="#86b5ff">██████████     ███████</text>
 <text x="16" y="152" opacity="0.7">▸ Outside scope / unknown</text>
 <text x="16" y="184" font-weight="bold">FILES  /  feat/auth activity</text>
 <text x="16" y="208">▾ packages/auth</text>
 <text x="32" y="232" font-weight="bold">&gt; index.rs</text>
-<text x="376" y="232" fill="var(--c1, currentColor)">  ████         ███████</text>
+<text x="376" y="232" fill="#86b5ff">  ████         ███████</text>
 <text x="32" y="256">  token.rs</text>
-<text x="376" y="256" fill="var(--c1, currentColor)">       ████</text>
+<text x="376" y="256" fill="#86b5ff">       ████</text>
 <text x="16" y="280" opacity="0.7">▸ Other-context paths</text>
 <text x="16" y="320">scope: feat/auth  ·  Enter detail  ·  w merged/separate  ·  clear scope</text>
 </g>
